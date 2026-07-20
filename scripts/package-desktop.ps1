@@ -7,7 +7,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $workspace = Split-Path -Parent $root
 $outputs = Join-Path $workspace "outputs"
 $stage = Join-Path $root "work\release-package"
-$version = "2.1.1"
+$version = "2.1.2"
 $portableName = "NovelAgentStudio-Portable-$version.zip"
 $setupName = "NovelAgentStudio-Setup-$version.exe"
 

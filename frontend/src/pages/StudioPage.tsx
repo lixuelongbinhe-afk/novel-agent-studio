@@ -130,6 +130,11 @@ export function StudioPage() {
     mutationFn: ({ artifact, action, resolution }: { artifact: Artifact; action: "approve" | "request_changes" | "reject"; resolution?: "preserve_prose" | "preserve_canon" | "manual_merge" }) =>
       studioApi.decideArtifact(artifact, action, artifact.notes, resolution),
     onSuccess: async (_result, variables) => {
+      const writesManuscript = ["drafting", "revision_proposal", "scene_draft"].includes(variables.artifact.kind);
+      setEditing((current) => current?.id === variables.artifact.id ? null : current);
+      setNotice(variables.action === "approve"
+        ? writesManuscript ? "正文已通过并写入章节" : "审核已通过"
+        : variables.action === "request_changes" ? "已标记为需要修改" : "已拒绝该候选");
       await queryClient.invalidateQueries({ queryKey: ["studio-project", projectId] });
       const latest = await queryClient.fetchQuery({
         queryKey: ["studio-project", projectId],
@@ -141,8 +146,15 @@ export function StudioPage() {
   });
   const saveArtifact = useMutation({
     mutationFn: () => studioApi.updateArtifact(editing!, { title: editTitle, content: editText, notes: editNotes }),
-    onSuccess: async () => {
-      setEditing(null);
+    onSuccess: async (replacement) => {
+      setEditing(replacement);
+      setEditTitle(replacement.title);
+      setEditText(replacement.content);
+      setEditNotes(replacement.notes);
+      const history = await studioApi.artifactVersions(replacement.id);
+      setVersions(history);
+      setCompareVersionId(history.find((item) => item.id !== replacement.id)?.id ?? history[0]?.id ?? null);
+      setNotice("新版本已保存，请确认后通过并写入");
       await refresh();
     },
     onError: (reason: Error) => setNotice(reason.message)
@@ -218,6 +230,9 @@ export function StudioPage() {
     )
   );
   const pending = overview.artifacts.filter((item) => ["pending", "changes_requested"].includes(item.status));
+  const hasUnsavedArtifactEdits = editing !== null && (
+    editTitle !== editing.title || editText !== editing.content || editNotes !== editing.notes
+  );
 
   function ensureModelPermission() {
     if (realProviders.length === 0 && !demoApproved) {
@@ -268,18 +283,18 @@ export function StudioPage() {
     const index = latest.tree.chapters.findIndex((item) => item.id === chapterId);
     const next = latest.tree.chapters[index + 1];
     if (!next) {
-      setNotice("全部章节正文已完成，已进入全文审阅");
+      setNotice("正文已通过并写入章节；全部章节正文已完成，已进入全文审阅");
       return;
     }
     if (latest.state.generation_mode === "manual") {
-      setNotice(`“${latest.tree.chapters[index]?.title}”已通过，可手动开始下一章`);
+      setNotice(`正文已通过并写入章节；可手动开始“${next.title}”`);
       return;
     }
     if (!ensureModelPermission()) return;
     setSelectedChapterId(next.id);
     if (latest.state.generation_mode === "automatic") {
       generate.mutate({ phase: "drafting", chapterId: next.id });
-      setNotice(`正在自动开始“${next.title}”`);
+      setNotice(`正文已通过并写入章节；正在自动开始“${next.title}”`);
       return;
     }
     setContinuation({ chapterId: next.id, seconds: latest.state.countdown_seconds });
@@ -423,7 +438,7 @@ export function StudioPage() {
               <section><header><strong>历史版本</strong><span>只读</span></header><label><span>标题</span><input readOnly value={versions.find((item) => item.id === compareVersionId)?.title ?? ""} /></label><textarea readOnly value={versions.find((item) => item.id === compareVersionId)?.content ?? ""} /></section>
             </div>
             <label className="artifact-notes"><span>审核批注</span><textarea rows={3} value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="记录修改理由、待核问题或给下一轮 Agent 的意见" /></label>
-            <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="primary-button" onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button></footer>
+            <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="secondary-button" disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => decide.mutate({ artifact: editing, action: "request_changes" })}>要求修改</button><button className="primary-button" disabled={saveArtifact.isPending || !hasUnsavedArtifactEdits} onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button><button className="approve-button" title={hasUnsavedArtifactEdits ? "请先保存当前编辑" : "通过并写入"} disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => approveArtifact(editing)}><Check size={15} />{["drafting", "revision_proposal", "scene_draft"].includes(editing.kind) ? "通过并写入正文" : "通过审核"}</button></footer>
           </section>
         </div>
       ) : null}
@@ -468,7 +483,7 @@ function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: {
 function ReviewPanel({ items, approving, onOpen, onApprove }: { items: Artifact[]; approving: boolean; onOpen: (item: Artifact) => void; onApprove: (item: Artifact) => void }) {
   return <div className="rail-panel"><header><div><FileCheck2 size={16} /><strong>待审核</strong></div><span>{items.length} 项</span></header><div className="rail-list">
     {items.length === 0 ? <div className="rail-empty"><CheckCircle2 size={22} /><span>没有待审核内容</span></div> : null}
-    {items.map((item) => <article key={item.id} className="review-item"><button type="button" onClick={() => onOpen(item)}><span>{item.kind}</span><strong>{item.title}</strong><small>版本 {item.version_number}</small></button><button className="icon-button subtle" title="通过" disabled={approving} onClick={() => onApprove(item)}><Check size={14} /></button></article>)}
+    {items.map((item) => { const writesManuscript = ["drafting", "revision_proposal", "scene_draft"].includes(item.kind); const approveLabel = writesManuscript ? "通过并写入正文" : "通过"; return <article key={item.id} className="review-item"><button type="button" onClick={() => onOpen(item)}><span>{artifactKindLabel(item.kind)}</span><strong>{item.title}</strong><small>版本 {item.version_number} · 点击查看和编辑</small></button><button className="approve-button review-approve" title={approveLabel} aria-label={approveLabel} disabled={approving} onClick={() => onApprove(item)}><Check size={14} /><span>{approveLabel}</span></button></article>; })}
   </div></div>;
 }
 
@@ -495,6 +510,7 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
   const [content, setContent] = useState(selected?.content ?? "");
   const [dirty, setDirty] = useState(false);
   const [selection, setSelection] = useState("");
+  const hydratedChapter = useRef({ id: selected?.id ?? null, revision: selected?.revision ?? null });
   const queryClient = useQueryClient();
   const save = useMutation({
     mutationFn: () => studioApi.autosaveChapter(selected!, title, content),
@@ -504,7 +520,16 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
     },
     onError: (reason: Error) => onNotice(reason.message)
   });
-  useEffect(() => { setTitle(selected?.title ?? ""); setContent(selected?.content ?? ""); setDirty(false); }, [selected?.id]);
+  useEffect(() => {
+    if (!selected) return;
+    const chapterChanged = hydratedChapter.current.id !== selected.id;
+    const serverChanged = hydratedChapter.current.revision !== selected.revision;
+    if (!chapterChanged && (!serverChanged || dirty)) return;
+    setTitle(selected.title);
+    setContent(selected.content);
+    setDirty(false);
+    hydratedChapter.current = { id: selected.id, revision: selected.revision };
+  }, [selected?.id, selected?.revision, dirty]);
   useEffect(() => {
     if (!dirty || !selected) return;
     const timer = window.setTimeout(() => save.mutate(), 1600);
@@ -534,4 +559,5 @@ function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: 
 }
 
 function statusLabel(status: Artifact["status"]) { return ({ pending: "待审核", approved: "已通过", changes_requested: "需修改", rejected: "已拒绝", superseded: "旧版本" })[status]; }
+function artifactKindLabel(kind: string) { return ({ drafting: "章节正文", revision_proposal: "正文修改方案", scene_draft: "场景正文", world: "世界观", characters: "人物关系", plot: "剧情伏笔", volumes: "分卷大纲", chapters: "章节大纲", review: "全文审阅" } as Record<string, string>)[kind] ?? kind; }
 function sourceLabel(source: string) { return ({ ai: "AI 生成", user: "人工修改", import: "导入", ai_chat: "对话提案" } as Record<string, string>)[source] ?? source; }

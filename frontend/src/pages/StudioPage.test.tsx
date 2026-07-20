@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { studioApi, type StudioOverview } from "../api/studio";
 import { StudioPage } from "./StudioPage";
 
@@ -47,7 +47,7 @@ const overview: StudioOverview = {
 
 vi.mock("../api/studio", () => ({
   studioApi: {
-    project: async () => overview,
+    project: vi.fn(async () => overview),
     providers: async () => [{ id: 1, provider_type: "openai_chat", name: "DeepSeek" }],
     artifactVersions: async () => [artifact, { ...artifact, id: 10, version_number: 1, status: "superseded", content: "旧版规则" }],
     updateState: vi.fn(), updateArtifact: vi.fn(), decideArtifact: vi.fn(), generate: vi.fn(),
@@ -58,6 +58,11 @@ vi.mock("../api/studio", () => ({
 }));
 
 describe("StudioPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(studioApi.project).mockImplementation(async () => overview);
+  });
+
   it("does not treat the WebView scroll result as an effect cleanup", async () => {
     const previousMessages = overview.messages;
     const previousScrollIntoView = HTMLElement.prototype.scrollIntoView;
@@ -164,11 +169,65 @@ describe("StudioPage", () => {
     );
 
     fireEvent.click(await screen.findByTitle("审核"));
-    fireEvent.click(screen.getByTitle("通过"));
+    fireEvent.click(screen.getByTitle("通过并写入正文"));
     await waitFor(() => expect(studioApi.generate).toHaveBeenCalledWith(
       1,
       "drafting",
       expect.objectContaining({ chapter_id: 22, use_demo_model: false })
     ));
+  });
+
+  it("writes an approved Agent draft into the open chapter and refreshes the editor", async () => {
+    const draftContent = "雾从断桥下升起，林雾握紧了铜钥匙。";
+    const draft = {
+      ...artifact,
+      id: 20,
+      kind: "drafting",
+      title: "正文创作",
+      content: draftContent,
+      status: "pending" as const,
+      metadata: { chapter_id: 21, mode: "new", conflict_level: "none" },
+      revision: 1
+    };
+    const chapter = { id: 21, volume_id: 1, title: "第一章 深渊之下", content: "", position: 1, word_count: 0, revision: 1, updated_at: "" };
+    const initialOverview: StudioOverview = {
+      ...overview,
+      state: { ...overview.state, stage: "drafting", stage_label: "正文创作", generation_mode: "manual" },
+      artifacts: [draft],
+      tree: {
+        volumes: [{ id: 1, project_id: 1, title: "第一卷", position: 1, revision: 1 }],
+        chapters: [chapter],
+        scenes: []
+      }
+    };
+    const approvedOverview: StudioOverview = {
+      ...initialOverview,
+      artifacts: [{ ...draft, status: "approved", revision: 2 }],
+      tree: {
+        ...initialOverview.tree,
+        chapters: [{ ...chapter, content: draftContent, word_count: 18, revision: 2 }]
+      }
+    };
+    vi.mocked(studioApi.project)
+      .mockResolvedValueOnce(initialOverview)
+      .mockResolvedValue(approvedOverview);
+    vi.mocked(studioApi.decideArtifact).mockResolvedValue({ ...draft, status: "approved", revision: 2 });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    render(
+      <MemoryRouter initialEntries={["/studio/1"]}>
+        <QueryClientProvider client={client}>
+          <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    const editor = await screen.findByPlaceholderText("正文");
+    expect(editor).toHaveValue("");
+    fireEvent.click(screen.getByTitle("审核"));
+    fireEvent.click(screen.getByRole("button", { name: "通过并写入正文" }));
+
+    await waitFor(() => expect(editor).toHaveValue(draftContent));
+    expect(screen.getByText(/正文已通过并写入章节/)).toBeInTheDocument();
   });
 });

@@ -1,18 +1,18 @@
 # Novel Agent Studio
 
-Novel Agent Studio（小说智能体工作室）v2.1.1 是面向长篇小说创作的本地优先多 Agent 工作台。主流程是“输入创意或导入大纲 → 多 Agent 规划 → 作者逐项审核 → 自动建立卷章场景 → AI 写正文 → 作者修改与批准 → 导出小说”。它包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
+Novel Agent Studio（小说智能体工作室）v2.1.2 是面向长篇小说创作的本地优先多 Agent 工作台。主流程是“输入创意或导入大纲 → 多 Agent 规划 → 作者逐项审核 → 自动建立卷章场景 → AI 写正文 → 作者修改与批准 → 导出小说”。它包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
 
 ## Windows 直接使用
 
 安装版：
 
-1. 双击 `outputs/NovelAgentStudio-Setup-2.1.1.exe`。
+1. 双击 `outputs/NovelAgentStudio-Setup-2.1.2.exe`。
 2. 安装完成后，从开始菜单打开“小说智能体工作室”。
 3. 实际程序位于 `%LOCALAPPDATA%\Programs\NovelAgentStudio\NovelAgentStudio.exe`。
 
 免安装版：
 
-1. 完整解压 `outputs/NovelAgentStudio-Portable-2.1.1.zip`，不要只拖出单个 EXE。
+1. 完整解压 `outputs/NovelAgentStudio-Portable-2.1.2.zip`，不要只拖出单个 EXE。
 2. 双击解压目录中的 `NovelAgentStudio\NovelAgentStudio.exe`。
 
 两个版本都自带 Python 运行时，不要求另外安装 Python，也不会打开外部浏览器。程序在随机本地端口启动后端并打开独立桌面窗口。关闭窗口时可选择“转入托盘继续”或“停止并退出”，并可记住选择；异常退出遗留的生成任务会在下次启动时明确标记为已中断。Windows 需要可用的 Microsoft Edge 或 WebView2 Runtime。

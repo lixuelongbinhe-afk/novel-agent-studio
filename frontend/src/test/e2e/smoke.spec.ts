@@ -86,3 +86,44 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   expect(compactOverflow).toBe(false);
   await page.screenshot({ path: "test-results/v2-models-compact.png" });
 });
+
+test("approved Agent draft is written into the chapter editor", async ({ page }) => {
+  const api = "http://127.0.0.1:8010/api/studio";
+  const createdResponse = await page.request.post(`${api}/projects`, {
+    data: {
+      title: "审核写回验证",
+      idea: "验证 Agent 正文通过审核后写入章节。",
+      entry_mode: "outline",
+      target_words: 10_000,
+      genre: "悬疑",
+      chapter_count: 1,
+      chapter_words: 2_000
+    }
+  });
+  expect(createdResponse.ok()).toBe(true);
+  const created = await createdResponse.json();
+  const projectId = created.project.id as number;
+
+  const importResponse = await page.request.post(`${api}/projects/${projectId}/outline/import`, {
+    data: { text: "# 第一卷\n## 第一章 深渊之下", replace_existing: true }
+  });
+  expect(importResponse.ok()).toBe(true);
+  const overviewResponse = await page.request.get(`${api}/projects/${projectId}`);
+  const overview = await overviewResponse.json();
+  const chapterId = overview.tree.chapters[0].id as number;
+  const generateResponse = await page.request.post(`${api}/projects/${projectId}/generate/drafting`, {
+    data: { chapter_id: chapterId, mode: "new", use_demo_model: true }
+  });
+  expect(generateResponse.ok()).toBe(true);
+
+  await page.goto(`/studio/${projectId}`);
+  await page.getByTitle("审核").click();
+  const reviewItem = page.locator(".review-item").first();
+  await expect(reviewItem.getByRole("button", { name: "通过并写入正文" })).toBeVisible();
+  await reviewItem.getByRole("button", { name: "通过并写入正文" }).click();
+
+  const editor = page.getByPlaceholder("正文");
+  await expect(editor).not.toHaveValue("");
+  await expect(page.getByText(/正文已通过并写入章节/)).toBeVisible();
+  await page.screenshot({ path: "test-results/v2-draft-writeback.png" });
+});

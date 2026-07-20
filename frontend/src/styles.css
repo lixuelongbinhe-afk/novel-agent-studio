@@ -238,6 +238,8 @@ label > span { display: block; margin-bottom: 6px; color: #b7bbb9; font-size: 12
 .review-item > button:first-child { min-width: 0; flex: 1; display: grid; gap: 3px; padding: 7px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .review-item span, .review-item small { color: var(--muted); font-size: 10px; }
 .review-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.review-item .review-approve { flex: 0 0 auto; min-height: 30px; padding: 0 8px; font-size: 11px; }
+.review-item .review-approve span { color: inherit; font-size: inherit; }
 .job-item { padding: 10px 6px; border-bottom: 1px solid #292b2b; }
 .job-item > div:first-child { display: grid; grid-template-columns: 10px 1fr; align-items: center; gap: 3px 6px; }
 .job-item > div:first-child small { grid-column: 2; color: var(--muted); }

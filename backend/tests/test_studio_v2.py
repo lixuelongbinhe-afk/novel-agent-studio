@@ -199,6 +199,54 @@ async def test_scene_review_creates_independent_pending_artifacts(db: Session) -
     assert all(item["status"] == "pending" for item in generated["artifacts"])
 
 
+def test_approving_agent_draft_writes_chapter_and_creates_snapshot(db: Session) -> None:
+    overview = create_project(db, "outline")
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    with db.begin():
+        studio.import_outline(
+            db,
+            project_id,
+            OutlineImportRequest(text="# 第一卷\n## 第一章 深渊之下"),
+        )
+    chapter = db.scalar(
+        select(models.Chapter)
+        .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
+        .where(models.Volume.project_id == project_id)
+    )
+    assert chapter is not None
+    original_revision = chapter.revision
+    content = "雾从断桥下升起，林雾握紧了铜钥匙。"
+    artifact = models.CreativeArtifact(
+        project_id=project_id,
+        kind="drafting",
+        title="正文创作",
+        content=content,
+        status="pending",
+        metadata_json=f'{{"chapter_id":{chapter.id},"mode":"new"}}',
+    )
+    db.add(artifact)
+    db.commit()
+
+    result = studio.decide_artifact(
+        db,
+        artifact.id,
+        ArtifactDecision(action="approve", expected_revision=artifact.revision),
+    )
+    db.commit()
+
+    db.refresh(chapter)
+    assert result["status"] == "approved"
+    assert chapter.content == content
+    assert chapter.word_count == studio.word_count(content)
+    assert chapter.revision == original_revision + 1
+    assert db.scalar(
+        select(models.ProjectSnapshot).where(
+            models.ProjectSnapshot.project_id == project_id,
+            models.ProjectSnapshot.label == "AI 正文写入前",
+        )
+    ) is not None
+
+
 def test_major_conflict_requires_author_resolution(db: Session) -> None:
     overview = create_project(db)
     project_id = int(overview["project"]["id"])  # type: ignore[index]

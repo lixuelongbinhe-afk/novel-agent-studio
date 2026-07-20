@@ -1,7 +1,7 @@
 # V2 Requirements Acceptance
 
 验收日期：2026-07-20  
-版本：2.1.1
+版本：2.1.2
 
 | 已确认要求 | 实现与验收证据 | 结果 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 | 密钥安全 | Windows Credential Manager 或环境变量；数据库、日志、导出不存明文 | 通过 |
 | 质量/费用/速度/均衡路由 | 项目工具栏切换，调用记录保存理由、Token 与费用 | 通过 |
 | 参考文风文本提取 | TXT/MD/DOCX 上传，模型提取抽象规则，结果必须审核 | 通过 |
-| 直接编辑、AI 修改、重写、方案、版本、批注 | 正文工作台与 Artifact 审核编辑器 | 通过 |
+| 直接编辑、AI 修改、重写、方案、版本、批注 | 正文工作台与 Artifact 审核编辑器；右侧“通过并写入正文”会更新章节并即时刷新编辑器 | 通过 |
 | 已批准内容仍可修改 | 修改创建新待审核版本，旧版保留为 superseded | 通过 |
 | 记忆自动/确认 | 项目级设置，批准后更新章节摘要与资料 | 通过 |
 | 大小冲突处理 | 轻微冲突自动校正并标记；重大冲突必须三选一 | 通过 |
@@ -34,4 +34,4 @@
 | 真正 Windows EXE、安装包与便携 ZIP | PyInstaller + C# 安装器；控制台和 GUI 生命周期自检 | 通过 |
 | 舍弃旧数据 | v2 独立 `NovelAgentStudioV2/data/studio-v2.db` | 通过 |
 
-自动化证据：后端 168 tests、前端 27 tests、Ruff、mypy、TypeScript、Vite build、Playwright E2E 全通过。WebView2 消息滚动副作用的卸载回归测试通过。最终打包后的 EXE、安装器和 ZIP 已完成控制台与 GUI 自检；产物哈希记录在 `outputs/SHA256SUMS.txt`。
+自动化证据：后端 169 tests、前端 28 tests、Ruff、mypy、TypeScript、Vite build、2 个 Playwright E2E 全通过。WebView2 消息滚动副作用和正文审核写回回归测试通过。最终打包后的 EXE、安装器和 ZIP 已完成控制台与 GUI 自检；产物哈希记录在 `outputs/SHA256SUMS.txt`。

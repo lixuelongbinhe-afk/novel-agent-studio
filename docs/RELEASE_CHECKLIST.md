@@ -1,18 +1,18 @@
 # Release Checklist
 
-版本：2.1.1
+版本：2.1.2
 发布日期：2026-07-20  
 状态：GO，本机单用户 Windows 发布。
 
 ## 质量门禁
 
-- [x] 后端 `168 passed`；唯一警告来自 Starlette TestClient 的上游弃用提示。
+- [x] 后端 `169 passed`；唯一警告来自 Starlette TestClient 的上游弃用提示。
 - [x] Ruff 全部通过。
-- [x] strict mypy：88 个源文件无问题。
-- [x] 前端 14 个测试文件、27 个测试全部通过，包含 WebView2 副作用清理崩溃回归。
+- [x] strict mypy：72 个应用源文件无问题。
+- [x] 前端 14 个测试文件、28 个测试全部通过，包含 WebView2 副作用清理崩溃与正文审核写回回归。
 - [x] TypeScript strict 检查通过。
 - [x] Vite 生产构建通过，1,648 modules transformed。
-- [x] Playwright 最终 E2E：1 passed，覆盖创建、文风上传、独立审核、版本比较、阶段推进和响应式布局。
+- [x] Playwright 最终 E2E：2 passed，覆盖创建、文风上传、独立审核、正文审核写入、版本比较、阶段推进和响应式布局。
 - [x] PyInstaller GUI/Console 构建通过。
 - [x] 打包目录控制台自检通过。
 - [x] 打包目录 GUI 生命周期自检 10 秒通过。
@@ -24,7 +24,7 @@
 - [x] 实际安装目录 GUI 生命周期自检 15 秒通过。
 - [x] 最终便携 ZIP 实际解压后控制台自检通过。
 - [x] 最终便携 ZIP 实际解压后 GUI 生命周期自检 15 秒通过。
-- [x] 安装版产品版本为 2.1.1。
+- [x] 安装版产品版本为 2.1.2。
 - [x] 安装数据位于 `%LOCALAPPDATA%\NovelAgentStudioV2\data`。
 - [x] 便携数据位于解压目录的 `NovelAgentStudio\data`。
 - [x] 安装版和便携版数据目录互不混用。
@@ -34,8 +34,8 @@
 
 | 文件 | 字节 | SHA-256 |
 | --- | ---: | --- |
-| `NovelAgentStudio-Setup-2.1.1.exe` | 59,207,168 | `60c78764a8362efb50b920bb56d063ef85828b51dee2c900daf5466eab1f5b28` |
-| `NovelAgentStudio-Portable-2.1.1.zip` | 59,203,227 | `dd7b6844e8402910f639e0084fdac3328a3e23ef0e88d13417f9248fe8f90cf0` |
+| `NovelAgentStudio-Setup-2.1.2.exe` | 59,207,680 | `8a41afacc942519dd34c41a0646975950a92682d2fcade6a57617df26a4b042c` |
+| `NovelAgentStudio-Portable-2.1.2.zip` | 59,204,050 | `11c84e954922184a4ae0d291a25d4b917a36db9f55ca517ddd2128e152537cfb` |
 
 哈希同时写入 `outputs/SHA256SUMS.txt`，并已与产物重新计算结果比对一致。
 
