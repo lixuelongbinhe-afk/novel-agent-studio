@@ -126,4 +126,103 @@ test("approved Agent draft is written into the chapter editor", async ({ page })
   await expect(editor).not.toHaveValue("");
   await expect(page.getByText(/正文已通过并写入章节/)).toBeVisible();
   await page.screenshot({ path: "test-results/v2-draft-writeback.png" });
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "生成全文审阅" })).toBeVisible();
+  await expect(editor).not.toHaveValue("");
+  await editor.fill("审阅阶段仍可修改并保存正文。");
+  await page.getByTitle("保存").click();
+  await expect(page.getByText("已保存")).toBeVisible();
+  await expect(editor).toHaveValue("审阅阶段仍可修改并保存正文。");
+  await page.screenshot({ path: "test-results/v2-review-editable.png" });
+});
+
+test("imports a half-finished novel into the reviewed continuation workflow", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByRole("button", { name: /导入半成品续写/ }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)).toBe(false);
+  await page.screenshot({ path: "test-results/v2-continuation-import-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: /粘贴正文/ }).click();
+  await page.getByLabel("新项目书名").fill("旧城来信");
+  await page.getByLabel("小说正文").fill("# 第一卷 旧城\n## 第1章 雨夜\n雨落在石阶上。\n## 第2章 来信\n林舟拆开一封没有署名的信。");
+  await page.getByLabel("目标总章节").fill("4");
+  await page.getByLabel("目标总卷数").fill("2");
+  await page.getByRole("button", { name: "导入并创建项目" }).click();
+
+  await expect(page.getByRole("heading", { name: "旧城来信" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /资料审核/ })).toBeVisible();
+  await page.getByRole("button", { name: /导入与解析/ }).click();
+  await expect(page.getByRole("heading", { name: /原始只读副本/ })).toBeVisible();
+  await expect(page.locator(".artifact-card").getByTitle("编辑")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/v2-continuation-original.png" });
+
+  await page.getByRole("button", { name: /资料审核/ }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "开始生成" }).click();
+  await expect(page.getByRole("heading", { name: "章节结构分析" })).toBeVisible({ timeout: 40_000 });
+  await expect(page.getByRole("heading", { name: "原文文风档案" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "未完剧情线" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)).toBe(false);
+  await page.screenshot({ path: "test-results/v2-continuation-analysis.png" });
+});
+
+test("long chat replies scroll inside the right rail without covering the workspace", async ({ page }) => {
+  test.setTimeout(120_000);
+  const api = "http://127.0.0.1:8010/api/studio";
+  const createdResponse = await page.request.post(`${api}/projects`, {
+    data: {
+      title: "右栏滚动验证",
+      idea: "验证大量对话不会撑破工作区。",
+      entry_mode: "creative",
+      target_words: 20_000,
+      genre: "悬疑",
+      chapter_count: 4,
+      chapter_words: 2_000
+    }
+  });
+  expect(createdResponse.ok()).toBe(true);
+  const projectId = (await createdResponse.json()).project.id as number;
+  for (let index = 0; index < 18; index += 1) {
+    const response = await page.request.post(`${api}/projects/${projectId}/chat`, {
+      data: {
+        message: `请详细分析第 ${index + 1} 组人物关系、伏笔和时间线，并给出多段修改建议。`,
+        stage: "world",
+        use_demo_model: true
+      }
+    });
+    expect(response.ok()).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 1024, height: 720 });
+  await page.goto(`/studio/${projectId}`);
+  const rail = page.locator(".context-rail");
+  const stream = page.locator(".chat-stream");
+  const composer = page.locator(".chat-composer");
+  await expect(composer).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const railElement = document.querySelector<HTMLElement>(".context-rail")!;
+    const streamElement = document.querySelector<HTMLElement>(".chat-stream")!;
+    const composerElement = document.querySelector<HTMLElement>(".chat-composer")!;
+    const railRect = railElement.getBoundingClientRect();
+    const composerRect = composerElement.getBoundingClientRect();
+    return {
+      railBottom: railRect.bottom,
+      composerBottom: composerRect.bottom,
+      viewportHeight: window.innerHeight,
+      streamScrollHeight: streamElement.scrollHeight,
+      streamClientHeight: streamElement.clientHeight,
+      pageOverflow: document.documentElement.scrollHeight > window.innerHeight + 1
+    };
+  });
+  expect(layout.railBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.composerBottom).toBeLessThanOrEqual(layout.railBottom + 1);
+  expect(layout.streamScrollHeight).toBeGreaterThan(layout.streamClientHeight);
+  expect(layout.pageOverflow).toBe(false);
+  await expect(rail).toBeVisible();
+  await expect(stream).toBeVisible();
+  await page.screenshot({ path: "test-results/v2-long-chat-scroll.png" });
 });

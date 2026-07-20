@@ -24,6 +24,7 @@ import {
   MoreHorizontal,
   Pause,
   Pencil,
+  Plus,
   Play,
   RefreshCw,
   RotateCcw,
@@ -32,6 +33,7 @@ import {
   Settings2,
   Sparkles,
   SplitSquareVertical,
+  Trash2,
   Undo2,
   WandSparkles,
   X
@@ -55,6 +57,10 @@ const phaseDescriptions: Record<string, string> = {
   plot: "主支线、时间线、伏笔与转折",
   volumes: "分卷目标、节奏与结尾钩子",
   chapters: "章节目标、冲突与场景拆分",
+  continuation_import: "导入原文并识别卷章结构",
+  continuation_analysis: "逐项审核原文结构、设定、人物、时间线、伏笔与文风",
+  continuation_outline: "从已有正文反向补建分卷、章节和场景大纲",
+  continuation_plan: "确认续写方向、目标规模、未来卷章和结局",
   drafting: "按已批准资料创作正文",
   review: "终稿与一致性审阅",
   complete: "小说已完成"
@@ -183,6 +189,14 @@ export function StudioPage() {
     mutationFn: (payload: Record<string, unknown>) => studioApi.updateState(projectId, payload),
     onSuccess: refresh
   });
+  const updateContinuation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => studioApi.updateContinuationSettings(projectId, payload),
+    onSuccess: async () => {
+      await refresh();
+      setNotice("续写设置已保存");
+    },
+    onError: (reason: Error) => setNotice(reason.message)
+  });
   const importOutline = useMutation({
     mutationFn: () => studioApi.importOutline(projectId, outlinePreview?.source_text ?? outlineText),
     onSuccess: async () => {
@@ -199,6 +213,17 @@ export function StudioPage() {
       setNotice("参考文风已提取，等待你审核");
       setSelectedPhase("world");
       setRightTab("reviews");
+      await refresh();
+    },
+    onError: (reason: Error) => setNotice(reason.message)
+  });
+  const repairChapterTree = useMutation({
+    mutationFn: () => studioApi.repairChapterTree(projectId),
+    onSuccess: async (result) => {
+      const added = result.overview.tree.chapters.find((chapter) => chapter.word_count === 0);
+      if (added) setSelectedChapterId(added.id);
+      setSelectedPhase(result.overview.state.stage);
+      setNotice("章节结构已修复；原内容已永久快照，缺失章节已补回");
       await refresh();
     },
     onError: (reason: Error) => setNotice(reason.message)
@@ -226,13 +251,22 @@ export function StudioPage() {
   const phase = selectedPhase || overview.state.stage;
   const artifacts = overview.artifacts.filter((item) =>
     item.status !== "superseded" && (
-      item.kind === phase || (phase === "drafting" && ["revision_proposal", "scene_draft"].includes(item.kind))
+      item.kind === phase ||
+      (phase === "continuation_import" && item.kind === "continuation_original") ||
+      (phase === "drafting" && ["revision_proposal", "scene_draft"].includes(item.kind))
     )
   );
   const pending = overview.artifacts.filter((item) => ["pending", "changes_requested"].includes(item.status));
+  const missingChapterSummary = formatMissingChapters(overview.chapter_tree_repair.missing_numbers);
   const hasUnsavedArtifactEdits = editing !== null && (
     editTitle !== editing.title || editText !== editing.content || editNotes !== editing.notes
   );
+  const continuationConfig = overview.state.config;
+  const isContinuationProject = overview.state.entry_mode === "continuation";
+  const importedChapterCount = Number(continuationConfig.imported_chapter_count ?? 0);
+  const importedChapters = overview.tree.chapters.slice(0, importedChapterCount);
+  const lastImportedChapter = importedChapters[importedChapters.length - 1];
+  const firstFutureChapter = overview.tree.chapters[importedChapterCount];
 
   function ensureModelPermission() {
     if (realProviders.length === 0 && !demoApproved) {
@@ -329,6 +363,7 @@ export function StudioPage() {
       </header>
 
       {continuation ? <div className="continuation-banner"><Clock3 size={15} /><span><strong>{continuation.seconds} 秒</strong>后开始下一章</span><button type="button" onClick={() => setContinuation(null)}><Pause size={14} />暂停</button><button type="button" onClick={() => { const chapterId = continuation.chapterId; setContinuation(null); generate.mutate({ phase: "drafting", chapterId }); }}><Play size={14} />立即开始</button></div> : null}
+      {isContinuationProject && Boolean(continuationConfig.conflict_paused) ? <div className="continuation-conflict-banner"><AlertTriangle size={16} /><span><strong>续写已暂停</strong>存在重大设定或时间线冲突，请在“待审核项目”中选择处理方案。</span><button type="button" onClick={() => setRightTab("reviews")}>前往审核</button></div> : null}
 
       <div className="phase-strip" aria-label="创作阶段">
         {overview.stages.map((item, index) => {
@@ -344,25 +379,52 @@ export function StudioPage() {
 
       <div className="studio-workarea">
         <main className="stage-workspace">
-          {phase === "drafting" ? (
-            <WritingStage
-              overview={overview}
-              selectedChapterId={selectedChapterId}
-              onSelectChapter={setSelectedChapterId}
-              onSelection={setSelectedText}
-              onGenerate={(mode, chapterId, selection) => startGeneration("drafting", { mode, chapterId, selection })}
-              onOpenArtifact={openEdit}
-              generating={generate.isPending}
-              onRefresh={refresh}
-              onNotice={setNotice}
-            />
+          {["drafting", "review"].includes(phase) ? (
+            <div className="writing-stage-shell">
+              {isContinuationProject && phase === "drafting" && continuationConfig.continuation_start === "choose" ? (
+                <div className="continuation-start-banner">
+                  <div><BookOpenText size={17} /><span><strong>选择续写起点</strong>原文副本不会被修改；正文编辑区使用可恢复的工作副本。</span></div>
+                  <button type="button" disabled={!lastImportedChapter || updateContinuation.isPending} onClick={() => { if (lastImportedChapter) setSelectedChapterId(lastImportedChapter.id); updateContinuation.mutate({ continuation_start: "current" }); }}>接着写当前章</button>
+                  <button type="button" disabled={!firstFutureChapter || updateContinuation.isPending} onClick={() => { if (firstFutureChapter) setSelectedChapterId(firstFutureChapter.id); updateContinuation.mutate({ continuation_start: "next" }); }}>从下一章开始</button>
+                </div>
+              ) : null}
+              {overview.chapter_tree_repair.can_repair ? (
+                <div className="chapter-repair-banner">
+                  <AlertTriangle size={17} />
+                  <div><strong>检测到章节结构异常</strong><span>“{overview.chapter_tree_repair.suspect_chapters.map((item) => item.title).join("、")}”被误当成正文，将补齐 {missingChapterSummary}。原正文会永久保留。</span></div>
+                  <button type="button" disabled={repairChapterTree.isPending} onClick={() => {
+                    if (window.confirm(`修复章节结构？\n\n异常章节将移入回收状态，并补齐 ${missingChapterSummary}。操作前会创建永久特殊快照。`)) repairChapterTree.mutate();
+                  }}>{repairChapterTree.isPending ? "修复中..." : "修复章节结构"}</button>
+                </div>
+              ) : null}
+              {phase === "review" ? (
+                <div className="review-edit-toolbar">
+                  <div><FileCheck2 size={16} /><span><strong>全文审阅</strong>可继续逐章修改、保存或让 Agent 重写</span></div>
+                  <button className="primary-button" type="button" disabled={generate.isPending} onClick={() => startGeneration("review")}><Sparkles size={15} />生成全文审阅</button>
+                </div>
+              ) : null}
+              <WritingStage
+                overview={overview}
+                selectedChapterId={selectedChapterId}
+                onSelectChapter={setSelectedChapterId}
+                onSelection={setSelectedText}
+                onGenerate={(mode, chapterId, selection) => {
+                  const continuationMode = isContinuationProject && mode === "new" && continuationConfig.continuation_start === "current" && chapterId === lastImportedChapter?.id ? "continue" : mode;
+                  startGeneration("drafting", { mode: continuationMode, chapterId, selection });
+                }}
+                onOpenArtifact={openEdit}
+                generating={generate.isPending}
+                onRefresh={refresh}
+                onNotice={setNotice}
+              />
+            </div>
           ) : (
             <>
               <header className="stage-header">
                 <div><span className="section-kicker">当前工作区</span><h2>{overview.stages.find((item) => item.key === phase)?.label}</h2><p>{phaseDescriptions[phase]}</p></div>
                 <div className="stage-primary-actions">
                   {phase === "world" ? <label className="secondary-button file-action"><input type="file" accept=".txt,.md,.markdown,.docx" onChange={(event) => event.target.files?.[0] && uploadStyleReference(event.target.files[0])} /><FileUp size={15} />提取参考文风</label> : null}
-                  {phase !== "idea" && phase !== "complete" ? (
+                  {phase !== "idea" && phase !== "complete" && phase !== "continuation_import" ? (
                     <button className="primary-button" type="button" disabled={generate.isPending || styleReference.isPending} onClick={() => startGeneration()}>
                       {generate.isPending ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
                       {generate.isPending ? "Agent 正在工作" : artifacts.length ? "生成整阶段新版本" : "开始生成"}
@@ -380,7 +442,9 @@ export function StudioPage() {
                 />
               ) : null}
 
-              {phase !== "idea" && phase !== "complete" ? (
+              {isContinuationProject && phase === "continuation_plan" ? <ContinuationSettingsPanel overview={overview} onSave={(payload) => updateContinuation.mutate(payload)} saving={updateContinuation.isPending} /> : null}
+
+              {phase !== "idea" && phase !== "complete" && phase !== "continuation_import" ? (
                 <label className="generation-note"><WandSparkles size={15} /><input value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="补充本阶段要求" /></label>
               ) : null}
 
@@ -391,8 +455,8 @@ export function StudioPage() {
                     <header>
                       <div><span>{statusLabel(artifact.status)}</span><h3>{artifact.title}</h3><small>版本 {artifact.version_number} · {sourceLabel(artifact.source)}</small></div>
                       <div className="artifact-actions">
-                        <button type="button" className="icon-button subtle" title="编辑" onClick={() => openEdit(artifact)}><Pencil size={15} /></button>
-                        {artifact.metadata.agent_name && ["world", "characters", "plot", "volumes", "chapters"].includes(artifact.kind) ? <button type="button" className="icon-button subtle" title="只重新生成这一项" disabled={generate.isPending} onClick={() => startGeneration(artifact.kind, { agentName: String(artifact.metadata.agent_name) })}><RefreshCw size={15} /></button> : null}
+                        {!artifact.metadata.readonly ? <button type="button" className="icon-button subtle" title="编辑" onClick={() => openEdit(artifact)}><Pencil size={15} /></button> : null}
+                        {artifact.metadata.agent_name && ["world", "characters", "plot", "volumes", "chapters", "continuation_analysis", "continuation_outline", "continuation_plan"].includes(artifact.kind) ? <button type="button" className="icon-button subtle" title="只重新生成这一项" disabled={generate.isPending} onClick={() => startGeneration(artifact.kind, { agentName: String(artifact.metadata.agent_name) })}><RefreshCw size={15} /></button> : null}
                         {artifact.status !== "approved" && artifact.status !== "rejected" ? (
                           <>
                             <button type="button" className="secondary-button" disabled={decide.isPending} onClick={() => decide.mutate({ artifact, action: "request_changes" })}>要求修改</button>
@@ -458,20 +522,20 @@ function RailTab({ icon: Icon, label, count, active, onClick }: { icon: typeof B
 }
 
 function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: { overview: StudioOverview; value: string; onChange: (value: string) => void; onSend: () => void; sending: boolean; onProposal: (messageId: number, action: "apply" | "reject") => void }) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView?.({ behavior: "smooth" });
+    const stream = streamRef.current;
+    if (stream) stream.scrollTop = stream.scrollHeight;
   }, [overview.messages.length]);
   return <div className="rail-panel chat-panel">
     <header><div><Bot size={16} /><strong>总编对话</strong></div><span>自动上下文</span></header>
-    <div className="chat-stream">
+    <div ref={streamRef} className="chat-stream" role="log" aria-label="对话消息" aria-live="polite">
       {overview.messages.length === 0 ? <div className="chat-empty"><MessageSquareText size={22} /><span>开始对话</span></div> : null}
       {overview.messages.map((message) => <div key={message.id} className={`chat-message ${message.role}`}>
         <div>{message.content}</div>
         {message.role === "assistant" ? <small>{message.model_name} · {message.context_scope}</small> : null}
         {message.proposal_status === "pending" ? <div className="proposal-actions"><span>修改提案待确认</span><button onClick={() => onProposal(message.id, "reject")}>拒绝</button><button className="approve" onClick={() => onProposal(message.id, "apply")}>应用</button></div> : null}
       </div>)}
-      <div ref={endRef} />
     </div>
     <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSend(); }}>
       <textarea rows={3} value={value} onChange={(event) => onChange(event.target.value)} placeholder="询问、分析或提出修改要求" />
@@ -520,6 +584,30 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
     },
     onError: (reason: Error) => onNotice(reason.message)
   });
+  const createChapter = useMutation({
+    mutationFn: () => {
+      const volume = overview.tree.volumes[overview.tree.volumes.length - 1];
+      if (!volume) throw new Error("请先建立分卷");
+      const nextPosition = Math.max(0, ...overview.tree.chapters.filter((item) => item.volume_id === volume.id).map((item) => item.position)) + 1;
+      return studioApi.createChapter(volume.id, `第${overview.tree.chapters.length + 1}章`, nextPosition);
+    },
+    onSuccess: async (chapter) => {
+      onSelectChapter(chapter.id);
+      onNotice(`已新增“${chapter.title}”，可直接修改标题和正文`);
+      await onRefresh();
+    },
+    onError: (reason: Error) => onNotice(reason.message)
+  });
+  const deleteChapter = useMutation({
+    mutationFn: () => studioApi.deleteChapter(selected!),
+    onSuccess: async () => {
+      const replacement = overview.tree.chapters.find((item) => item.id !== selected?.id);
+      if (replacement) onSelectChapter(replacement.id);
+      onNotice("章节已移入回收站");
+      await onRefresh();
+    },
+    onError: (reason: Error) => onNotice(reason.message)
+  });
   useEffect(() => {
     if (!selected) return;
     const chapterChanged = hydratedChapter.current.id !== selected.id;
@@ -538,13 +626,24 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
   if (!selected) return <div className="empty-stage"><BookOpenText size={24} /><span>卷章大纲审核通过后，正文工作区会自动建立。</span></div>;
   const selectedScenes = overview.tree.scenes.filter((scene) => scene.chapter_id === selected.id);
   return <div className="writing-workspace">
-    <aside className="chapter-tree"><header><span>卷章</span><b>{overview.tree.chapters.length}</b></header>{overview.tree.volumes.map((volume) => <section key={volume.id}><strong>{volume.title}</strong>{overview.tree.chapters.filter((chapter) => chapter.volume_id === volume.id).map((chapter) => <button key={chapter.id} className={chapter.id === selected.id ? "active" : ""} onClick={() => onSelectChapter(chapter.id)}><FileText size={13} /><span>{chapter.title}</span><small>{chapter.word_count}</small></button>)}</section>)}</aside>
+    <aside className="chapter-tree"><header><span>卷章</span><div><b>{overview.tree.chapters.length}</b><button type="button" title="新增章节" aria-label="新增章节" disabled={createChapter.isPending} onClick={() => createChapter.mutate()}><Plus size={14} /></button><button type="button" title="删除当前章节" aria-label="删除当前章节" disabled={overview.tree.chapters.length <= 1 || deleteChapter.isPending} onClick={() => { if (window.confirm(`将“${selected.title}”移入回收站？`)) deleteChapter.mutate(); }}><Trash2 size={14} /></button></div></header>{overview.tree.volumes.map((volume) => <section key={volume.id}><strong>{volume.title}</strong>{overview.tree.chapters.filter((chapter) => chapter.volume_id === volume.id).map((chapter) => <button key={chapter.id} className={chapter.id === selected.id ? "active" : ""} onClick={() => onSelectChapter(chapter.id)}><FileText size={13} /><span>{chapter.title}</span><small>{chapter.word_count}</small></button>)}</section>)}</aside>
     <section className="manuscript-pane">{overview.state.review_granularity === "scene" ? <div className="scene-review-strip"><span>场景审核</span>{selectedScenes.map((scene) => { const artifact = overview.artifacts.find((item) => item.kind === "scene_draft" && Number(item.metadata.scene_id) === scene.id && item.status !== "superseded"); return <button key={scene.id} type="button" className={artifact?.status === "approved" ? "approved" : artifact ? "pending" : "empty"} disabled={!artifact} onClick={() => artifact && onOpenArtifact(artifact)}><span>{scene.title}</span><small>{artifact ? statusLabel(artifact.status) : "未生成"}</small></button>; })}</div> : null}<header><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} /><div><span className={dirty ? "save-state dirty" : "save-state"}>{save.isPending ? "保存中" : dirty ? "未保存" : "已保存"}</span><button className="icon-button subtle" title="保存" onClick={() => save.mutate()}><Save size={15} /></button><button className="secondary-button" disabled={generating} onClick={() => onGenerate("full_rewrite", selected.id)}>全文重写</button><button className="primary-button" disabled={generating} onClick={() => onGenerate("new", selected.id)}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}续写正文</button></div></header><textarea className="manuscript-editor" value={content} onChange={(event) => { setContent(event.target.value); setDirty(true); }} onSelect={(event) => { const target = event.currentTarget; const value = target.value.slice(target.selectionStart, target.selectionEnd); setSelection(value); onSelection(value); }} placeholder="正文" /><footer><span>{content.replace(/\s/g, "").length.toLocaleString()} 字</span><div><button disabled={!selection || generating} onClick={() => onGenerate("local_revision", selected.id, selection)}><WandSparkles size={14} />局部修改</button><button disabled={generating} onClick={() => onGenerate("variants", selected.id, selection)}><SplitSquareVertical size={14} />多个方案</button></div></footer></section>
   </div>;
 }
 
 function OutlineImportPanel({ text, onText, onPreview, onFile }: { text: string; onText: (value: string) => void; onPreview: () => void; onFile: (file: File) => void }) {
   return <section className="outline-import"><header><FileInput size={17} /><strong>导入大纲</strong><label className="file-button"><input type="file" accept=".txt,.md,.markdown,.docx" onChange={(event) => event.target.files?.[0] && onFile(event.target.files[0])} />选择文件</label></header><textarea rows={12} value={text} onChange={(event) => onText(event.target.value)} placeholder="粘贴卷、章、场景大纲" /><footer><span>TXT · Markdown · Word</span><button className="primary-button" disabled={!text.trim()} onClick={onPreview}>解析并预览</button></footer></section>;
+}
+
+function ContinuationSettingsPanel({ overview, onSave, saving }: { overview: StudioOverview; onSave: (payload: Record<string, unknown>) => void; saving: boolean }) {
+  const config = overview.state.config;
+  const [targetWords, setTargetWords] = useState(String(config.target_words ?? overview.project.target_words ?? ""));
+  const [targetChapters, setTargetChapters] = useState(String(config.target_chapters ?? ""));
+  const [targetVolumes, setTargetVolumes] = useState(String(config.target_volumes ?? ""));
+  const [directionMode, setDirectionMode] = useState(String(config.direction_mode ?? "switchable"));
+  const [userOutline, setUserOutline] = useState(String(config.user_outline ?? ""));
+
+  return <section className="continuation-settings-panel"><header><div><Settings2 size={16} /><strong>续写目标与方向</strong></div><span>{config.target_mode === "ai" ? "等待 AI 建议，可随时改为手动值" : "作者设定"}</span></header><div className="continuation-settings-grid"><label><span>目标总字数</span><input type="number" min="1" value={targetWords} onChange={(event) => setTargetWords(event.target.value)} /></label><label><span>目标总章节</span><input type="number" min="1" placeholder="由 AI 建议" value={targetChapters} onChange={(event) => setTargetChapters(event.target.value)} /></label><label><span>目标总卷数</span><input type="number" min="1" placeholder="由 AI 建议" value={targetVolumes} onChange={(event) => setTargetVolumes(event.target.value)} /></label><label><span>剧情方向</span><select value={directionMode} onChange={(event) => setDirectionMode(event.target.value)}><option value="switchable">作者与 AI 可切换</option><option value="user">以作者大纲为准</option><option value="ai">由 AI 提议</option></select></label><label className="wide"><span>作者后续大纲</span><textarea rows={3} value={userOutline} onChange={(event) => setUserOutline(event.target.value)} placeholder="可留空并审核 AI 的方向提案" /></label></div><footer><span>已导入 {Number(config.imported_volume_count ?? 0)} 卷 · {Number(config.imported_chapter_count ?? 0)} 章 · {Number(config.imported_words ?? 0).toLocaleString()} 字</span><button type="button" className="secondary-button" disabled={saving || !targetWords} onClick={() => onSave({ target_words: Number(targetWords), target_chapters: targetChapters ? Number(targetChapters) : undefined, target_volumes: targetVolumes ? Number(targetVolumes) : undefined, direction_mode: directionMode, user_outline: userOutline })}>{saving ? "保存中..." : "保存目标"}</button></footer></section>;
 }
 
 function OutlinePreviewDialog({ preview, onClose, onImport, importing }: { preview: OutlinePreview; onClose: () => void; onImport: () => void; importing: boolean }) {
@@ -559,5 +658,12 @@ function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: 
 }
 
 function statusLabel(status: Artifact["status"]) { return ({ pending: "待审核", approved: "已通过", changes_requested: "需修改", rejected: "已拒绝", superseded: "旧版本" })[status]; }
-function artifactKindLabel(kind: string) { return ({ drafting: "章节正文", revision_proposal: "正文修改方案", scene_draft: "场景正文", world: "世界观", characters: "人物关系", plot: "剧情伏笔", volumes: "分卷大纲", chapters: "章节大纲", review: "全文审阅" } as Record<string, string>)[kind] ?? kind; }
+function artifactKindLabel(kind: string) { return ({ drafting: "章节正文", revision_proposal: "正文修改方案", scene_draft: "场景正文", world: "世界观", characters: "人物关系", plot: "剧情伏笔", volumes: "分卷大纲", chapters: "章节大纲", continuation_original: "原始只读副本", continuation_analysis: "原文资料分析", continuation_outline: "反向补建大纲", continuation_plan: "续写规划", continuation_direction: "作者续写方向", review: "全文审阅" } as Record<string, string>)[kind] ?? kind; }
 function sourceLabel(source: string) { return ({ ai: "AI 生成", user: "人工修改", import: "导入", ai_chat: "对话提案" } as Record<string, string>)[source] ?? source; }
+function formatMissingChapters(numbers: number[]) {
+  if (numbers.length === 0) return "缺失章节";
+  if (numbers.length === 1) return `第 ${numbers[0]} 章`;
+  const consecutive = numbers.every((number, index) => index === 0 || number === numbers[index - 1] + 1);
+  if (consecutive) return `第 ${numbers[0]} 至 ${numbers[numbers.length - 1]} 章（共 ${numbers.length} 章）`;
+  return `缺失的 ${numbers.length} 个章节`;
+}

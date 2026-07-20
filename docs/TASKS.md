@@ -223,3 +223,29 @@
 - [x] Verify 169 backend tests, 28 frontend tests, Ruff, strict mypy, TypeScript, production build and 2 Playwright E2E tests.
 - [x] Fix manuscript review writeback controls and refresh the open chapter editor after an approved Agent draft changes the server revision.
 - [x] Record the complete acceptance matrix in `docs/V2_REQUIREMENTS_ACCEPTANCE.md`.
+- [x] Fix long chapter plans by batching each planning Agent in groups of ten and enforcing the configured chapter count.
+- [x] Add confirmed, permanently snapshotted repair for legacy Agent-title chapters and missing chapter placeholders.
+- [x] Keep the manuscript editor available during full-book review, with chapter create/delete and real save controls.
+- [x] Match production `autoflush=False` in Studio regression tests and explicitly flush writeback before stage, scene and snapshot queries.
+
+## V2.2 Half-Finished Novel Continuation
+
+- [x] Import TXT, Markdown, DOCX, text-based PDF, pasted prose, or an existing project into a continuation project.
+- [x] Preserve the complete imported manuscript as an immutable artifact and permanent project snapshot while creating an editable chapter tree.
+- [x] Add the seven-stage continuation workflow with per-item author approval gates.
+- [x] Extract structure, world rules, character relations, timeline, foreshadows, style, and unresolved plotlines with independent Agents.
+- [x] Reconstruct existing volume/chapter/scene outlines and create future chapter placeholders only after the continuation plan is approved.
+- [x] Support author/AI direction switching and manual or AI-suggested word, chapter, and volume targets.
+- [x] Require an explicit current-chapter/next-chapter choice; append current-chapter continuation without replacing imported prose.
+- [x] Pause after a major continuity conflict until the author chooses a resolution; retain approval-only AI edits and protective snapshots.
+- [x] Add backend and frontend regressions for import, PDF extraction, immutable originals, approval gates, planning, append writeback, conflict pause, entry UI, and start choice.
+- [x] Verify 176 backend tests, 31 frontend tests, Ruff, strict mypy, TypeScript, production build and 3 Playwright E2E tests.
+
+## V2.2.1 Context Window And Right Rail
+
+- [x] Use the selected model profile's context window and reserve bounded output before every Studio model call.
+- [x] Build Studio context through ContextBuilder retrieval and record included, excluded and truncated context metadata.
+- [x] Chunk long manuscripts and style references, share Map results across continuation Agents, and synthesize bounded summaries.
+- [x] Recompress and retry when a Provider still reports `context_too_long`, without silently changing models.
+- [x] Keep long chat replies inside an independently scrolling message stream with the composer fixed at the rail bottom.
+- [x] Verify 179 backend tests, 32 frontend tests and the 18-message responsive Playwright regression.

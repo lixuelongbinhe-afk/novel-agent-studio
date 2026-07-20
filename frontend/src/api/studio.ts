@@ -8,13 +8,13 @@ export type DashboardProject = {
   target_words: number;
   pending_reviews: number;
   updated_at: string;
-  entry_mode: "creative" | "outline";
+  entry_mode: "creative" | "outline" | "continuation";
 };
 
 export type StudioState = {
   id: number;
   project_id: number;
-  entry_mode: "creative" | "outline";
+  entry_mode: "creative" | "outline" | "continuation";
   stage: string;
   stage_label: string;
   review_granularity: "chapter" | "scene";
@@ -122,6 +122,13 @@ export type StudioOverview = {
   jobs: GenerationJob[];
   messages: StudioMessage[];
   snapshots: Snapshot[];
+  chapter_tree_repair: {
+    requested_count: number;
+    active_count: number;
+    suspect_chapters: Array<{ id: number; title: string; word_count: number; revision: number }>;
+    missing_numbers: number[];
+    can_repair: boolean;
+  };
   library_counts: { entities: number; timeline: number; foreshadows: number; style_guides: number };
   usage: {
     invocations: number;
@@ -186,10 +193,25 @@ export const studioApi = {
   dashboard: () => request<DashboardProject[]>("/api/studio/projects"),
   createProject: (payload: Record<string, unknown>) =>
     request<StudioOverview>("/api/studio/projects", json("POST", payload)),
+  createContinuation: (payload: Record<string, unknown>) =>
+    request<StudioOverview>("/api/studio/continuations", json("POST", payload)),
+  createContinuationFile: async (file: File, payload: Record<string, unknown>) => {
+    const body = new FormData();
+    body.append("file", file);
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") body.append(key, String(value));
+    });
+    return request<StudioOverview>("/api/studio/continuations/file", { method: "POST", body });
+  },
   project: (id: number) => request<StudioOverview>(`/api/studio/projects/${id}`),
   deleteProject: (id: number) => request<void>(`/api/studio/projects/${id}`, { method: "DELETE" }),
   updateState: (id: number, payload: Partial<StudioState>) =>
     request<StudioState>(`/api/studio/projects/${id}/state`, json("PATCH", payload)),
+  updateContinuationSettings: (id: number, payload: Record<string, unknown>) =>
+    request<StudioState>(
+      `/api/studio/projects/${id}/continuation/settings`,
+      json("PATCH", payload)
+    ),
   updateArtifact: (artifact: Artifact, patch: Partial<Artifact>) =>
     request<Artifact>(
       `/api/studio/artifacts/${artifact.id}`,
@@ -269,6 +291,11 @@ export const studioApi = {
       `/api/studio/projects/${projectId}/snapshots/${snapshotId}/restore`,
       { method: "POST" }
     ),
+  repairChapterTree: (projectId: number) =>
+    request<{ repaired: boolean; overview: StudioOverview }>(
+      `/api/studio/projects/${projectId}/chapter-tree/repair`,
+      json("POST", { confirm: true })
+    ),
   providers: () => request<StudioProvider[]>("/api/studio/providers"),
   setupProvider: (payload: Record<string, unknown>) =>
     request<StudioProvider>("/api/studio/providers", json("POST", payload)),
@@ -288,6 +315,16 @@ export const studioApi = {
     request<Chapter>(
       `/api/projects/chapters/${chapter.id}/autosave`,
       json("PUT", { title, content, expected_revision: chapter.revision })
+    ),
+  createChapter: (volumeId: number, title: string, position: number) =>
+    request<Chapter>(
+      `/api/projects/volumes/${volumeId}/chapters`,
+      json("POST", { title, content: "", position })
+    ),
+  deleteChapter: (chapter: Chapter) =>
+    request<void>(
+      `/api/projects/records/chapter/${chapter.id}?expected_revision=${chapter.revision}`,
+      { method: "DELETE" }
     ),
   exportUrl: (projectId: number, kind: "book_text" | "book_markdown" | "book_pdf") =>
     `/api/release/exports/${kind}?project_id=${projectId}`

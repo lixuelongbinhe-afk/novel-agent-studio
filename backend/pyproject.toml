@@ -1,6 +1,6 @@
 [project]
 name = "novel-agent-studio-backend"
-version = "2.1.2"
+version = "2.2.1"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",
@@ -16,6 +16,7 @@ dependencies = [
   "pystray>=0.19.5",
   "python-multipart>=0.0.20",
   "python-docx>=1.1.2",
+  "pypdf>=5.7.0",
   "reportlab>=4.2.0",
 ]
 

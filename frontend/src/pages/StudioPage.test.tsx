@@ -41,6 +41,7 @@ const overview: StudioOverview = {
   artifacts: [artifact],
   tree: { volumes: [], chapters: [], scenes: [] },
   jobs: [], messages: [], snapshots: [],
+  chapter_tree_repair: { requested_count: 4, active_count: 0, suspect_chapters: [], missing_numbers: [], can_repair: false },
   library_counts: { entities: 0, timeline: 0, foreshadows: 0, style_guides: 0 },
   usage: { invocations: 0, tokens: 0, spent: 0, limit: null, currency: "USD", percent: 0, warning: false, paused: false }
 };
@@ -50,10 +51,11 @@ vi.mock("../api/studio", () => ({
     project: vi.fn(async () => overview),
     providers: async () => [{ id: 1, provider_type: "openai_chat", name: "DeepSeek" }],
     artifactVersions: async () => [artifact, { ...artifact, id: 10, version_number: 1, status: "superseded", content: "旧版规则" }],
-    updateState: vi.fn(), updateArtifact: vi.fn(), decideArtifact: vi.fn(), generate: vi.fn(),
+    updateState: vi.fn(), updateContinuationSettings: vi.fn(), updateArtifact: vi.fn(), decideArtifact: vi.fn(), generate: vi.fn(),
     chat: vi.fn(), decideProposal: vi.fn(), previewOutline: vi.fn(), previewOutlineFile: vi.fn(),
     importOutline: vi.fn(), extractStyleReference: vi.fn(), createSnapshot: vi.fn(),
-    restoreSnapshot: vi.fn(), autosaveChapter: vi.fn(), exportUrl: vi.fn()
+    restoreSnapshot: vi.fn(), autosaveChapter: vi.fn(), createChapter: vi.fn(), deleteChapter: vi.fn(),
+    repairChapterTree: vi.fn(), exportUrl: vi.fn()
   }
 }));
 
@@ -105,6 +107,38 @@ describe("StudioPage", () => {
     }
   });
 
+  it("keeps a long assistant reply in the independently scrollable chat stream", async () => {
+    const previousMessages = overview.messages;
+    overview.messages = [{
+      id: 2,
+      project_id: 1,
+      role: "assistant" as const,
+      content: "长回复内容。".repeat(2_000),
+      context_scope: "project,plot,chapter:1",
+      proposal: null,
+      proposal_status: "none",
+      model_name: "deepseek-chat",
+      model_reason: "",
+      created_at: "2026-07-21T00:00:00Z"
+    }];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      const view = render(
+        <MemoryRouter initialEntries={["/studio/1"]}>
+          <QueryClientProvider client={client}>
+            <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await screen.findByLabelText("对话消息")).toHaveClass("chat-stream");
+      expect(view.container.querySelector(".chat-composer")).toBeInTheDocument();
+      expect(view.container.querySelector(".context-rail")).toBeInTheDocument();
+    } finally {
+      overview.messages = previousMessages;
+    }
+  });
+
   it("exposes the confirmed review and continuation controls", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(
@@ -143,6 +177,52 @@ describe("StudioPage", () => {
     expect(screen.getByRole("button", { name: "保留既有设定" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "手工合并" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保留当前正文" })).toBeInTheDocument();
+  });
+
+  it("requires the author to choose the continuation start point", async () => {
+    const continuationOverview: StudioOverview = {
+      ...overview,
+      state: {
+        ...overview.state,
+        entry_mode: "continuation",
+        stage: "drafting",
+        stage_label: "正文续写",
+        generation_mode: "manual",
+        config: { imported_chapter_count: 1, continuation_start: "choose" }
+      },
+      stages: [
+        { key: "continuation_import", label: "导入与解析" },
+        { key: "continuation_analysis", label: "资料审核" },
+        { key: "continuation_outline", label: "大纲补建" },
+        { key: "continuation_plan", label: "续写规划" },
+        { key: "drafting", label: "正文续写" },
+        { key: "review", label: "全文审阅" },
+        { key: "complete", label: "完成" }
+      ],
+      artifacts: [],
+      tree: {
+        volumes: [{ id: 1, project_id: 1, title: "第一卷", position: 1, revision: 1 }],
+        chapters: [
+          { id: 31, volume_id: 1, title: "第1章 断点", content: "门开了一半。", position: 1, word_count: 6, revision: 1, updated_at: "" },
+          { id: 32, volume_id: 1, title: "第2章", content: "", position: 2, word_count: 0, revision: 1, updated_at: "" }
+        ],
+        scenes: []
+      }
+    };
+    vi.mocked(studioApi.project).mockResolvedValue(continuationOverview);
+    vi.mocked(studioApi.updateContinuationSettings).mockResolvedValue({ ...continuationOverview.state, config: { ...continuationOverview.state.config, continuation_start: "current" } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/studio/1"]}>
+        <QueryClientProvider client={client}>
+          <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "接着写当前章" }));
+    await waitFor(() => expect(studioApi.updateContinuationSettings).toHaveBeenCalledWith(1, { continuation_start: "current" }));
+    expect(screen.getByRole("button", { name: "从下一章开始" })).toBeInTheDocument();
   });
 
   it("starts the next chapter after approval in automatic mode", async () => {
@@ -229,5 +309,32 @@ describe("StudioPage", () => {
 
     await waitFor(() => expect(editor).toHaveValue(draftContent));
     expect(screen.getByText(/正文已通过并写入章节/)).toBeInTheDocument();
+  });
+
+  it("keeps the manuscript editable during full-book review", async () => {
+    const chapter = { id: 21, volume_id: 1, title: "第一章 深渊之下", content: "可继续修改的正文", position: 1, word_count: 8, revision: 1, updated_at: "" };
+    const reviewOverview: StudioOverview = {
+      ...overview,
+      state: { ...overview.state, stage: "review", stage_label: "全文审阅", generation_mode: "manual" },
+      artifacts: [],
+      tree: {
+        volumes: [{ id: 1, project_id: 1, title: "第一卷", position: 1, revision: 1 }],
+        chapters: [chapter],
+        scenes: []
+      }
+    };
+    vi.mocked(studioApi.project).mockResolvedValue(reviewOverview);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    render(
+      <MemoryRouter initialEntries={["/studio/1"]}>
+        <QueryClientProvider client={client}>
+          <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByPlaceholderText("正文")).toHaveValue("可继续修改的正文");
+    expect(screen.getByRole("button", { name: "生成全文审阅" })).toBeInTheDocument();
   });
 });

@@ -12,10 +12,14 @@ from sqlalchemy.orm import Session
 from app import models
 from app.repositories import word_count
 from app.schemas import ModelDebugRequest, NormalizedContentPart, NormalizedMessage
+from app.schemas.context import ContextBuildRequest
 from app.schemas.studio import (
     ArtifactDecision,
     ArtifactUpdate,
+    ChapterTreeRepairRequest,
     ChatRequest,
+    ContinuationImportRequest,
+    ContinuationSettingsUpdate,
     GenerateRequest,
     OutlineImportRequest,
     ProviderSetup,
@@ -23,12 +27,13 @@ from app.schemas.studio import (
     StudioProjectCreate,
     StudioStateUpdate,
 )
-from app.services import model_execution
+from app.services import context_builder, model_execution
 from app.services.credential_store import (
     delete_provider_secret,
     has_provider_secret,
     set_provider_secret,
 )
+from app.services.usage_control import estimate_text_tokens
 
 
 STAGE_ORDER = [
@@ -38,6 +43,15 @@ STAGE_ORDER = [
     "plot",
     "volumes",
     "chapters",
+    "drafting",
+    "review",
+    "complete",
+]
+CONTINUATION_STAGE_ORDER = [
+    "continuation_import",
+    "continuation_analysis",
+    "continuation_outline",
+    "continuation_plan",
     "drafting",
     "review",
     "complete",
@@ -52,8 +66,30 @@ STAGE_LABELS = {
     "drafting": "正文创作",
     "review": "全文审阅",
     "complete": "完成",
+    "continuation_import": "导入与解析",
+    "continuation_analysis": "资料审核",
+    "continuation_outline": "大纲补建",
+    "continuation_plan": "续写规划",
 }
 PHASE_AGENTS: dict[str, list[tuple[str, str]]] = {
+    "continuation_analysis": [
+        ("章节结构分析", "核对已导入卷章结构、叙事进度与当前断点，指出识别不确定项。"),
+        ("世界观提取", "从原文提取世界规则、时代背景、地点体系、组织与约束。"),
+        ("人物关系提取", "提取人物身份、目标、秘密、关系、当前状态与人物弧光。"),
+        ("时间线提取", "整理已发生事件的时间顺序、因果关系和时间线疑点。"),
+        ("伏笔与线索提取", "整理已埋设、已发展、已回收和仍待回收的伏笔与线索。"),
+        ("原文文风档案", "提取叙事视角、句式节奏、对白习惯、用词尺度与描写密度。"),
+        ("未完剧情线", "识别主线、支线、角色目标、悬念和尚未解决的剧情承诺。"),
+    ],
+    "continuation_outline": [
+        ("既有分卷大纲", "根据已导入正文反向补建已有分卷的大纲、目标与转折。"),
+        ("既有章节大纲", "逐章反向补建目标、冲突、转折、结果和承接关系。"),
+        ("既有场景大纲", "为已有章节补建场景顺序、视角、地点、人物和场景结果。"),
+    ],
+    "continuation_plan": [
+        ("续写方向与结局", "结合作者方向与未完剧情线，提出可审核的后续走向和结局方案。"),
+        ("未来卷章规划", "规划未来分卷、章节和场景，衔接原文断点并完成全部剧情承诺。"),
+    ],
     "world": [
         ("定位与主题策划", "明确题材定位、目标读者、核心主题、叙事基调与篇幅策略。"),
         ("世界观架构师", "建立自洽的世界规则、时代背景、地点体系与核心矛盾。"),
@@ -87,6 +123,7 @@ PHASE_AGENTS: dict[str, list[tuple[str, str]]] = {
         ("一致性审校", "检查人物、地点、时间线、规则和事实冲突。"),
     ],
 }
+AGENT_HEADINGS = {name for agents in PHASE_AGENTS.values() for name, _ in agents}
 
 
 def create_project(db: Session, payload: StudioProjectCreate) -> dict[str, Any]:
@@ -121,6 +158,252 @@ def create_project(db: Session, payload: StudioProjectCreate) -> dict[str, Any]:
     ensure_default_context_policy(db, project.id)
     db.flush()
     return project_overview(db, project.id)
+
+
+def create_continuation_project(
+    db: Session, payload: ContinuationImportRequest
+) -> dict[str, Any]:
+    if payload.source_project_id is not None:
+        source_text, source_name = _source_project_manuscript(db, payload.source_project_id)
+    else:
+        source_text = str(payload.text or "").strip()
+        source_name = payload.source_name.strip() or "粘贴正文"
+    if not source_text:
+        raise HTTPException(status_code=422, detail="导入正文不能为空")
+
+    parsed = parse_manuscript(source_text, payload.title.strip())
+    imported_words = word_count(source_text)
+    target_words = payload.target_words or max(imported_words + 50_000, imported_words * 2)
+    project = models.Project(
+        title=payload.title.strip(),
+        summary=f"从《{source_name}》导入的半成品小说，共 {parsed['chapter_count']} 章。",
+        language="zh-CN",
+        target_words=target_words,
+    )
+    db.add(project)
+    db.flush()
+    config = {
+        "source_name": source_name,
+        "source_type": "project" if payload.source_project_id is not None else "text",
+        "source_project_id": payload.source_project_id,
+        "imported_words": imported_words,
+        "imported_chapter_count": parsed["chapter_count"],
+        "imported_volume_count": parsed["volume_count"],
+        "target_words": payload.target_words,
+        "target_chapters": payload.target_chapters,
+        "target_volumes": payload.target_volumes,
+        "target_mode": "manual" if any(
+            value is not None
+            for value in (payload.target_words, payload.target_chapters, payload.target_volumes)
+        ) else "ai",
+        "continuation_start": payload.continuation_start,
+        "direction_mode": payload.direction_mode,
+        "user_outline": payload.user_outline.strip(),
+        "conflict_paused": False,
+    }
+    state = models.StudioProjectState(
+        project_id=project.id,
+        entry_mode="continuation",
+        stage="continuation_analysis",
+        config_json=_dump(config),
+    )
+    db.add(state)
+    original = models.CreativeArtifact(
+        project_id=project.id,
+        kind="continuation_original",
+        title=f"原始只读副本 · {source_name}",
+        content=source_text,
+        status="approved",
+        source="import",
+        position=0,
+        metadata_json=_dump(
+            {
+                "readonly": True,
+                "permanent": True,
+                "source_name": source_name,
+                "characters": len(source_text),
+                "words": imported_words,
+                "series_key": "continuation:original",
+            }
+        ),
+    )
+    db.add(original)
+    if payload.user_outline.strip():
+        db.add(
+            models.CreativeArtifact(
+                project_id=project.id,
+                kind="continuation_direction",
+                title="作者提供的后续方向",
+                content=payload.user_outline.strip(),
+                status="approved",
+                source="user",
+                position=310,
+                metadata_json=_dump({"series_key": "continuation:user-direction"}),
+            )
+        )
+    _create_imported_manuscript_tree(db, project.id, parsed)
+    from app.services.context_memory import ensure_default_context_policy
+
+    ensure_default_context_policy(db, project.id)
+    db.flush()
+    create_snapshot(
+        db,
+        project.id,
+        SnapshotCreate(
+            label="半成品原文导入完成",
+            reason="永久保存导入原文、识别出的卷章结构和可编辑正文副本",
+            special=True,
+        ),
+    )
+    db.flush()
+    return project_overview(db, project.id)
+
+
+def update_continuation_settings(
+    db: Session,
+    project_id: int,
+    payload: ContinuationSettingsUpdate,
+) -> dict[str, Any]:
+    state = _state(db, project_id)
+    if state.entry_mode != "continuation":
+        raise HTTPException(status_code=409, detail="该项目不是半成品续写项目")
+    config = _json_object(state.config_json)
+    for key, value in payload.model_dump(exclude_none=True).items():
+        config[key] = value.strip() if isinstance(value, str) else value
+    if any(key in payload.model_fields_set for key in ("target_words", "target_chapters", "target_volumes")):
+        config["target_mode"] = "manual"
+    if payload.target_words is not None:
+        _project(db, project_id).target_words = payload.target_words
+    state.config_json = _dump(config)
+    state.revision += 1
+    db.flush()
+    return _state_record(state)
+
+
+def parse_manuscript(text: str, title: str = "导入小说") -> dict[str, Any]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    volume_pattern = re.compile(r"^(第.{1,12}卷(?:\s|[:：].*|$).*)$", re.I)
+    chapter_pattern = re.compile(
+        r"^((?:第.{1,12}章(?:\s|[:：].*|$).*)|(?:chapter\s+\d+.*))$", re.I
+    )
+    volumes: list[dict[str, Any]] = []
+    current_volume: dict[str, Any] | None = None
+    current_title: str | None = None
+    body: list[str] = []
+
+    def ensure_volume() -> dict[str, Any]:
+        nonlocal current_volume
+        if current_volume is None:
+            current_volume = {"title": "第一卷", "chapters": []}
+            volumes.append(current_volume)
+        return current_volume
+
+    def flush_chapter() -> None:
+        nonlocal current_title, body
+        content = "\n".join(body).strip()
+        if current_title is not None or content:
+            volume = ensure_volume()
+            volume["chapters"].append(
+                {
+                    "title": current_title or ("序章" if not volume["chapters"] else "未命名章节"),
+                    "content": content,
+                }
+            )
+        current_title = None
+        body = []
+
+    for raw_line in normalized.splitlines():
+        stripped = raw_line.strip()
+        heading = re.sub(r"^#{1,6}\s+", "", stripped).strip()
+        if volume_pattern.match(heading):
+            flush_chapter()
+            current_volume = {"title": heading, "chapters": []}
+            volumes.append(current_volume)
+            continue
+        if chapter_pattern.match(heading):
+            flush_chapter()
+            ensure_volume()
+            current_title = heading
+            continue
+        body.append(raw_line)
+    flush_chapter()
+    volumes = [volume for volume in volumes if volume["chapters"]]
+    if not volumes:
+        volumes = [{"title": "第一卷", "chapters": [{"title": "第一章", "content": normalized}]}]
+    chapter_count = sum(len(volume["chapters"]) for volume in volumes)
+    return {
+        "title": title,
+        "volumes": volumes,
+        "volume_count": len(volumes),
+        "chapter_count": chapter_count,
+        "word_count": word_count(normalized),
+        "warnings": ["只识别到一个章节，请确认原文中的章节标题格式。"] if chapter_count == 1 else [],
+    }
+
+
+def _source_project_manuscript(db: Session, project_id: int) -> tuple[str, str]:
+    source = _project(db, project_id)
+    volumes = list(db.scalars(
+        select(models.Volume)
+        .where(models.Volume.project_id == project_id, models.Volume.deleted_at.is_(None))
+        .order_by(models.Volume.position, models.Volume.id)
+    ).all())
+    blocks: list[str] = []
+    for volume in volumes:
+        blocks.append(f"# {volume.title}")
+        chapters = db.scalars(
+            select(models.Chapter)
+            .where(models.Chapter.volume_id == volume.id, models.Chapter.deleted_at.is_(None))
+            .order_by(models.Chapter.position, models.Chapter.id)
+        ).all()
+        for chapter in chapters:
+            blocks.extend((f"## {chapter.title}", chapter.content))
+    text = "\n\n".join(blocks).strip()
+    if not text:
+        raise HTTPException(status_code=409, detail="所选项目没有可导入的正文")
+    return text, source.title
+
+
+def _create_imported_manuscript_tree(
+    db: Session, project_id: int, parsed: dict[str, Any]
+) -> None:
+    for volume_position, volume_data in enumerate(parsed["volumes"], 1):
+        volume = models.Volume(
+            project_id=project_id,
+            title=str(volume_data["title"]),
+            position=volume_position,
+        )
+        db.add(volume)
+        db.flush()
+        for chapter_position, chapter_data in enumerate(volume_data["chapters"], 1):
+            content = str(chapter_data.get("content") or "")
+            chapter = models.Chapter(
+                volume_id=volume.id,
+                title=str(chapter_data["title"]),
+                content=content,
+                position=chapter_position,
+                word_count=word_count(content),
+            )
+            db.add(chapter)
+            db.flush()
+            db.add(
+                models.ChapterVersion(
+                    chapter_id=chapter.id,
+                    title=chapter.title,
+                    content=content,
+                    word_count=chapter.word_count,
+                    source="continuation_import",
+                )
+            )
+            compact = re.sub(r"\s+", " ", content).strip()
+            db.add(
+                models.ChapterSummary(
+                    chapter_id=chapter.id,
+                    summary=(compact[:800] + ("…" if len(compact) > 800 else "")),
+                    source="continuation_import",
+                    token_count=max(1, min(len(compact), 800) // 2),
+                )
+            )
 
 
 def dashboard(db: Session) -> list[dict[str, Any]]:
@@ -251,7 +534,10 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
     return {
         "project": _record(project),
         "state": _state_record(state),
-        "stages": [{"key": key, "label": STAGE_LABELS[key]} for key in STAGE_ORDER],
+        "stages": [
+            {"key": key, "label": STAGE_LABELS[key]}
+            for key in _stage_order(state)
+        ],
         "artifacts": [_artifact_record(item) for item in artifacts],
         "tree": {
             "volumes": [_record(item) for item in volumes],
@@ -261,6 +547,7 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
         "jobs": [_record(item) for item in jobs],
         "messages": [_message_record(item) for item in reversed(messages)],
         "snapshots": [_snapshot_record(item) for item in snapshots],
+        "chapter_tree_repair": chapter_tree_repair_preview(db, project_id),
         "library_counts": library_counts,
         "usage": _usage_summary(db, project_id, state),
     }
@@ -281,6 +568,8 @@ def update_artifact(
     db: Session, artifact_id: int, payload: ArtifactUpdate
 ) -> dict[str, Any]:
     current = _artifact(db, artifact_id)
+    if _json_object(current.metadata_json).get("readonly"):
+        raise HTTPException(status_code=409, detail="原始导入副本为永久只读内容，不能修改")
     _require_revision(current, payload.expected_revision)
     current.status = "superseded"
     current.revision += 1
@@ -338,12 +627,15 @@ def decide_artifact(
             artifact.notes = (payload.note + "\n保留既有设定，未写入候选正文。").strip()
             artifact.revision += 1
             db.flush()
+            _refresh_continuation_conflict_pause(db, artifact.project_id)
+            _advance_stage(db, artifact)
             return _artifact_record(artifact)
         if payload.conflict_resolution == "manual_merge" and artifact.source != "user":
             raise HTTPException(status_code=409, detail="请先编辑合并内容并保存新版本，再选择手工合并")
     if payload.action == "approve":
         artifact.status = "approved"
         _apply_artifact(db, artifact)
+        db.flush()
         _advance_stage(db, artifact)
     elif payload.action == "request_changes":
         artifact.status = "changes_requested"
@@ -351,6 +643,8 @@ def decide_artifact(
         artifact.status = "rejected"
     artifact.revision += 1
     db.flush()
+    if payload.action in {"approve", "reject"}:
+        _refresh_continuation_conflict_pause(db, artifact.project_id)
     return _artifact_record(artifact)
 
 
@@ -382,47 +676,118 @@ async def generate(
     db.add(job)
     db.commit()
 
-    context = _generation_context(db, project_id, payload.chapter_id)
+    phase_max_tokens = _phase_output_tokens(phase)
+    context, context_metadata = _generation_context(
+        db,
+        project_id,
+        payload.chapter_id,
+        profile=profile,
+        use_demo=payload.use_demo_model,
+        max_tokens=phase_max_tokens,
+        query=(
+            f"{STAGE_LABELS.get(phase, phase)}；{payload.instruction or '按已审核资料执行'}"
+        ),
+    )
+    if phase in {"continuation_analysis", "continuation_outline"}:
+        mapped_context, mapped_metadata = await _continuation_source_context(
+            db,
+            project_id,
+            phase,
+            profile,
+            use_demo=payload.use_demo_model,
+            max_tokens=phase_max_tokens,
+        )
+        context = _fit_text_to_token_budget(
+            f"{context}\n\n{mapped_context}",
+            _studio_input_budget(profile, payload.use_demo_model, phase_max_tokens),
+        )
+        context_metadata.update(mapped_metadata)
+    job.model_reason = f"{reason} {_context_reason(context_metadata)}"
+    db.commit()
     outputs: list[str] = []
     try:
+        requested_chapters = max(
+            1,
+            min(
+                int(_json_object(state.config_json).get("chapter_count") or 12),
+                10_000,
+            ),
+        )
+        chapter_ranges = (
+            _chapter_generation_ranges(requested_chapters)
+            if phase == "chapters"
+            else [(1, 1)]
+        )
+        total_calls = len(phase_agents) * len(chapter_ranges)
+        completed_calls = 0
         for index, (agent_name, responsibility) in enumerate(phase_agents):
-            prompt = _phase_prompt(
-                project,
-                phase,
-                agent_name,
-                responsibility,
-                context,
-                payload,
-                outputs,
-            )
-            response = await _model_call(
-                db,
-                project_id,
-                prompt,
-                profile,
-                use_demo=payload.use_demo_model,
-                max_tokens=3600 if phase == "drafting" else 2200,
-            )
-            if response.error is not None:
-                raise RuntimeError(f"{response.error.code}: {response.error.message}")
-            outputs.append(f"## {agent_name}\n\n{response.text.strip()}")
-            _record_response_cost(state, response)
-            job.progress = min(90, int(((index + 1) / len(phase_agents)) * 85) + 5)
-            db.commit()
+            agent_parts: list[str] = []
+            for range_start, range_end in chapter_ranges:
+                batch_payload = payload
+                collaborator_outputs = outputs
+                if phase == "chapters":
+                    batch_requirement = (
+                        f"本次只规划第 {range_start} 至第 {range_end} 章，共 "
+                        f"{range_end - range_start + 1} 章。必须逐章输出二级标题“## 第N章 标题”，"
+                        "不得省略、合并或输出范围外章节。"
+                    )
+                    instruction = "\n".join(
+                        item for item in [payload.instruction.strip(), batch_requirement] if item
+                    )
+                    batch_payload = payload.model_copy(update={"instruction": instruction})
+                    collaborator_outputs = [
+                        _chapter_plan_excerpt(item, range_start, range_end)
+                        for item in outputs
+                    ]
+                prompt = _phase_prompt(
+                    project,
+                    phase,
+                    agent_name,
+                    responsibility,
+                    context,
+                    batch_payload,
+                    collaborator_outputs,
+                )
+                response = await _model_call(
+                    db,
+                    project_id,
+                    prompt,
+                    profile,
+                    use_demo=payload.use_demo_model,
+                    max_tokens=phase_max_tokens,
+                )
+                if response.error is not None:
+                    raise RuntimeError(f"{response.error.code}: {response.error.message}")
+                agent_parts.append(response.text.strip())
+                _record_response_cost(state, response)
+                completed_calls += 1
+                job.progress = min(90, int((completed_calls / total_calls) * 85) + 5)
+                db.commit()
+            outputs.append(f"## {agent_name}\n\n" + "\n\n".join(agent_parts))
         metadata: dict[str, Any] = {
             "agents": [name for name, _ in phase_agents],
             "model": job.model_name,
             "model_reason": reason,
             "chapter_id": payload.chapter_id,
             "mode": payload.mode,
+            "context": context_metadata,
         }
         artifact_kind = phase
-        if payload.mode != "new":
+        if payload.mode not in {"new", "continue"}:
             artifact_kind = "revision_proposal"
             metadata["revision_mode"] = payload.mode
             metadata["selected_text"] = payload.selected_text
         artifacts: list[models.CreativeArtifact] = []
-        if phase in {"world", "characters", "plot", "volumes", "chapters"}:
+        if phase in {
+            "world",
+            "characters",
+            "plot",
+            "volumes",
+            "chapters",
+            "continuation_analysis",
+            "continuation_outline",
+            "continuation_plan",
+        }:
             for agent_index, ((agent_name, _), output) in enumerate(
                 zip(phase_agents, outputs, strict=True)
             ):
@@ -477,10 +842,28 @@ async def generate(
         else:
             metadata["series_key"] = f"{artifact_kind}:{payload.chapter_id or 0}:{payload.mode}"
             _supersede_series(db, project_id, str(metadata["series_key"]))
-            artifacts.append(_new_artifact(project_id, artifact_kind, _artifact_title(phase, payload), "\n\n".join(outputs), metadata, 0))
+            content = outputs[-1] if phase == "drafting" else "\n\n".join(outputs)
+            artifacts.append(
+                _new_artifact(
+                    project_id,
+                    artifact_kind,
+                    _artifact_title(phase, payload),
+                    content,
+                    metadata,
+                    0,
+                )
+            )
         for artifact in artifacts:
             _mark_conflicts(artifact)
             db.add(artifact)
+        if state.entry_mode == "continuation" and any(
+            _json_object(artifact.metadata_json).get("requires_author_decision")
+            for artifact in artifacts
+        ):
+            state_config = _json_object(state.config_json)
+            state_config["conflict_paused"] = True
+            state.config_json = _dump(state_config)
+            state.revision += 1
         db.flush()
         job.result_artifact_id = artifacts[0].id
         job.status = "completed"
@@ -515,7 +898,15 @@ async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, 
     db.add(user_message)
     db.commit()
     profile, reason = _select_model(db, state, payload.use_demo_model)
-    context = _generation_context(db, project_id, payload.chapter_id)
+    context, context_metadata = _generation_context(
+        db,
+        project_id,
+        payload.chapter_id,
+        profile=profile,
+        use_demo=payload.use_demo_model,
+        max_tokens=2200,
+        query=payload.message,
+    )
     prompt = (
         "你是小说智能体工作室的总编助理。回答必须基于自动注入的项目上下文。"
         "若用户要求修改内容，先给出完整修改提案，不要假装已经写入。\n\n"
@@ -536,7 +927,7 @@ async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, 
         proposal_json=_dump(proposal) if proposal is not None else "null",
         proposal_status="pending" if proposal is not None else "none",
         model_name=profile.display_name if profile is not None else "内置演示模型",
-        model_reason=reason,
+        model_reason=f"{reason} {_context_reason(context_metadata)}",
     )
     db.add(assistant)
     _record_response_cost(state, response)
@@ -625,6 +1016,8 @@ def parse_outline(text: str, title: str = "导入大纲") -> dict[str, Any]:
         heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         level = len(heading.group(1)) if heading else 0
         label = heading.group(2).strip() if heading else stripped
+        if heading and label in AGENT_HEADINGS:
+            continue
         is_volume = bool(re.match(r"^第.{1,12}卷(?:\s|[:：]|$)", label, re.I)) or (
             level == 1 and not volumes
         )
@@ -928,6 +1321,10 @@ def _state(db: Session, project_id: int) -> models.StudioProjectState:
     return state
 
 
+def _stage_order(state: models.StudioProjectState) -> list[str]:
+    return CONTINUATION_STAGE_ORDER if state.entry_mode == "continuation" else STAGE_ORDER
+
+
 def _project(db: Session, project_id: int) -> models.Project:
     project = db.scalar(
         select(models.Project).where(
@@ -962,6 +1359,8 @@ def _advance_stage(db: Session, artifact: models.CreativeArtifact) -> None:
             return
         if phase == "chapters":
             _ensure_chapter_tree_from_plan(db, artifact.project_id)
+        elif phase == "continuation_plan":
+            _ensure_continuation_tree_from_plan(db, artifact.project_id)
     if phase == "scene_draft":
         chapter_id = int(_json_object(artifact.metadata_json).get("chapter_id") or 0)
         candidates = db.scalars(select(models.CreativeArtifact).where(
@@ -981,10 +1380,11 @@ def _advance_stage(db: Session, artifact: models.CreativeArtifact) -> None:
     if phase == "drafting":
         _maybe_finish_drafting(db, artifact.project_id)
         return
-    if phase in STAGE_ORDER:
-        index = STAGE_ORDER.index(phase)
-        if index + 1 < len(STAGE_ORDER):
-            state.stage = STAGE_ORDER[index + 1]
+    order = _stage_order(state)
+    if phase in order:
+        index = order.index(phase)
+        if index + 1 < len(order):
+            state.stage = order[index + 1]
             state.revision += 1
 
 
@@ -1004,6 +1404,7 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
         chapter.word_count = word_count(chapter.content)
         chapter.revision += 1
         _update_chapter_memory(db, artifact.project_id, chapter)
+        db.flush()
         _maybe_special_snapshot(db, artifact.project_id, chapter)
     elif artifact.kind == "drafting":
         chapter_id = int(metadata.get("chapter_id") or 0)
@@ -1014,10 +1415,15 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
                 artifact.project_id,
                 SnapshotCreate(label="AI 正文写入前", reason=f"应用：{artifact.title}"),
             )
-            chapter.content = artifact.content
+            mode = str(metadata.get("mode") or "new")
+            if mode == "continue" and chapter.content.strip():
+                chapter.content = chapter.content.rstrip() + "\n\n" + artifact.content.lstrip()
+            else:
+                chapter.content = artifact.content
             chapter.word_count = word_count(chapter.content)
             chapter.revision += 1
             _update_chapter_memory(db, artifact.project_id, chapter)
+            db.flush()
             _maybe_special_snapshot(db, artifact.project_id, chapter)
     elif artifact.kind == "scene_draft":
         scene = db.get(models.Scene, int(metadata.get("scene_id") or 0))
@@ -1030,6 +1436,7 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
             )
             scene.content = artifact.content
             scene.revision += 1
+            db.flush()
             scene_contents = db.scalars(
                 select(models.Scene.content).where(
                     models.Scene.chapter_id == chapter.id,
@@ -1040,6 +1447,7 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
             chapter.word_count = word_count(chapter.content)
             chapter.revision += 1
             _update_chapter_memory(db, artifact.project_id, chapter)
+            db.flush()
             _maybe_special_snapshot(db, artifact.project_id, chapter)
     elif artifact.kind == "chapters" and artifact.source == "import":
         _ensure_chapter_tree_from_plan(db, artifact.project_id)
@@ -1136,12 +1544,43 @@ def _phase_complete(db: Session, project_id: int, phase: str) -> bool:
             models.CreativeArtifact.deleted_at.is_(None),
         )
     ).all()
-    if not artifacts or any(item.status != "approved" for item in artifacts):
+    def handled(item: models.CreativeArtifact) -> bool:
+        metadata = _json_object(item.metadata_json)
+        return item.status == "approved" or (
+            item.status == "rejected" and metadata.get("conflict_resolution") == "preserve_canon"
+        )
+
+    if not artifacts or any(not handled(item) for item in artifacts):
         return False
     approved = {
-        str(_json_object(item.metadata_json).get("agent_name") or "") for item in artifacts
+        str(_json_object(item.metadata_json).get("agent_name") or "")
+        for item in artifacts
+        if handled(item)
     }
     return required <= approved
+
+
+def _refresh_continuation_conflict_pause(db: Session, project_id: int) -> None:
+    state = _state(db, project_id)
+    if state.entry_mode != "continuation":
+        return
+    candidates = db.scalars(
+        select(models.CreativeArtifact).where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+    ).all()
+    paused = any(
+        bool(_json_object(item.metadata_json).get("requires_author_decision"))
+        for item in candidates
+    )
+    config = _json_object(state.config_json)
+    if bool(config.get("conflict_paused")) != paused:
+        config["conflict_paused"] = paused
+        state.config_json = _dump(config)
+        state.revision += 1
+        db.flush()
 
 
 def _supersede_series(db: Session, project_id: int, series_key: str) -> None:
@@ -1183,43 +1622,41 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
         )
         .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id)
     ).all()
-    source = "\n\n".join(item.content for item in approved)
-    parsed = parse_outline(source, _project(db, project_id).title)
-    parsed_chapters = [
-        chapter
-        for volume in parsed["volumes"]
-        for chapter in volume["chapters"]
+    chapter_plans = [
+        item
+        for item in approved
+        if str(_json_object(item.metadata_json).get("agent_name") or item.title)
+        == "章节规划师"
     ]
-    recognized_chapters = sum(
-        1
-        for chapter in parsed_chapters
-        if re.match(r"^(第.{1,12}章(?:\s|[:：]|$)|chapter\s+\d+)", str(chapter["title"]), re.I)
+    source = "\n\n".join(item.content for item in (chapter_plans or approved))
+    parsed = parse_outline(source, _project(db, project_id).title)
+    parsed["volumes"] = _normalize_generated_chapter_plan(
+        parsed["volumes"], requested_chapters
     )
-    if recognized_chapters < 2:
-        volume_count = max(1, min(8, (requested_chapters + 19) // 20))
-        volumes: list[dict[str, Any]] = []
-        chapter_number = 1
-        for volume_number in range(1, volume_count + 1):
-            remaining = requested_chapters - chapter_number + 1
-            slots = (remaining + volume_count - volume_number) // (
-                volume_count - volume_number + 1
+    scene_plans = [
+        item
+        for item in approved
+        if str(_json_object(item.metadata_json).get("agent_name") or item.title)
+        == "场景规划师"
+    ]
+    scenes_by_chapter: dict[int, list[dict[str, Any]]] = {}
+    if scene_plans:
+        scene_source = "\n\n".join(item.content for item in scene_plans)
+        scene_outline = parse_outline(scene_source, _project(db, project_id).title)
+        for scene_volume in scene_outline["volumes"]:
+            for scene_chapter in scene_volume["chapters"]:
+                number = _chapter_title_number(str(scene_chapter.get("title") or ""))
+                if number is not None and scene_chapter.get("scenes"):
+                    scenes_by_chapter[number] = cast(
+                        list[dict[str, Any]], scene_chapter["scenes"]
+                    )
+    for planned_volume in parsed["volumes"]:
+        for planned_chapter in planned_volume["chapters"]:
+            number = _chapter_title_number(str(planned_chapter.get("title") or ""))
+            planned_chapter["scenes"] = scenes_by_chapter.get(
+                number or 0,
+                _default_chapter_scenes(str(planned_chapter.get("synopsis") or "")),
             )
-            chapters: list[dict[str, Any]] = []
-            for _ in range(slots):
-                chapters.append(
-                    {
-                        "title": f"第{chapter_number}章",
-                        "synopsis": f"依据已批准的章节与场景规划完成第 {chapter_number} 章。",
-                        "scenes": [
-                            {"title": "场景一 起势", "synopsis": "建立本章目标与即时阻力。"},
-                            {"title": "场景二 对抗", "synopsis": "推进冲突并揭示新信息。"},
-                            {"title": "场景三 转折", "synopsis": "形成变化并留下后续钩子。"},
-                        ],
-                    }
-                )
-                chapter_number += 1
-            volumes.append({"title": f"第{volume_number}卷", "chapters": chapters})
-        parsed["volumes"] = volumes
     for volume_position, volume_data in enumerate(parsed["volumes"], 1):
         volume = models.Volume(
             project_id=project_id,
@@ -1238,9 +1675,9 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
             )
             db.add(chapter)
             db.flush()
-            scene_data = chapter_data.get("scenes") or [
-                {"title": "场景一", "synopsis": str(chapter_data.get("synopsis") or "")}
-            ]
+            scene_data = chapter_data.get("scenes") or _default_chapter_scenes(
+                str(chapter_data.get("synopsis") or "")
+            )
             for scene_position, scene in enumerate(scene_data, 1):
                 db.add(
                     models.Scene(
@@ -1252,6 +1689,330 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
                 )
 
 
+def _ensure_continuation_tree_from_plan(db: Session, project_id: int) -> None:
+    state = _state(db, project_id)
+    config = _json_object(state.config_json)
+    volumes = list(db.scalars(
+        select(models.Volume)
+        .where(models.Volume.project_id == project_id, models.Volume.deleted_at.is_(None))
+        .order_by(models.Volume.position, models.Volume.id)
+    ).all())
+    if not volumes:
+        raise HTTPException(status_code=409, detail="导入正文没有可用分卷")
+    existing_chapters = db.scalars(
+        select(models.Chapter)
+        .where(
+            models.Chapter.volume_id.in_([volume.id for volume in volumes]),
+            models.Chapter.deleted_at.is_(None),
+        )
+        .order_by(models.Chapter.position, models.Chapter.id)
+    ).all()
+    imported_count = int(config.get("imported_chapter_count") or len(existing_chapters))
+    artifacts = db.scalars(
+        select(models.CreativeArtifact)
+        .where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.kind == "continuation_plan",
+            models.CreativeArtifact.status == "approved",
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+        .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id)
+    ).all()
+    future_artifacts = [
+        item
+        for item in artifacts
+        if str(_json_object(item.metadata_json).get("agent_name") or item.title)
+        == "未来卷章规划"
+    ]
+    source = "\n\n".join(item.content for item in (future_artifacts or artifacts))
+    parsed = parse_outline(source, _project(db, project_id).title)
+    candidates = [
+        chapter
+        for volume in parsed["volumes"]
+        for chapter in volume["chapters"]
+        if (_chapter_title_number(str(chapter.get("title") or "")) or imported_count + 1)
+        > imported_count
+    ]
+    configured_target = config.get("target_chapters")
+    target_chapters = (
+        max(imported_count, int(configured_target))
+        if configured_target is not None
+        else max(imported_count + len(candidates), imported_count + 12)
+    )
+    required = max(0, target_chapters - len(existing_chapters))
+    desired_volumes = max(
+        len(volumes), int(config.get("target_volumes") or len(parsed["volumes"]) or len(volumes))
+    )
+    while len(volumes) < desired_volumes:
+        volume = models.Volume(
+            project_id=project_id,
+            title=f"第{len(volumes) + 1}卷 续篇",
+            position=len(volumes) + 1,
+        )
+        db.add(volume)
+        db.flush()
+        volumes.append(volume)
+    target_volume = volumes[-1]
+    max_position = int(
+        db.scalar(
+            select(func.max(models.Chapter.position)).where(
+                models.Chapter.volume_id == target_volume.id,
+                models.Chapter.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    for offset in range(required):
+        number = len(existing_chapters) + offset + 1
+        planned = candidates[offset] if offset < len(candidates) else {}
+        title = str(planned.get("title") or f"第{number}章")
+        if _chapter_title_number(title) is None:
+            title = f"第{number}章 {title}"
+        chapter = models.Chapter(
+            volume_id=target_volume.id,
+            title=title,
+            content="",
+            position=max_position + offset + 1,
+            word_count=0,
+        )
+        db.add(chapter)
+        db.flush()
+        scenes = planned.get("scenes") or _default_chapter_scenes(
+            str(planned.get("synopsis") or "")
+        )
+        for scene_position, scene in enumerate(scenes, 1):
+            db.add(
+                models.Scene(
+                    chapter_id=chapter.id,
+                    title=str(scene.get("title") or f"场景{scene_position}"),
+                    synopsis=str(scene.get("synopsis") or ""),
+                    position=scene_position,
+                )
+            )
+    config["target_chapters"] = target_chapters
+    config["target_volumes"] = desired_volumes
+    config["plan_confirmed"] = True
+    state.config_json = _dump(config)
+    state.revision += 1
+    db.flush()
+
+
+def _chapter_title_number(title: str) -> int | None:
+    match = re.match(r"^第\s*(\d+)\s*章(?:\s|[:：]|$)", title, re.I)
+    if match:
+        return int(match.group(1))
+    match = re.match(r"^chapter\s+(\d+)(?:\s|[:：]|$)", title, re.I)
+    return int(match.group(1)) if match else None
+
+
+def _chapter_generation_ranges(
+    requested_chapters: int, batch_size: int = 10
+) -> list[tuple[int, int]]:
+    return [
+        (start, min(start + batch_size - 1, requested_chapters))
+        for start in range(1, requested_chapters + 1, batch_size)
+    ]
+
+
+def _chapter_plan_excerpt(text: str, start: int, end: int) -> str:
+    lines = text.splitlines()
+    selected: list[str] = []
+    include = False
+    for line in lines:
+        heading = re.match(r"^##\s+(.+)$", line.strip())
+        if heading:
+            number = _chapter_title_number(heading.group(1).strip())
+            include = number is not None and start <= number <= end
+        if include:
+            selected.append(line)
+    return "\n".join(selected)
+
+
+def _default_chapter_scenes(synopsis: str = "") -> list[dict[str, str]]:
+    return [
+        {"title": "场景一 起势", "synopsis": synopsis or "建立本章目标与即时阻力。"},
+        {"title": "场景二 对抗", "synopsis": "推进冲突并揭示新信息。"},
+        {"title": "场景三 转折", "synopsis": "形成变化并留下后续钩子。"},
+    ]
+
+
+def _normalize_generated_chapter_plan(
+    volumes: list[dict[str, Any]], requested_chapters: int
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    used_numbers: set[int] = set()
+    total = 0
+    for volume in volumes:
+        chapters: list[dict[str, Any]] = []
+        for chapter in cast(list[dict[str, Any]], volume.get("chapters") or []):
+            title = str(chapter.get("title") or "").strip()
+            number = _chapter_title_number(title)
+            if number is None or number in used_numbers or total >= requested_chapters:
+                continue
+            used_numbers.add(number)
+            chapters.append(chapter)
+            total += 1
+        if chapters:
+            normalized.append({"title": str(volume.get("title") or "第一卷"), "chapters": chapters})
+    if not normalized:
+        normalized = [{"title": "第一卷", "chapters": []}]
+    for number in range(1, requested_chapters + 1):
+        if total >= requested_chapters:
+            break
+        if number in used_numbers:
+            continue
+        normalized[-1]["chapters"].append(
+            {
+                "title": f"第{number}章",
+                "synopsis": f"依据已批准的章节与场景规划完成第 {number} 章。",
+                "scenes": _default_chapter_scenes(),
+            }
+        )
+        used_numbers.add(number)
+        total += 1
+    return normalized
+
+
+def chapter_tree_repair_preview(db: Session, project_id: int) -> dict[str, Any]:
+    state = _state(db, project_id)
+    requested_count = max(
+        1, min(int(_json_object(state.config_json).get("chapter_count") or 12), 10_000)
+    )
+    volume_ids = db.scalars(
+        select(models.Volume.id).where(
+            models.Volume.project_id == project_id,
+            models.Volume.deleted_at.is_(None),
+        )
+    ).all()
+    chapters = db.scalars(
+        select(models.Chapter)
+        .where(
+            models.Chapter.volume_id.in_(volume_ids or [-1]),
+            models.Chapter.deleted_at.is_(None),
+        )
+        .order_by(models.Chapter.position, models.Chapter.id)
+    ).all()
+    suspect_titles = {name for name, _ in PHASE_AGENTS["chapters"]}
+    suspects = [item for item in chapters if item.title.strip() in suspect_titles]
+    existing_numbers = {
+        number
+        for item in chapters
+        if item not in suspects
+        for number in [_chapter_title_number(item.title)]
+        if number is not None
+    }
+    missing_numbers = [
+        number for number in range(1, requested_count + 1) if number not in existing_numbers
+    ]
+    return {
+        "requested_count": requested_count,
+        "active_count": len(chapters),
+        "suspect_chapters": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "word_count": item.word_count,
+                "revision": item.revision,
+            }
+            for item in suspects
+        ],
+        "missing_numbers": missing_numbers,
+        "can_repair": bool(suspects),
+    }
+
+
+def repair_chapter_tree(
+    db: Session,
+    project_id: int,
+    payload: ChapterTreeRepairRequest,
+) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="修复章节结构需要作者明确确认")
+    preview = chapter_tree_repair_preview(db, project_id)
+    if not preview["can_repair"]:
+        return {"repaired": False, "overview": project_overview(db, project_id)}
+    create_snapshot(
+        db,
+        project_id,
+        SnapshotCreate(
+            label="修复章节结构前",
+            reason="修复被 Agent 标题占用的章节名额；原正文永久保留在此快照中",
+            special=True,
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    for suspect in cast(list[dict[str, Any]], preview["suspect_chapters"]):
+        chapter = db.get(models.Chapter, int(suspect["id"]))
+        if chapter is not None and chapter.deleted_at is None:
+            chapter.deleted_at = now
+            chapter.revision += 1
+    suspect_volume_ids = {
+        chapter.volume_id
+        for suspect in cast(list[dict[str, Any]], preview["suspect_chapters"])
+        for chapter in [db.get(models.Chapter, int(suspect["id"]))]
+        if chapter is not None
+    }
+    for volume_id in suspect_volume_ids:
+        remaining = int(
+            db.scalar(
+                select(func.count(models.Chapter.id)).where(
+                    models.Chapter.volume_id == volume_id,
+                    models.Chapter.deleted_at.is_(None),
+                )
+            )
+            or 0
+        )
+        volume = db.get(models.Volume, volume_id)
+        if remaining == 0 and volume is not None and volume.deleted_at is None:
+            volume.deleted_at = now
+            volume.revision += 1
+    volumes = db.scalars(
+        select(models.Volume)
+        .where(
+            models.Volume.project_id == project_id,
+            models.Volume.deleted_at.is_(None),
+        )
+        .order_by(models.Volume.position, models.Volume.id)
+    ).all()
+    if not volumes:
+        raise HTTPException(status_code=409, detail="项目没有可用分卷，无法补齐章节")
+    target_volume = volumes[-1]
+    max_position = int(
+        db.scalar(
+            select(func.max(models.Chapter.position)).where(
+                models.Chapter.volume_id == target_volume.id,
+                models.Chapter.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    for offset, number in enumerate(cast(list[int], preview["missing_numbers"]), 1):
+        chapter = models.Chapter(
+            volume_id=target_volume.id,
+            title=f"第{number}章",
+            content="",
+            position=max_position + offset,
+            word_count=0,
+        )
+        db.add(chapter)
+        db.flush()
+        for scene_position, scene in enumerate(_default_chapter_scenes(), 1):
+            db.add(
+                models.Scene(
+                    chapter_id=chapter.id,
+                    title=scene["title"],
+                    synopsis=scene["synopsis"],
+                    position=scene_position,
+                )
+            )
+    state = _state(db, project_id)
+    if preview["missing_numbers"]:
+        state.stage = "drafting"
+        state.revision += 1
+    db.flush()
+    return {"repaired": True, "overview": project_overview(db, project_id)}
+
+
 def _require_generation_prerequisites(
     db: Session,
     project_id: int,
@@ -1259,15 +2020,29 @@ def _require_generation_prerequisites(
     payload: GenerateRequest,
 ) -> None:
     state = _state(db, project_id)
-    phase_index = STAGE_ORDER.index(phase)
-    current_index = STAGE_ORDER.index(state.stage)
+    order = _stage_order(state)
+    if phase not in order or state.stage not in order:
+        raise HTTPException(status_code=409, detail="当前项目模式不支持该创作阶段")
+    config = _json_object(state.config_json)
+    if state.entry_mode == "continuation" and config.get("conflict_paused"):
+        raise HTTPException(status_code=409, detail="发现重大连续性冲突，必须由作者确认处理后才能继续")
+    phase_index = order.index(phase)
+    current_index = order.index(state.stage)
     if phase_index > current_index and not (state.stage == "idea" and phase == "world"):
         raise HTTPException(status_code=409, detail=f"请先完成并批准“{STAGE_LABELS[state.stage]}”阶段")
     if phase == "drafting":
         if not payload.chapter_id:
             raise HTTPException(status_code=422, detail="正文生成必须选择章节")
-        planning = ["world", "characters", "plot", "volumes", "chapters"]
-        if state.entry_mode == "creative" and not all(_phase_complete(db, project_id, item) for item in planning):
+        if state.entry_mode == "continuation" and config.get("continuation_start") == "choose":
+            raise HTTPException(status_code=409, detail="请先选择接着写当前章或从下一章开始")
+        planning = (
+            ["continuation_analysis", "continuation_outline", "continuation_plan"]
+            if state.entry_mode == "continuation"
+            else ["world", "characters", "plot", "volumes", "chapters"]
+        )
+        if state.entry_mode in {"creative", "continuation"} and not all(
+            _phase_complete(db, project_id, item) for item in planning
+        ):
             raise HTTPException(status_code=409, detail="所有规划成果分别批准后才能开始正文")
         pending_planning = int(db.scalar(select(func.count(models.CreativeArtifact.id)).where(
             models.CreativeArtifact.project_id == project_id,
@@ -1311,12 +2086,51 @@ async def extract_style_reference(
     if state.budget_paused:
         raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, use_demo_model)
-    prompt = (
-        "分析以下作者合法提供的参考文本，只提取可复用的抽象文风特征，不续写、不模仿具体句子。"
-        "输出叙事视角、句式长度、节奏、描写密度、对白特点、常用意象、应避免事项和一份可执行文风规则。\n\n"
-        f"项目：{project.title}\n文件：{filename}\n\n参考文本：\n{text}"
-    )
-    response = await _model_call(db, project_id, prompt, profile, use_demo=use_demo_model)
+    input_budget = max(512, _studio_input_budget(profile, use_demo_model, 2200) - 600)
+    chunks = _chunk_text_by_tokens(text, input_budget)
+    partials: list[str] = []
+    for index, chunk in enumerate(chunks):
+        prompt = (
+            "分析以下作者合法提供的参考文本分片，只提取可复用的抽象文风特征，"
+            "不续写、不模仿具体句子。输出叙事视角、句式长度、节奏、描写密度、"
+            "对白特点、常用意象和应避免事项。\n\n"
+            f"项目：{project.title}\n文件：{filename}\n"
+            f"分片：{index + 1}/{len(chunks)}\n\n参考文本：\n{chunk}"
+        )
+        partial = await _model_call(
+            db,
+            project_id,
+            prompt,
+            profile,
+            use_demo=use_demo_model,
+            max_tokens=1200 if len(chunks) > 1 else 2200,
+        )
+        if partial.error is not None:
+            raise HTTPException(status_code=502, detail=partial.error.message)
+        if len(chunks) == 1:
+            response = partial
+            break
+        partials.append(partial.text)
+        _record_response_cost(state, partial)
+    else:
+        synthesis = _fit_text_to_token_budget(
+            "\n\n".join(
+                f"## 分片 {index + 1}\n{value}" for index, value in enumerate(partials)
+            ),
+            input_budget,
+        )
+        response = await _model_call(
+            db,
+            project_id,
+            (
+                "合并以下分片分析，输出一份去重、统一、可审核的文风档案。必须包含"
+                "叙事视角、句式长度、节奏、描写密度、对白特点、常用意象、应避免事项"
+                "和可执行文风规则。\n\n" + synthesis
+            ),
+            profile,
+            use_demo=use_demo_model,
+            max_tokens=2200,
+        )
     if response.error is not None:
         raise HTTPException(status_code=502, detail=response.error.message)
     metadata = {
@@ -1326,6 +2140,8 @@ async def extract_style_reference(
         "model_reason": reason,
         "series_key": "world:style-reference",
         "reference_characters": len(text),
+        "context_chunks": len(chunks),
+        "context_strategy": "chunked_style_analysis" if len(chunks) > 1 else "direct",
     }
     _supersede_series(db, project_id, str(metadata["series_key"]))
     artifact = _new_artifact(project_id, "world", f"参考文风分析 · {filename}", response.text, metadata, 90)
@@ -1400,22 +2216,135 @@ async def _model_call(
     use_demo: bool,
     max_tokens: int = 2200,
 ) -> Any:
-    payload = ModelDebugRequest(
-        model="mock-novel-v1" if use_demo or profile is None else profile.name,
-        model_profile_id=None if use_demo or profile is None else profile.id,
-        project_id=project_id,
-        messages=[
-            NormalizedMessage(
-                role="user",
-                content=[NormalizedContentPart(type="text", text=prompt)],
+    output_tokens = _effective_output_tokens(profile, use_demo, max_tokens)
+    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
+    original_prompt = prompt
+    compression_warnings: list[str] = []
+    response: Any = None
+    for attempt in range(5):
+        attempt_budget = max(128, input_budget // (2**attempt))
+        fitted_prompt = _fit_text_to_token_budget(original_prompt, attempt_budget)
+        if fitted_prompt != original_prompt:
+            compression_warnings.append(
+                f"上下文已自动压缩至约 {estimate_text_tokens(fitted_prompt)} Token。"
             )
-        ],
-        max_tokens=max_tokens,
-        temperature=0.75,
-        max_retries=5,
-        allow_degradation=True,
-    )
-    return await model_execution.execute_model(db, payload)
+        payload = ModelDebugRequest(
+            model="mock-novel-v1" if use_demo or profile is None else profile.name,
+            model_profile_id=None if use_demo or profile is None else profile.id,
+            project_id=project_id,
+            messages=[
+                NormalizedMessage(
+                    role="user",
+                    content=[NormalizedContentPart(type="text", text=fitted_prompt)],
+                )
+            ],
+            max_tokens=output_tokens,
+            temperature=0.75,
+            max_retries=5,
+            allow_degradation=True,
+        )
+        response = await model_execution.execute_model(db, payload)
+        error = getattr(response, "error", None)
+        if error is None or getattr(error, "code", "") != "context_too_long":
+            break
+        if attempt < 4:
+            compression_warnings.append(
+                "Provider 返回上下文超限，已进一步压缩并自动重试。"
+            )
+    if response is not None and compression_warnings:
+        response.warnings = list(
+            dict.fromkeys([*getattr(response, "warnings", []), *compression_warnings])
+        )
+    return response
+
+
+def _effective_output_tokens(
+    profile: models.ModelProfile | None, use_demo: bool, requested: int
+) -> int:
+    window = 8_192 if use_demo or profile is None else max(512, profile.context_window)
+    proportional_limit = max(256, int(window * 0.4))
+    return max(1, min(requested, proportional_limit, max(1, window - 256)))
+
+
+def _studio_input_budget(
+    profile: models.ModelProfile | None, use_demo: bool, max_tokens: int
+) -> int:
+    window = 8_192 if use_demo or profile is None else max(512, profile.context_window)
+    output_tokens = _effective_output_tokens(profile, use_demo, max_tokens)
+    safety = 384 if window >= 1_024 else 64
+    return max(128, window - output_tokens - safety)
+
+
+def _fit_text_to_token_budget(text: str, token_budget: int) -> str:
+    if token_budget <= 0 or not text:
+        return ""
+    if estimate_text_tokens(text) <= token_budget:
+        return text
+    marker = "\n\n[上下文已自动压缩：省略中间低优先级内容]\n\n"
+    if estimate_text_tokens(marker) >= token_budget:
+        return text[: _prefix_index_for_tokens(text, token_budget)].rstrip()
+    low = 0
+    high = len(text)
+    best = marker.strip()
+    while low <= high:
+        keep = (low + high) // 2
+        head_count = int(keep * 0.68)
+        tail_count = keep - head_count
+        candidate = text[:head_count].rstrip() + marker + (
+            text[-tail_count:].lstrip() if tail_count else ""
+        )
+        if estimate_text_tokens(candidate) <= token_budget:
+            best = candidate
+            low = keep + 1
+        else:
+            high = keep - 1
+    return best
+
+
+def _prefix_index_for_tokens(text: str, token_budget: int) -> int:
+    low = 0
+    high = len(text)
+    best = 0
+    while low <= high:
+        middle = (low + high) // 2
+        if estimate_text_tokens(text[:middle]) <= token_budget:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _chunk_text_by_tokens(text: str, token_budget: int) -> list[str]:
+    if token_budget < 128:
+        raise ValueError("分片 Token 预算不能低于 128")
+    remaining = text.strip()
+    if not remaining:
+        return [""]
+    chunks: list[str] = []
+    while estimate_text_tokens(remaining) > token_budget:
+        cut = _prefix_index_for_tokens(remaining, token_budget)
+        if cut <= 0:
+            cut = 1
+        line_cut = remaining.rfind("\n", max(0, cut // 2), cut)
+        if line_cut > 0:
+            cut = line_cut
+        chunk = remaining[:cut].strip()
+        if not chunk:
+            chunk = remaining[:cut]
+        chunks.append(chunk)
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _phase_output_tokens(phase: str) -> int:
+    if phase == "drafting":
+        return 3_600
+    if phase == "chapters":
+        return 2_800
+    return 2_200
 
 
 def _phase_prompt(
@@ -1433,8 +2362,26 @@ def _phase_prompt(
             "必须使用可解析的 Markdown 层级：# 第N卷 卷名、## 第N章 章名、"
             "### 场景N 场景名；每个标题下写目标、冲突、转折和结果。\n"
         )
-    elif phase in {"world", "characters", "plot", "volumes"}:
+    elif phase in {
+        "world",
+        "characters",
+        "plot",
+        "volumes",
+        "continuation_analysis",
+        "continuation_outline",
+        "continuation_plan",
+    }:
         format_hint = "使用清晰的 Markdown 小节逐项输出，确保每项可以独立修改。\n"
+    if phase == "continuation_plan" and agent_name == "未来卷章规划":
+        format_hint = (
+            "必须使用可解析的 Markdown 层级：# 第N卷 卷名、## 第N章 章名、"
+            "### 场景N 场景名；只规划原文之后的未来章节。\n"
+        )
+    if phase == "drafting":
+        format_hint = (
+            "只输出可直接写入小说的正文，不要输出分析、标题、Markdown 标记或创作说明。"
+            + ("从当前章节最后一句自然接续，不要重写已有段落。\n" if payload.mode == "continue" else "\n")
+        )
     return (
         f"你是多智能体小说工作室中的“{agent_name}”。{responsibility}\n"
         "请输出可供作者逐项审核和直接修改的中文内容。信息要具体，不要讲解工作方法。"
@@ -1448,7 +2395,18 @@ def _phase_prompt(
     )
 
 
-def _generation_context(db: Session, project_id: int, chapter_id: int | None) -> str:
+def _generation_context(
+    db: Session,
+    project_id: int,
+    chapter_id: int | None,
+    *,
+    profile: models.ModelProfile | None,
+    use_demo: bool,
+    max_tokens: int,
+    query: str,
+) -> tuple[str, dict[str, Any]]:
+    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
+    context_budget = max(128, min(6_000, input_budget - min(800, input_budget // 4)))
     artifacts = db.scalars(
         select(models.CreativeArtifact)
         .where(
@@ -1458,11 +2416,63 @@ def _generation_context(db: Session, project_id: int, chapter_id: int | None) ->
         )
         .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id.desc())
     ).all()
-    blocks = [f"[{item.title}]\n{item.content[:5000]}" for item in artifacts[-8:]]
+    approved = {
+        item.title: _fit_text_to_token_budget(item.content, 1_200)
+        for item in artifacts[-12:]
+        if item.kind != "continuation_original"
+    }
+    request = ContextBuildRequest(
+        project_id=project_id,
+        chapter_id=chapter_id,
+        model_profile_id=(None if use_demo or profile is None else profile.id),
+        model_context_window=(
+            8_192 if use_demo or profile is None else profile.context_window
+        ),
+        query=query[:200_000],
+        upstream_outputs={"approved_artifacts": approved},
+        reserved_output_tokens=_effective_output_tokens(profile, use_demo, max_tokens),
+        token_budget_override=context_budget,
+        persist_snapshot=False,
+    )
+    built = context_builder.build_context(db, request)
+    if not built.blocked and built.context_text.strip():
+        return built.context_text, {
+            "strategy": "retrieval",
+            "model_window": request.model_context_window,
+            "token_budget": built.token_budget,
+            "included_tokens": built.included_tokens,
+            "included_items": len(built.included),
+            "excluded_items": len(built.excluded),
+            "truncations": len(built.truncations),
+        }
+
+    blocks = [
+        f"[{item.title}]\n{_fit_text_to_token_budget(item.content, 900)}"
+        for item in artifacts[-8:]
+        if item.kind != "continuation_original"
+    ]
+    state = _state(db, project_id)
+    if state.entry_mode == "continuation":
+        summaries = db.execute(
+            select(models.Chapter.title, models.ChapterSummary.summary)
+            .join(models.ChapterSummary, models.ChapterSummary.chapter_id == models.Chapter.id)
+            .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
+            .where(
+                models.Volume.project_id == project_id,
+                models.Chapter.deleted_at.is_(None),
+                models.ChapterSummary.deleted_at.is_(None),
+            )
+            .order_by(models.Volume.position, models.Chapter.position)
+        ).all()
+        if summaries:
+            summary_text = "\n".join(
+                f"- {title}: {summary}" for title, summary in summaries
+            )
+            blocks.append("[导入原文章节索引]\n" + summary_text)
     if chapter_id:
         chapter = db.get(models.Chapter, chapter_id)
         if chapter is not None:
-            blocks.append(f"[当前章节：{chapter.title}]\n{chapter.content[-8000:]}")
+            blocks.append(f"[当前章节：{chapter.title}]\n{chapter.content}")
     entities = db.scalars(
         select(models.StoryEntity)
         .where(
@@ -1473,7 +2483,128 @@ def _generation_context(db: Session, project_id: int, chapter_id: int | None) ->
     ).all()
     if entities:
         blocks.append("[人物与资料]\n" + "\n".join(f"- {item.name}: {item.description[:300]}" for item in entities))
-    return "\n\n".join(blocks)[:30_000] or "尚无已批准资料。"
+    fallback = _fit_text_to_token_budget(
+        "\n\n".join(blocks) or "尚无已批准资料。", context_budget
+    )
+    return fallback, {
+        "strategy": "compressed_fallback",
+        "model_window": request.model_context_window,
+        "token_budget": context_budget,
+        "included_tokens": estimate_text_tokens(fallback),
+        "included_items": len(blocks),
+        "excluded_items": len(built.excluded),
+        "truncations": max(1, len(built.truncations)),
+        "conflicts": built.conflicts,
+    }
+
+
+async def _continuation_source_context(
+    db: Session,
+    project_id: int,
+    phase: str,
+    profile: models.ModelProfile | None,
+    *,
+    use_demo: bool,
+    max_tokens: int,
+) -> tuple[str, dict[str, Any]]:
+    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
+    chunk_budget = max(512, input_budget - min(900, input_budget // 3))
+    corpus = _continuation_corpus(
+        db,
+        project_id,
+        phase,
+        total_budget=chunk_budget * 32,
+    )
+    chunks = _chunk_text_by_tokens(corpus, chunk_budget)
+    if len(chunks) == 1:
+        return "[导入原文分层索引]\n" + chunks[0], {
+            "source_strategy": "hierarchical_index",
+            "source_chunks": 1,
+        }
+
+    map_outputs: list[str] = []
+    for index, chunk in enumerate(chunks):
+        task = (
+            "从本分片提取卷章结构、世界规则、人物关系与状态、时间线、伏笔、"
+            "文风和未完成剧情线。保留章节名称与证据位置，简洁输出。"
+            if phase == "continuation_analysis"
+            else "根据本分片补建已有分卷、章节和场景的目标、冲突、转折、结果与承接关系。"
+        )
+        response = await _model_call(
+            db,
+            project_id,
+            (
+                f"你正在对半成品小说执行分片预处理。{task}\n"
+                f"分片 {index + 1}/{len(chunks)}：\n\n{chunk}"
+            ),
+            profile,
+            use_demo=use_demo,
+            max_tokens=min(1_200, max_tokens),
+        )
+        if response.error is not None:
+            raise RuntimeError(f"{response.error.code}: {response.error.message}")
+        map_outputs.append(response.text.strip())
+        _record_response_cost(_state(db, project_id), response)
+    aggregate = "\n\n".join(
+        f"## 分片 {index + 1}\n{content}"
+        for index, content in enumerate(map_outputs)
+    )
+    fitted = _fit_text_to_token_budget(aggregate, max(512, input_budget - 700))
+    return "[全书分片分析汇总]\n" + fitted, {
+        "source_strategy": "map_reduce",
+        "source_chunks": len(chunks),
+        "source_summary_tokens": estimate_text_tokens(fitted),
+    }
+
+
+def _continuation_corpus(
+    db: Session,
+    project_id: int,
+    phase: str,
+    *,
+    total_budget: int,
+) -> str:
+    rows = db.execute(
+        select(
+            models.Volume.title,
+            models.Chapter.title,
+            models.Chapter.content,
+            models.ChapterSummary.summary,
+        )
+        .join(models.Chapter, models.Chapter.volume_id == models.Volume.id)
+        .outerjoin(
+            models.ChapterSummary,
+            (models.ChapterSummary.chapter_id == models.Chapter.id)
+            & models.ChapterSummary.deleted_at.is_(None),
+        )
+        .where(
+            models.Volume.project_id == project_id,
+            models.Volume.deleted_at.is_(None),
+            models.Chapter.deleted_at.is_(None),
+        )
+        .order_by(models.Volume.position, models.Chapter.position, models.Chapter.id)
+    ).all()
+    if not rows:
+        return "尚无导入章节。"
+    per_chapter = max(24, total_budget // len(rows))
+    blocks: list[str] = []
+    for volume_title, chapter_title, content, summary in rows:
+        source = str(summary or "") if phase == "continuation_outline" else str(content or "")
+        block = f"# {volume_title} / {chapter_title}\n{source}"
+        blocks.append(_fit_text_to_token_budget(block, per_chapter))
+    return "\n\n".join(blocks)
+
+
+def _context_reason(metadata: dict[str, Any]) -> str:
+    strategy = str(metadata.get("strategy") or "retrieval")
+    included = int(metadata.get("included_tokens") or 0)
+    chunks = int(metadata.get("source_chunks") or 0)
+    text = f"上下文：{strategy}，约 {included:,} Token"
+    if chunks > 1:
+        text += f"，原文分为 {chunks} 片汇总"
+    if int(metadata.get("truncations") or 0) > 0:
+        text += "，已按预算压缩"
+    return text + "。"
 
 
 def _chat_proposal(
