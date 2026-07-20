@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1] - 2026-07-20
+
+### Fixed
+
+- 修复 WebView2 返回非空 `scrollIntoView` 结果时，React 将其误作 effect 清理函数并导致工作室页面崩溃的问题。
+- 新增覆盖 WebView2 返回值差异和组件卸载流程的回归测试。
+
 ## [2.1.0] - 2026-07-20
 
 ### Added

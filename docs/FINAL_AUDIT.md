@@ -1,7 +1,7 @@
 # Final Audit
 
 审计日期：2026-07-20  
-版本：2.1.0  
+版本：2.1.1
 结论：通过本机单用户 Windows 发布门槛。
 
 ## 范围
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 从空数据库启动与迁移 | 通过 | Playwright 从空库迁移到最新 revision |
 | 无 API Key 完整 Mock 演示 | 通过 | Mock Adapter、Seed 和 Workflow E2E |
-| 核心按钮连接真实 API | 通过 | 14 个前端测试文件、26 个测试及端到端操作 |
+| 核心按钮连接真实 API | 通过 | 14 个前端测试文件、27 个测试及端到端操作 |
 | 五种协议与流解析 | 通过 | 本地 Fake Provider 成功、错误、中断和取消覆盖 |
 | Generic Adapter 安全 | 通过 | 模板、JSONPath、SSRF、重定向、凭据隔离和 Manifest 测试 |
 | Route、限流、预算与数据边界 | 通过 | Phase 4/6 后端回归 |
@@ -26,8 +26,8 @@
 | 不记录隐藏推理 | 通过 | 只保存标准化输出、事件、usage、错误和明确元数据 |
 | V2 创作流程门禁 | 通过 | 独立规划审核、场景审核、冲突决策、文风提取、版本比较、自动续写 |
 | 后端测试 | 通过 | 168 passed |
-| 前端测试 | 通过 | 14 files / 26 tests passed |
-| 严格类型与静态检查 | 通过 | mypy 90 source files；Ruff passed；TypeScript passed |
+| 前端测试 | 通过 | 14 files / 27 tests passed，含 WebView2 卸载崩溃回归 |
+| 严格类型与静态检查 | 通过 | mypy 88 source files；Ruff passed；TypeScript passed |
 | 生产构建 | 通过 | Vite 1,648 modules transformed；PyInstaller 发布步骤复验 |
 | 最终 E2E | 通过 | 1 passed，空库创建、文风上传、独立审核、版本比较与响应式检查 |
 | 文档与已知限制 | 通过 | README 与五份发布审计文档已更新 |
@@ -44,4 +44,4 @@
 
 ## 结论
 
-未发现阻止本机单用户 v2.1.0 发布的已知核心缺陷。该结论不等于公网服务安全认证，也不代表第三方模型服务当前可用；残余边界记录在 `KNOWN_LIMITATIONS.md`，逐项功能证据见 `V2_REQUIREMENTS_ACCEPTANCE.md`。
+未发现阻止本机单用户 v2.1.1 发布的已知核心缺陷。该结论不等于公网服务安全认证，也不代表第三方模型服务当前可用；残余边界记录在 `KNOWN_LIMITATIONS.md`，逐项功能证据见 `V2_REQUIREMENTS_ACCEPTANCE.md`。

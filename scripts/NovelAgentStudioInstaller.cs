@@ -69,7 +69,7 @@ namespace NovelAgentStudioInstaller
             Controls.Add(title);
 
             Label version = new Label();
-            version.Text = "Novel Agent Studio  v2.1.0";
+            version.Text = "Novel Agent Studio  v2.1.1";
             version.ForeColor = Color.FromArgb(80, 103, 98);
             version.AutoSize = true;
             version.Location = new Point(37, 73);
@@ -183,7 +183,7 @@ namespace NovelAgentStudioInstaller
     {
         internal const string AppFolder = "NovelAgentStudio";
         internal const string DisplayName = "Novel Agent Studio";
-        internal const string Version = "2.1.0";
+        internal const string Version = "2.1.1";
         internal static readonly string InstallDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Programs",

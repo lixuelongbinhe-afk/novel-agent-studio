@@ -444,7 +444,9 @@ function RailTab({ icon: Icon, label, count, active, onClick }: { icon: typeof B
 
 function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: { overview: StudioOverview; value: string; onChange: (value: string) => void; onSend: () => void; sending: boolean; onProposal: (messageId: number, action: "apply" | "reject") => void }) {
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => endRef.current?.scrollIntoView?.({ behavior: "smooth" }), [overview.messages.length]);
+  useEffect(() => {
+    endRef.current?.scrollIntoView?.({ behavior: "smooth" });
+  }, [overview.messages.length]);
   return <div className="rail-panel chat-panel">
     <header><div><Bot size={16} /><strong>总编对话</strong></div><span>自动上下文</span></header>
     <div className="chat-stream">

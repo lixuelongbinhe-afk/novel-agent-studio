@@ -1,7 +1,7 @@
 # V2 Requirements Acceptance
 
 验收日期：2026-07-20  
-版本：2.1.0
+版本：2.1.1
 
 | 已确认要求 | 实现与验收证据 | 结果 |
 | --- | --- | --- |
@@ -34,4 +34,4 @@
 | 真正 Windows EXE、安装包与便携 ZIP | PyInstaller + C# 安装器；控制台和 GUI 生命周期自检 | 通过 |
 | 舍弃旧数据 | v2 独立 `NovelAgentStudioV2/data/studio-v2.db` | 通过 |
 
-自动化证据：后端 168 tests、前端 26 tests、Ruff、mypy、TypeScript、Vite build、Playwright E2E 全通过。最终打包后的 EXE、安装器和 ZIP 已完成控制台与 GUI 自检；产物哈希记录在 `outputs/SHA256SUMS.txt`。
+自动化证据：后端 168 tests、前端 27 tests、Ruff、mypy、TypeScript、Vite build、Playwright E2E 全通过。WebView2 消息滚动副作用的卸载回归测试通过。最终打包后的 EXE、安装器和 ZIP 已完成控制台与 GUI 自检；产物哈希记录在 `outputs/SHA256SUMS.txt`。

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { studioApi } from "../api/studio";
+import { studioApi, type StudioOverview } from "../api/studio";
 import { StudioPage } from "./StudioPage";
 
 const artifact = {
@@ -22,7 +22,7 @@ const artifact = {
   updated_at: "2026-07-20T00:00:00Z"
 };
 
-const overview = {
+const overview: StudioOverview = {
   project: { id: 1, title: "雾港回声", summary: "雨季谜案", target_words: 100000, revision: 1, updated_at: "2026-07-20T00:00:00Z" },
   state: {
     id: 1, project_id: 1, entry_mode: "creative" as const, stage: "world", stage_label: "世界观与风格",
@@ -58,6 +58,48 @@ vi.mock("../api/studio", () => ({
 }));
 
 describe("StudioPage", () => {
+  it("does not treat the WebView scroll result as an effect cleanup", async () => {
+    const previousMessages = overview.messages;
+    const previousScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    overview.messages = [{
+      id: 1,
+      project_id: 1,
+      role: "assistant" as const,
+      content: "已读取创作上下文",
+      context_scope: "project",
+      proposal: null,
+      proposal_status: "none",
+      model_name: null,
+      model_reason: "",
+      created_at: "2026-07-20T00:00:00Z"
+    }];
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: vi.fn(() => ({ webview: true }))
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      const view = render(
+        <MemoryRouter initialEntries={["/studio/1"]}>
+          <QueryClientProvider client={client}>
+            <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await screen.findByText("已读取创作上下文")).toBeInTheDocument();
+      expect(() => view.unmount()).not.toThrow();
+    } finally {
+      overview.messages = previousMessages;
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        writable: true,
+        value: previousScrollIntoView
+      });
+    }
+  });
+
   it("exposes the confirmed review and continuation controls", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(

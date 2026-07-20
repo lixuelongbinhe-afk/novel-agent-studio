@@ -165,7 +165,7 @@ describe("ApprovalPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /变更预览/ }));
 
     expect(await screen.findByText("实体 #7 已从 revision 2 更新到 revision 3")).toBeInTheDocument();
-    const decisionGroup = screen.getByLabelText("林雾 决定");
+    const decisionGroup = await screen.findByLabelText("林雾 决定");
     fireEvent.click(within(decisionGroup).getByRole("button", { name: "接受" }));
     fireEvent.click(screen.getByTitle("编辑变更值"));
     fireEvent.change(screen.getByLabelText("编辑 林雾"), { target: { value: JSON.stringify({ name: "林雾", description: "返港并拿到铜钥匙" }) } });

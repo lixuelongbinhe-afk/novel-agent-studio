@@ -220,5 +220,5 @@
 - [x] Add minor automatic conflict correction and explicit major-conflict author decisions.
 - [x] Add manual, automatic and pausable countdown continuation after approval.
 - [x] Mark orphaned studio generation jobs interrupted on startup and preserve tray execution.
-- [x] Verify 168 backend tests, 26 frontend tests, Ruff, strict mypy, TypeScript, production build and Playwright E2E.
+- [x] Verify 168 backend tests, 27 frontend tests, Ruff, strict mypy, TypeScript, production build and Playwright E2E.
 - [x] Record the complete acceptance matrix in `docs/V2_REQUIREMENTS_ACCEPTANCE.md`.

@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Novel Agent Studio"
-    app_version: str = Field("2.1.0", alias="NAS_APP_VERSION")
+    app_version: str = Field("2.1.1", alias="NAS_APP_VERSION")
     environment: str = Field("development", alias="NAS_ENV")
     database_url: str = Field("sqlite:///./data/novel_agent_studio.db", alias="NAS_DATABASE_URL")
     cors_origins: str = Field(
