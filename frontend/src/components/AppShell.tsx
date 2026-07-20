@@ -37,8 +37,13 @@ export function AppShell() {
         <div className="nas-brand">
           <span className="nas-brand-mark"><Sparkles size={16} /></span>
           {!sidebarCollapsed ? <strong>Novel Agent Studio</strong> : null}
-          <button type="button" className="icon-button subtle" onClick={toggleSidebar} title="收起侧栏">
-            <PanelLeftClose size={16} />
+          <button
+            type="button"
+            className="icon-button subtle"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          >
+            {sidebarCollapsed ? <ChevronRight size={16} /> : <PanelLeftClose size={16} />}
           </button>
         </div>
 
@@ -82,7 +87,12 @@ export function AppShell() {
         <div className="sidebar-status">
           <span className="status-light" />
           {!sidebarCollapsed ? <span>本地数据已连接</span> : null}
-          <button type="button" className="icon-button subtle" onClick={toggleSidebar} title="展开侧栏">
+          <button
+            type="button"
+            className="icon-button subtle"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          >
             {sidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
           </button>
         </div>

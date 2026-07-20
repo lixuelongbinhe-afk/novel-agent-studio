@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomApiPage } from "./CustomApiPage";
 
 const mocks = vi.hoisted(() => ({
@@ -45,7 +45,12 @@ const mocks = vi.hoisted(() => ({
   }),
   setupAdapter: vi.fn(async (payload: Record<string, unknown>) => ({ id: 2, provider_account_id: 2, ...payload })),
   createCredential: vi.fn(async (payload: Record<string, unknown>) => ({ id: 2, revision: 1, deleted_at: null, ...payload })),
-  updateCredential: vi.fn(async (item: Record<string, unknown>, payload: Record<string, unknown>) => ({ ...item, ...payload, revision: 2 }))
+  updateCredential: vi.fn(async (item: Record<string, unknown>, payload: Record<string, unknown>) => ({ ...item, ...payload, revision: 2 })),
+  updateAdapter: vi.fn(async (item: Record<string, unknown>, patch: Record<string, unknown>) => ({ ...item, ...patch, revision: 2 })),
+  deleteAdapter: vi.fn(async (_item: Record<string, unknown>) => undefined),
+  exportManifest: vi.fn(async (_id: number) => ({ manifest_version: 1, provider: { name: "本地自定义 API" }, adapter: {} })),
+  importManifest: vi.fn(async (_manifest: Record<string, unknown>) => ({ adapter: { id: 1 }, provider: { id: 1 } })),
+  deleteCredential: vi.fn(async (_item: Record<string, unknown>) => undefined)
 }));
 
 vi.mock("../api/client", () => ({
@@ -56,17 +61,17 @@ vi.mock("../api/client", () => ({
     approveCustomOrigin: mocks.approve,
     testCustomAdapter: mocks.test,
     streamCustomAdapter: mocks.stream,
-    updateCustomAdapter: vi.fn(async (item: Record<string, unknown>, patch: Record<string, unknown>) => ({ ...item, ...patch, revision: 2 })),
-    deleteCustomAdapter: vi.fn(),
-    exportCustomManifest: vi.fn(),
-    importCustomManifest: vi.fn(),
+    updateCustomAdapter: mocks.updateAdapter,
+    deleteCustomAdapter: mocks.deleteAdapter,
+    exportCustomManifest: mocks.exportManifest,
+    importCustomManifest: mocks.importManifest,
     createProvider: vi.fn(),
     updateProvider: vi.fn(),
     createCustomAdapter: vi.fn(),
     setupCustomAdapter: mocks.setupAdapter,
     createCredential: mocks.createCredential,
     updateCredential: mocks.updateCredential,
-    deleteCredential: vi.fn()
+    deleteCredential: mocks.deleteCredential
   }
 }));
 
@@ -76,6 +81,14 @@ function renderPage() {
 }
 
 describe("CustomApiPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.adapter.enabled = false;
+    mocks.adapter.test_current = false;
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
   it("approves the exact Origin and shows a redacted real test plus stream output", async () => {
     renderPage();
     expect(await screen.findByRole("heading", { name: "本地自定义 API" })).toBeInTheDocument();
@@ -121,5 +134,41 @@ describe("CustomApiPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "更新" }));
     await waitFor(() => expect(mocks.updateCredential).toHaveBeenCalled());
     expect(mocks.updateCredential.mock.calls[0][1]).toEqual({ name: "更新凭据", env_var_name: "UPDATED_KEY" });
+  });
+
+  it("enables, exports, and deletes a tested adapter", async () => {
+    mocks.adapter.test_current = true;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:test-manifest") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    renderPage();
+    await screen.findByRole("heading", { name: "本地自定义 API" });
+
+    fireEvent.click(screen.getByRole("button", { name: "启用" }));
+    await waitFor(() => expect(mocks.updateAdapter).toHaveBeenCalledWith(mocks.adapter, { enabled: true }));
+
+    fireEvent.click(screen.getByTitle("导出 Manifest"));
+    await waitFor(() => expect(mocks.exportManifest).toHaveBeenCalledWith(1));
+
+    fireEvent.click(screen.getByTitle("删除适配器"));
+    await waitFor(() => expect(mocks.deleteAdapter.mock.calls[0]?.[0]).toMatchObject({ id: 1 }));
+  });
+
+  it("imports a manifest and deletes a credential reference", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "本地自定义 API" });
+    const file = {
+      name: "adapter.json",
+      text: vi.fn(async () => JSON.stringify({ manifest_version: 1 }))
+    } as unknown as File;
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input).not.toBeNull();
+    fireEvent.change(input!, { target: { files: [file] } });
+    await waitFor(() => expect(mocks.importManifest.mock.calls[0]?.[0]).toEqual({ manifest_version: 1 }));
+
+    fireEvent.click(screen.getByRole("button", { name: "凭据引用" }));
+    fireEvent.click(screen.getByTitle("删除凭据引用"));
+    await waitFor(() => expect(mocks.deleteCredential.mock.calls[0]?.[0]).toMatchObject({ id: 1 }));
   });
 });

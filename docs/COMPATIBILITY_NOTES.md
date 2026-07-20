@@ -31,6 +31,6 @@
 - Phase 7 adds four workflow node types: Human Approval, State Extraction, Proposed Changes, and Database Writeback. Existing Phase 5/6 workflow manifests remain readable; new nodes require database migration `d7e9f1a3c520` and a current backend/frontend pair.
 - Approval waiting is supported by the local single-process scheduler. Application shutdown interrupts the run instead of resuming an in-memory waiter, while immutable approval and Attempt history remains stored.
 - Playwright verifies the Phase 7 workbench at 1440x900 and 390x844, including two real pauses, no preapproval writes, prose Diff, per-item editing, replacement approval, transaction writeback, version history, audit, and no page-level horizontal overflow.
-- The supported v2.2.1 Windows installer and portable ZIP require Windows x64 plus Microsoft Edge or WebView2 Runtime and pass packaged GUI lifecycle checks.
+- The supported v2.2.2 Windows installer and portable ZIP require Windows x64 plus Microsoft Edge or WebView2 Runtime and pass packaged GUI lifecycle checks.
 - Continuation import accepts text-based PDF files. Scanned image-only PDFs require OCR before import.
 - Studio prompts use the selected model profile's configured context window. If a Provider advertises an inaccurate limit, the Studio retries `context_too_long` responses with progressively smaller prompts instead of silently changing models.

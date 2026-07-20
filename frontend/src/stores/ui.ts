@@ -8,7 +8,7 @@ type UiState = {
   sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
   theme: "light" | "dark";
-  setProject: (id: number) => void;
+  setProject: (id: number | null) => void;
   setChapter: (id: number) => void;
   setScene: (id: number | null) => void;
   toggleSidebar: () => void;

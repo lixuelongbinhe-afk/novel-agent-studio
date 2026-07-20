@@ -226,3 +226,33 @@ test("long chat replies scroll inside the right rail without covering the worksp
   await expect(stream).toBeVisible();
   await page.screenshot({ path: "test-results/v2-long-chat-scroll.png" });
 });
+
+test("deleting a project removes it from the persisted dashboard", async ({ page }) => {
+  const api = "http://127.0.0.1:8010/api/studio";
+  const title = `删除功能验证-${Date.now()}`;
+  const createdResponse = await page.request.post(`${api}/projects`, {
+    data: {
+      title,
+      idea: "验证首页删除按钮调用真实 API 并持久化删除结果。",
+      entry_mode: "creative",
+      target_words: 10_000,
+      genre: "测试",
+      chapter_count: 2,
+      chapter_words: 2_000
+    }
+  });
+  expect(createdResponse.ok()).toBe(true);
+
+  await page.goto("/");
+  const row = page.locator(".project-row").filter({ hasText: title });
+  await expect(row).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await row.getByTitle("删除").click();
+  await expect(row).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByText(title)).toHaveCount(0);
+  const dashboard = await page.request.get(`${api}/projects`);
+  expect(dashboard.ok()).toBe(true);
+  expect((await dashboard.json()).some((project: { title: string }) => project.title === title)).toBe(false);
+});

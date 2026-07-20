@@ -70,6 +70,18 @@ def test_project_flow_has_expected_defaults_and_dashboard(db: Session) -> None:
     assert studio.dashboard(db)[0]["id"] == project_id
 
 
+def test_delete_project_route_removes_project_from_dashboard(db: Session) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+
+    response = studio_api.delete_project(project_id, db)
+
+    assert response.status_code == 204
+    assert studio.dashboard(db) == []
+    with pytest.raises(HTTPException, match="项目不存在"):
+        studio.project_overview(db, project_id)
+
+
 def test_continuation_import_builds_editable_tree_and_permanent_original(db: Session) -> None:
     manuscript = """# 第一卷 旧城
 ## 第1章 雨夜

@@ -249,3 +249,12 @@
 - [x] Recompress and retry when a Provider still reports `context_too_long`, without silently changing models.
 - [x] Keep long chat replies inside an independently scrolling message stream with the composer fixed at the rail bottom.
 - [x] Verify 179 backend tests, 32 frontend tests and the 18-message responsive Playwright regression.
+
+## V2.2.2 Button And Project Deletion Audit
+
+- [x] Fix the nested SQLAlchemy transaction that prevented project deletion from reaching the database.
+- [x] Surface project deletion failures and keep the row visible when persistence fails.
+- [x] Audit all 104 button declarations reachable from the current desktop routes and reject missing or empty handlers in CI.
+- [x] Exercise project deletion through component, backend-route, and persisted Playwright regressions.
+- [x] Exercise sidebar navigation, provider lifecycle, custom adapter lifecycle, manifest import/export, and credential deletion.
+- [x] Verify 180 backend tests, 41 frontend tests, Ruff, strict mypy, and TypeScript strict checking.

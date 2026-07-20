@@ -112,10 +112,10 @@ def update_continuation_settings(
 
 @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: int, db: Session = Depends(get_db)) -> Response:
-    project = studio._project(db, project_id)
     with db.begin():
         from datetime import datetime, timezone
 
+        project = studio._project(db, project_id)
         project.deleted_at = datetime.now(timezone.utc)
         project.revision += 1
     return Response(status_code=status.HTTP_204_NO_CONTENT)

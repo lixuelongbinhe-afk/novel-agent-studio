@@ -1,18 +1,18 @@
 # Novel Agent Studio
 
-Novel Agent Studio（小说智能体工作室）v2.2.1 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
+Novel Agent Studio（小说智能体工作室）v2.2.2 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
 
 ## Windows 直接使用
 
 安装版：
 
-1. 双击 `outputs/NovelAgentStudio-Setup-2.2.1.exe`。
+1. 双击 `outputs/NovelAgentStudio-Setup-2.2.2.exe`。
 2. 安装完成后，从开始菜单打开“小说智能体工作室”。
 3. 实际程序位于 `%LOCALAPPDATA%\Programs\NovelAgentStudio\NovelAgentStudio.exe`。
 
 免安装版：
 
-1. 完整解压 `outputs/NovelAgentStudio-Portable-2.2.1.zip`，不要只拖出单个 EXE。
+1. 完整解压 `outputs/NovelAgentStudio-Portable-2.2.2.zip`，不要只拖出单个 EXE。
 2. 双击解压目录中的 `NovelAgentStudio\NovelAgentStudio.exe`。
 
 从 v2.1.2 升级后，如果旧项目把“章节规划师”显示成正文且缺少后续章节，请打开项目并点击顶部的“修复章节结构”。程序会先创建永久特殊快照，再将错误占位章移入回收状态，并按项目设定补齐缺失章节。

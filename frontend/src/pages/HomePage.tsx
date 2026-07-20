@@ -38,6 +38,7 @@ const emptyForm = {
 export function HomePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const selectedProjectId = useUiStore((state) => state.selectedProjectId);
   const setProject = useUiStore((state) => state.setProject);
   const { data: projects = [], isLoading } = useQuery({
     queryKey: ["studio-projects"],
@@ -48,6 +49,7 @@ export function HomePage() {
   const [details, setDetails] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
+  const [deleteError, setDeleteError] = useState("");
 
   const create = useMutation({
     mutationFn: () => studioApi.createProject(form),
@@ -62,7 +64,14 @@ export function HomePage() {
   });
   const remove = useMutation({
     mutationFn: studioApi.deleteProject,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["studio-projects"] })
+    onSuccess: async (_, deletedProjectId) => {
+      setDeleteError("");
+      if (selectedProjectId === deletedProjectId) {
+        setProject(projects.find((project) => project.id !== deletedProjectId)?.id ?? null);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["studio-projects"] });
+    },
+    onError: (reason: Error) => setDeleteError(`删除失败：${reason.message}`)
   });
   const createContinuation = useMutation({
     mutationFn: ({ file, payload }: { file: File | null; payload: Record<string, unknown> }) =>
@@ -106,6 +115,7 @@ export function HomePage() {
       <div className="project-list-head" aria-hidden="true">
         <span>书名</span><span>创作阶段</span><span>完成字数</span><span>待审核</span><span>最后编辑</span><span />
       </div>
+      {deleteError ? <div className="form-error project-delete-error" role="alert">{deleteError}</div> : null}
       <div className="project-list">
         {isLoading ? <div className="loading-line">读取项目中...</div> : null}
         {!isLoading && projects.length === 0 ? (
@@ -129,7 +139,10 @@ export function HomePage() {
             <div className="row-actions">
               <button type="button" className="icon-button subtle" title="打开" onClick={() => openProject(project.id)}><ArrowRight size={16} /></button>
               <button type="button" className="icon-button subtle danger" title="删除" onClick={() => {
-                if (window.confirm(`删除“${project.title}”？`)) remove.mutate(project.id);
+                if (window.confirm(`删除“${project.title}”？`)) {
+                  setDeleteError("");
+                  remove.mutate(project.id);
+                }
               }}><Trash2 size={15} /></button>
             </div>
           </article>
