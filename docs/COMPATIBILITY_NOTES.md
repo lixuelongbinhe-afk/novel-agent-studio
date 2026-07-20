@@ -1,0 +1,34 @@
+# Compatibility Notes
+
+- Python 3.12+ and Node 20+ are supported.
+- Default endpoints are `127.0.0.1:8000` for FastAPI and `127.0.0.1:5173` for Vite.
+- The Playwright suite uses isolated ports `8010` and `5174` plus `work/e2e.db`.
+- Windows PowerShell and POSIX shell launch scripts are included.
+- The responsive UI is verified at 1280px desktop width and 390px compact width.
+- Phase 2 protocol serializers support OpenAI Responses, OpenAI Chat Completions, Anthropic Messages, Gemini native SSE, and Ollama native NDJSON. Generic OpenAI- and Anthropic-compatible aliases use the corresponding wire protocol.
+- OpenAI, DeepSeek, xAI/Grok, Anthropic, Gemini, OpenRouter, Ollama, and generic compatible presets are editable defaults; they do not lock the model ID, Base URL, or environment variable name.
+- Vendor compatibility is verified against deterministic local Fake Providers. Live APIs can change and are not contacted by the automated suite.
+- Model discovery uses each protocol's public model-list endpoint when available. Manual model profiles remain available when a provider does not expose a list endpoint.
+- Streaming debug requires a browser with `fetch`, `ReadableStream`, `TextDecoder`, and `AbortController` support.
+- Generic JSON HTTP supports GET/POST ordinary JSON or Raw Text responses and SSE, NDJSON, concatenated Chunked JSON, or Raw Text streams. It intentionally does not support Cookie import, browser-login simulation, token capture, redirects, arbitrary scripting, full JSONPath, or dynamic templates.
+- Public custom targets must resolve entirely to globally routable addresses. Localhost and private LAN services require `local_private` approval for the exact Origin; cloud metadata and link-local targets are never allowed.
+- The Playwright custom API scenario uses a local Fake Provider on `127.0.0.1:8020`; it does not contact vendor services.
+- Phase 4 uses `jsonschema` for local structured-output validation and `tiktoken` only when an explicit official or compatible tokenizer name is configured. Other models use a labeled local approximation.
+- The control plane supports direct models and ordered-fallback, lowest-cost, lowest-latency, healthiest, and manual-only Routes. A candidate with unknown price is ineligible for lowest-cost selection.
+- Context preflight and invocation accounting distinguish Provider actual usage, Provider estimates, official tokenizer counts, compatible tokenizer counts, and local approximation.
+- Concurrency/RPM/TPM and budget coordination target one local backend process. Multi-process or multi-host deployments require a shared coordinator and are outside the supported release topology.
+- Playwright verifies Phase 4 controls at 1440x900 and 390x844. Wide data tables scroll inside their own containers without creating page-level horizontal overflow.
+- Phase 5 uses `@xyflow/react` for editable graph nodes, handles, selection, copy/delete, undo/redo, zoom, controls, and minimap. Read-only run graphs adapt to a legible single-column layout below 500px without mutating saved coordinates.
+- Workflow execution and event delivery require one running local FastAPI process. Closing it cancels active in-memory tasks; the next startup marks persisted pending/running records interrupted so the user can derive a replacement run.
+- Workflow SSE requires browser `fetch`, `ReadableStream`, `TextDecoder`, `AbortController`, and `Last-Event-ID` header support. Persisted event history and snapshot resync remain available after transport reconnect.
+- The default 11-Agent Mock workflow performs actual overlapping asyncio Agent calls. Automated runs use only local Mock/Fake Providers and do not contact paid services.
+- Playwright verifies the Phase 5 editable canvas and completed run at 1440x900, then verifies a 390x844 run view with Start and Output both visible and no page-level horizontal overflow.
+- Phase 6 requires SQLite with FTS5 support. The supported Python 3.12 Windows runtime includes it; no external search or vector service is required.
+- Context retrieval supports relational names/aliases/tags/links/state/relations, recent summaries, timeline, foreshadowing, rule/style, Pins, and SQLite FTS. The embedding interface is intentionally disabled by default.
+- TipTap chapter and scene HTML is converted to visible text before FTS indexing, Token estimation, snapshots, and model injection. Markdown entered explicitly in memory fields remains plain text.
+- Direct-model context uses that model's Provider policy. Route context uses the intersection across all Route candidates and the smallest relevant model context window.
+- Playwright verifies the Phase 6 Context workbench at 1440x900 and 390x844, including FTS explanation, temporary exclusion/restore, priority, lock, Pin, data-boundary blocking, no page-level horizontal overflow, and no automatic manuscript writeback.
+- Phase 7 adds four workflow node types: Human Approval, State Extraction, Proposed Changes, and Database Writeback. Existing Phase 5/6 workflow manifests remain readable; new nodes require database migration `d7e9f1a3c520` and a current backend/frontend pair.
+- Approval waiting is supported by the local single-process scheduler. Application shutdown interrupts the run instead of resuming an in-memory waiter, while immutable approval and Attempt history remains stored.
+- Playwright verifies the Phase 7 workbench at 1440x900 and 390x844, including two real pauses, no preapproval writes, prose Diff, per-item editing, replacement approval, transaction writeback, version history, audit, and no page-level horizontal overflow.
+- The supported v2.1.0 Windows installer and portable ZIP require Windows x64 plus Microsoft Edge or WebView2 Runtime and pass packaged GUI lifecycle checks.

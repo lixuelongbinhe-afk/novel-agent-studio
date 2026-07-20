@@ -1,0 +1,44 @@
+[project]
+name = "novel-agent-studio-backend"
+version = "2.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "sqlalchemy>=2.0.32",
+  "alembic>=1.13.2",
+  "httpx>=0.27.0",
+  "jsonschema>=4.23.0",
+  "tiktoken>=0.9.0",
+  "pywebview>=6.2.1",
+  "pystray>=0.19.5",
+  "python-multipart>=0.0.20",
+  "python-docx>=1.1.2",
+  "reportlab>=4.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.5.0",
+  "mypy>=1.11.0",
+  "types-jsonschema>=4.26.0",
+  "types-reportlab>=4.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = []
+strict = true
+ignore_missing_imports = true

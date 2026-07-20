@@ -1,0 +1,42 @@
+# Security
+
+- SQLite stores only credential environment variable names, never API Key values.
+- API schemas reject credential variable names that look like literal secrets.
+- Automated tests use Mock/Fake providers and isolated databases.
+- Model output is rendered as text by default; arbitrary model HTML is never inserted into the DOM.
+- TipTap accepts only its configured schema and strips unsupported pasted elements.
+- All writes use transactions, validated identifiers, and optimistic concurrency where user edits can race.
+- The application does not execute user-provided Python, JavaScript, shell commands, templates, or arbitrary code.
+- Provider logs and later exports must redact authorization headers, credential values, and sensitive request fragments.
+- Provider Base URLs reject embedded usernames, passwords, query parameters, and fragments. Custom endpoints must be relative.
+- Custom adapter schemas reject static credential-shaped Headers, query values, and request-template values; a bound credential placeholder is allowed without storing its runtime value.
+- Generic HTTP targets allow only `http` and `https`, reject URL userinfo and metadata hosts, validate every DNS answer, block link-local/reserved/metadata addresses, and pin the validated IP to prevent DNS rebinding.
+- Private and loopback targets require `local_private` plus explicit approval of the exact scheme, host, and port. Relevant Provider, authentication, or credential changes revoke approval, test state, and enablement.
+- Gateway redirects and proxy-environment inheritance are disabled. HTTPS IP pinning preserves the validated hostname for Host and SNI.
+- Adapter manifests never contain credential references or values, import disabled, and undergo schema validation plus a recursive secret scan.
+- Debug output contains a redacted request preview and normalized result only. It never exposes hidden reasoning or raw authorization material.
+- Capability probes use bounded synthetic prompts, never manuscript content, never execute tools, and require explicit confirmation for the advanced level. Missing credentials and unknown non-Mock probe cost fail before a Provider request.
+- Effective capabilities are derived from persisted metadata, probes, and overrides in a fixed priority order. Model names are never used to guess final support.
+- Structured-output fallback uses JSON parsers and local JSON Schema validation, never regex extraction or executable repair templates. Only one separately metered repair is allowed.
+- Side-effecting tool calls cannot be downgraded to text simulation. Every safe degradation is returned as a visible warning.
+- Context, rate, circuit, and budget checks execute in the backend central execution path. Frontend controls cannot bypass per-request, project-daily, Route-run, concurrency, RPM, or TPM enforcement.
+- Retry and fallback use normalized error allowlists. Authentication, permission, invalid requests, refusal, Schema failure, cancellation, and project-boundary conflicts do not silently switch Providers.
+- A stream cannot fall back after any text has been emitted. Cancellation closes upstream work and releases queue, concurrency, and budget reservations.
+- The invocation ledger stores normalized metadata and bounded error codes only. It does not persist authorization material, raw upstream bodies, manuscript prompts, or hidden reasoning.
+- Agent prompt templates use `string.Formatter` parsing over an explicit variable-root allowlist. They reject attributes, private names, arbitrary expressions, environment access, file/network access, imports, and executable syntax.
+- Agent input/output contracts are locally checked as JSON Schema. An Agent selects exactly one model or Route, and project-bound Route references are enforced in the backend.
+- Workflow validation happens server-side before execution. Draft graph data cannot select an unowned Agent/Route or bypass capability, context, rate, budget, and pricing checks in central model execution.
+- Run snapshots intentionally omit credential references and values while preserving the non-secret configuration needed for reproducibility. Workflow manifests are secret-scanned, import disabled, and remap Agent identities rather than trusting source database IDs.
+- Persisted SSE contains normalized workflow events and bounded output deltas, not authorization headers, hidden reasoning, or raw upstream response bodies. Reconnect uses monotonic event IDs and immutable snapshots.
+- Cancellation is idempotent, propagates to active streams and queue waits, preserves partial user-visible output, and releases execution reservations. Startup converts orphaned pending/running runs to `interrupted`; no work silently survives process shutdown.
+- Context source IDs are resolved server-side and checked against the selected project. Chapters, scenes, entities, Agents, policies, Routes, models, and Workflow runs from another project are rejected rather than silently ignored.
+- Effective Context classification scope is the intersection of the project policy and every possible target Provider. Remote Providers default to a conservative scope; `secret` is never allowed by an implicit default. Excluding required or locked content blocks model execution when the Provider policy requires it.
+- Context previews and Workflow retrieval use the same backend builder. Frontend include/exclude, priority, lock, Pin, classification, and budget controls cannot bypass Provider boundaries or required-content checks.
+- Rich manuscript HTML is parsed with the standard HTML parser and delivered as visible text. Context templates, retrieval input, Pins, and memory JSON are data only and are never evaluated as HTML, Python, JavaScript, shell, or template code.
+- Retrieval never writes chapters, scenes, entities, timelines, foreshadowing, or relations. It may update explicit memory/control records, rebuild the local FTS index, and append an immutable Context Build. Story writes require a current approved Phase 7 snapshot and Change Set.
+- Context Build snapshots can contain unpublished or classified manuscript text. They remain local SQLite records, are not included in portable manifests, and are included in complete Phase 8 backups; SQLite and backups are not encrypted at rest.
+- Approval decisions require the current record revision plus a bounded idempotency key. Expired, cancelled, rejected, changes-requested, or superseded snapshots cannot authorize writeback, and repeated submission cannot apply the transaction twice.
+- Extraction output is validated against a closed Pydantic/JSON Schema. Models cannot name tables, provide SQL, or introduce arbitrary fields; Change Set construction maps only the application allowlist.
+- Entity matching is conservative. Ambiguous or unmatched names remain explicit conflicts/candidates rather than being silently merged into an existing entity.
+- Writeback checks the frozen Change Set hash, approval snapshot, project ownership, and current record revisions immediately before mutation. Rebase and manual merge produce a new revision and require reapproval.
+- Chapter version creation, accepted item mutations, append-only audit data, revision increments, and FTS rebuild share one transaction. Any failure rolls back every part, and API callers cannot request a partial commit.
