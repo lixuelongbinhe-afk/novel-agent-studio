@@ -16,8 +16,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Novel Agent Studio Windows Installer")]
 [assembly: AssemblyCompany("Novel Agent Studio")]
 [assembly: AssemblyProduct("Novel Agent Studio Installer")]
-[assembly: AssemblyVersion("2.2.2.0")]
-[assembly: AssemblyFileVersion("2.2.2.0")]
+[assembly: AssemblyVersion("2.2.3.0")]
+[assembly: AssemblyFileVersion("2.2.3.0")]
 
 namespace NovelAgentStudioInstaller
 {
@@ -76,7 +76,7 @@ namespace NovelAgentStudioInstaller
             Controls.Add(title);
 
             Label version = new Label();
-            version.Text = "Novel Agent Studio  v2.2.2";
+            version.Text = "Novel Agent Studio  v2.2.3";
             version.ForeColor = Color.FromArgb(80, 103, 98);
             version.AutoSize = true;
             version.Location = new Point(37, 73);
@@ -190,7 +190,7 @@ namespace NovelAgentStudioInstaller
     {
         internal const string AppFolder = "NovelAgentStudio";
         internal const string DisplayName = "Novel Agent Studio";
-        internal const string Version = "2.2.2";
+        internal const string Version = "2.2.3";
         internal static readonly string InstallDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Programs",

@@ -21,6 +21,7 @@ from app.schemas.studio import (
     ArtifactDecision,
     ArtifactUpdate,
     ChapterTreeRepairRequest,
+    ChatRequest,
     ContinuationImportRequest,
     GenerateRequest,
     OutlineImportRequest,
@@ -398,6 +399,144 @@ def test_chapter_plan_ignores_agent_heading_and_fills_requested_count(db: Sessio
         (1, 10), (11, 20), (21, 30), (31, 40),
         (41, 50), (51, 60), (61, 70), (71, 80),
     ]
+
+
+def test_generated_plan_inserts_missing_chapters_in_order_and_merges_duplicate_volumes() -> None:
+    volumes = [
+        {
+            "title": "第1卷 起势",
+            "chapters": [
+                {"title": "第1章 开端"},
+                {"title": "第3章 转折"},
+            ],
+        },
+        {
+            "title": "第2卷 对抗",
+            "chapters": [
+                {"title": "第5章 追击"},
+                {"title": "第6章 反击"},
+            ],
+        },
+        {
+            "title": "第2卷 对抗",
+            "chapters": [
+                {"title": "第9章 决断"},
+                {"title": "第10章 余波"},
+            ],
+        },
+    ]
+
+    normalized = studio._normalize_generated_chapter_plan(volumes, 10)
+
+    assert [volume["title"] for volume in normalized] == ["第1卷 起势", "第2卷 对抗"]
+    assert [
+        studio._chapter_title_number(chapter["title"])
+        for volume in normalized
+        for chapter in volume["chapters"]
+    ] == list(range(1, 11))
+    assert [
+        studio._chapter_title_number(chapter["title"])
+        for chapter in normalized[0]["chapters"]
+    ] == [1, 2, 3, 4]
+    assert [
+        studio._chapter_title_number(chapter["title"])
+        for chapter in normalized[1]["chapters"]
+    ] == [5, 6, 7, 8, 9, 10]
+
+
+def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Session) -> None:
+    overview = create_project(db, "outline")
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    with db.begin():
+        state = studio._state(db, project_id)
+        config = studio._json_object(state.config_json)
+        config["chapter_count"] = 10
+        state.config_json = studio._dump(config)
+        first = models.Volume(project_id=project_id, title="第1卷 起势", position=1)
+        second = models.Volume(project_id=project_id, title="第2卷 对抗", position=2)
+        duplicate = models.Volume(project_id=project_id, title="第2卷 对抗", position=3)
+        db.add_all([first, second, duplicate])
+        db.flush()
+        rows = [
+            (first, "第1章 开端", 1),
+            (first, "第3章 转折", 2),
+            (second, "第5章 追击", 1),
+            (second, "第6章 反击", 2),
+            (duplicate, "第9章 决断", 1),
+            (duplicate, "第10章 余波", 2),
+            (duplicate, "第2章", 3),
+            (duplicate, "第4章", 4),
+            (duplicate, "第7章", 5),
+            (duplicate, "第8章", 6),
+        ]
+        for volume, title, position in rows:
+            db.add(models.Chapter(volume_id=volume.id, title=title, position=position))
+
+    preview = studio.chapter_tree_repair_preview(db, project_id)
+    assert preview["can_repair"] is True
+    assert preview["out_of_order"] is True
+    assert preview["duplicate_volumes"] == ["第2卷 对抗"]
+
+    result = studio.repair_chapter_tree(
+        db, project_id, ChapterTreeRepairRequest(confirm=True)
+    )
+    repaired = result["overview"]
+    assert [volume["title"] for volume in repaired["tree"]["volumes"]] == [
+        "第1卷 起势",
+        "第2卷 对抗",
+    ]
+    assert [
+        studio._chapter_title_number(chapter["title"])
+        for chapter in repaired["tree"]["chapters"]
+    ] == list(range(1, 11))
+    first_volume_id = int(repaired["tree"]["volumes"][0]["id"])
+    assert [
+        studio._chapter_title_number(chapter["title"])
+        for chapter in repaired["tree"]["chapters"]
+        if int(chapter["volume_id"]) == first_volume_id
+    ] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_editor_chat_requires_confirmation_then_runs_the_real_workflow(db: Session) -> None:
+    overview = create_project(db, "outline")
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    with db.begin():
+        state = studio._state(db, project_id)
+        state.stage = "drafting"
+        volume = models.Volume(project_id=project_id, title="第一卷", position=1)
+        db.add(volume)
+        db.flush()
+        chapter = models.Chapter(volume_id=volume.id, title="第1章 起点", position=1)
+        db.add(chapter)
+        db.flush()
+        chapter_id = chapter.id
+
+    message = await studio.chat(
+        db,
+        project_id,
+        ChatRequest(message="推到工作流，再有需要我会主动找你", use_demo_model=True),
+    )
+    assert message["proposal_status"] == "pending"
+    assert message["proposal"] == {
+        "target_type": "workflow",
+        "phase": "drafting",
+        "chapter_id": chapter_id,
+        "label": "生成第1章 起点正文",
+        "use_demo_model": True,
+    }
+    assert not any(
+        item["kind"] == "drafting"
+        for item in studio.project_overview(db, project_id)["artifacts"]
+    )
+
+    applied = await studio.decide_message_proposal(db, project_id, int(message["id"]), "apply")
+
+    assert applied["proposal_status"] == "applied"
+    latest = studio.project_overview(db, project_id)
+    assert any(item["kind"] == "drafting" for item in latest["artifacts"])
+    assert latest["jobs"][0]["kind"] == "drafting"
+    assert latest["jobs"][0]["status"] == "completed"
 
 
 def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session) -> None:

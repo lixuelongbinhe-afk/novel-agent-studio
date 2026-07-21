@@ -166,14 +166,13 @@ async def chat(
 
 
 @router.post("/projects/{project_id}/messages/{message_id}/proposal")
-def decide_message_proposal(
+async def decide_message_proposal(
     project_id: int,
     message_id: int,
     payload: MessageProposalDecision,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    with db.begin():
-        return studio.decide_message_proposal(db, project_id, message_id, payload.action)
+    return await studio.decide_message_proposal(db, project_id, message_id, payload.action)
 
 
 @router.post("/projects/{project_id}/outline/preview")

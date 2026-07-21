@@ -55,7 +55,15 @@ export type StudioMessage = {
   role: "user" | "assistant";
   content: string;
   context_scope: string;
-  proposal: { target_type: string; target_id: number; content: string } | null;
+  proposal: {
+    target_type: string;
+    target_id?: number;
+    content?: string;
+    phase?: string;
+    chapter_id?: number;
+    label?: string;
+    use_demo_model?: boolean;
+  } | null;
   proposal_status: "none" | "pending" | "applied" | "rejected";
   model_name: string | null;
   model_reason: string;
@@ -127,6 +135,9 @@ export type StudioOverview = {
     active_count: number;
     suspect_chapters: Array<{ id: number; title: string; word_count: number; revision: number }>;
     missing_numbers: number[];
+    out_of_order: boolean;
+    duplicate_volumes: string[];
+    position_errors: boolean;
     can_repair: boolean;
   };
   library_counts: { entities: number; timeline: number; foreshadows: number; style_guides: number };

@@ -488,6 +488,15 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
         )
         .order_by(models.Chapter.volume_id, models.Chapter.position, models.Chapter.id)
     ).all()
+    volume_order = {volume.id: index for index, volume in enumerate(volumes)}
+    chapters = sorted(
+        chapters,
+        key=lambda chapter: (
+            volume_order.get(chapter.volume_id, len(volume_order)),
+            chapter.position,
+            chapter.id,
+        ),
+    )
     chapter_ids = [item.id for item in chapters]
     scenes = db.scalars(
         select(models.Scene)
@@ -909,7 +918,9 @@ async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, 
     )
     prompt = (
         "你是小说智能体工作室的总编助理。回答必须基于自动注入的项目上下文。"
-        "若用户要求修改内容，先给出完整修改提案，不要假装已经写入。\n\n"
+        "若用户要求修改内容，先给出完整修改提案，不要假装已经写入。"
+        "若用户要求推进、执行或进入下一步，只说明将创建待确认操作；"
+        "在作者点击执行前，绝不能声称已经推进工作流或已经开始生成。\n\n"
         f"项目：{project.title}\n当前阶段：{STAGE_LABELS.get(state.stage, state.stage)}\n"
         f"自动上下文：\n{context}\n\n"
         f"当前选中文本：\n{payload.selected_text or '（无）'}\n\n"
@@ -936,7 +947,7 @@ async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, 
     return _message_record(assistant)
 
 
-def decide_message_proposal(
+async def decide_message_proposal(
     db: Session, project_id: int, message_id: int, action: str
 ) -> dict[str, Any]:
     message = db.get(models.StudioMessage, message_id)
@@ -946,9 +957,27 @@ def decide_message_proposal(
         raise HTTPException(status_code=409, detail="该修改提案已处理")
     if action == "reject":
         message.proposal_status = "rejected"
-        db.flush()
+        db.commit()
         return _message_record(message)
     proposal = _json_object(message.proposal_json)
+    if proposal.get("target_type") == "workflow":
+        phase = str(proposal.get("phase") or "")
+        chapter_id = int(proposal.get("chapter_id") or 0) or None
+        await generate(
+            db,
+            project_id,
+            phase,
+            GenerateRequest(
+                chapter_id=chapter_id,
+                use_demo_model=bool(proposal.get("use_demo_model")),
+            ),
+        )
+        message = db.get(models.StudioMessage, message_id)
+        if message is None:
+            raise HTTPException(status_code=404, detail="对话消息不存在")
+        message.proposal_status = "applied"
+        db.commit()
+        return _message_record(message)
     create_snapshot(
         db,
         project_id,
@@ -981,7 +1010,7 @@ def decide_message_proposal(
             )
         )
     message.proposal_status = "applied"
-    db.flush()
+    db.commit()
     return _message_record(message)
 
 
@@ -1839,29 +1868,52 @@ def _default_chapter_scenes(synopsis: str = "") -> list[dict[str, str]]:
 def _normalize_generated_chapter_plan(
     volumes: list[dict[str, Any]], requested_chapters: int
 ) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for index, volume in enumerate(volumes):
+        title = str(volume.get("title") or f"第{index + 1}卷").strip()
+        key = _volume_plan_key(title)
+        if key not in merged:
+            merged[key] = {**volume, "title": title, "chapters": []}
+            order.append(key)
+        merged[key]["chapters"].extend(
+            cast(list[dict[str, Any]], volume.get("chapters") or [])
+        )
+
     normalized: list[dict[str, Any]] = []
     used_numbers: set[int] = set()
-    total = 0
-    for volume in volumes:
+    for key in order:
+        volume = merged[key]
         chapters: list[dict[str, Any]] = []
         for chapter in cast(list[dict[str, Any]], volume.get("chapters") or []):
             title = str(chapter.get("title") or "").strip()
             number = _chapter_title_number(title)
-            if number is None or number in used_numbers or total >= requested_chapters:
+            if number is None or number in used_numbers or number > requested_chapters:
                 continue
             used_numbers.add(number)
             chapters.append(chapter)
-            total += 1
         if chapters:
             normalized.append({"title": str(volume.get("title") or "第一卷"), "chapters": chapters})
     if not normalized:
         normalized = [{"title": "第一卷", "chapters": []}]
+
+    normalized.sort(key=_planned_volume_sort_key)
+    starts = [
+        min(
+            (
+                _chapter_title_number(str(chapter.get("title") or ""))
+                or requested_chapters + 1
+                for chapter in cast(list[dict[str, Any]], volume["chapters"])
+            ),
+            default=1,
+        )
+        for volume in normalized
+    ]
     for number in range(1, requested_chapters + 1):
-        if total >= requested_chapters:
-            break
         if number in used_numbers:
             continue
-        normalized[-1]["chapters"].append(
+        target_index = _volume_index_for_chapter(number, starts)
+        normalized[target_index]["chapters"].append(
             {
                 "title": f"第{number}章",
                 "synopsis": f"依据已批准的章节与场景规划完成第 {number} 章。",
@@ -1869,8 +1921,60 @@ def _normalize_generated_chapter_plan(
             }
         )
         used_numbers.add(number)
-        total += 1
+    for volume in normalized:
+        volume["chapters"].sort(
+            key=lambda chapter: _chapter_title_number(str(chapter.get("title") or ""))
+            or requested_chapters + 1
+        )
     return normalized
+
+
+def _volume_plan_key(title: str) -> str:
+    number = _volume_title_number(title)
+    if number is not None:
+        return f"number:{number}"
+    return "title:" + re.sub(r"\s+", "", title).casefold()
+
+
+def _volume_title_number(title: str) -> int | None:
+    match = re.match(r"^第\s*([0-9]+|[一二三四五六七八九十]+)\s*卷", title.strip(), re.I)
+    if not match:
+        return None
+    value = match.group(1)
+    if value.isdigit():
+        return int(value)
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10
+    if "十" in value:
+        left, right = value.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return digits.get(value)
+
+
+def _planned_volume_sort_key(volume: dict[str, Any]) -> tuple[int, int]:
+    title_number = _volume_title_number(str(volume.get("title") or ""))
+    chapter_numbers = [
+        number
+        for chapter in cast(list[dict[str, Any]], volume.get("chapters") or [])
+        for number in [_chapter_title_number(str(chapter.get("title") or ""))]
+        if number is not None
+    ]
+    return (
+        title_number if title_number is not None else 10_001,
+        min(chapter_numbers) if chapter_numbers else 10_001,
+    )
+
+
+def _volume_index_for_chapter(number: int, starts: list[int]) -> int:
+    target = 0
+    for index, start in enumerate(starts):
+        if number < start:
+            break
+        target = index
+    return target
 
 
 def chapter_tree_repair_preview(db: Session, project_id: int) -> dict[str, Any]:
@@ -1878,20 +1982,30 @@ def chapter_tree_repair_preview(db: Session, project_id: int) -> dict[str, Any]:
     requested_count = max(
         1, min(int(_json_object(state.config_json).get("chapter_count") or 12), 10_000)
     )
-    volume_ids = db.scalars(
-        select(models.Volume.id).where(
+    volumes = db.scalars(
+        select(models.Volume).where(
             models.Volume.project_id == project_id,
             models.Volume.deleted_at.is_(None),
-        )
+        ).order_by(models.Volume.position, models.Volume.id)
     ).all()
+    volume_ids = [volume.id for volume in volumes]
+    volume_order = {volume.id: index for index, volume in enumerate(volumes)}
     chapters = db.scalars(
         select(models.Chapter)
         .where(
             models.Chapter.volume_id.in_(volume_ids or [-1]),
             models.Chapter.deleted_at.is_(None),
         )
-        .order_by(models.Chapter.position, models.Chapter.id)
+        .order_by(models.Chapter.volume_id, models.Chapter.position, models.Chapter.id)
     ).all()
+    chapters = sorted(
+        chapters,
+        key=lambda chapter: (
+            volume_order.get(chapter.volume_id, len(volume_order)),
+            chapter.position,
+            chapter.id,
+        ),
+    )
     suspect_titles = {name for name, _ in PHASE_AGENTS["chapters"]}
     suspects = [item for item in chapters if item.title.strip() in suspect_titles]
     existing_numbers = {
@@ -1904,6 +2018,32 @@ def chapter_tree_repair_preview(db: Session, project_id: int) -> dict[str, Any]:
     missing_numbers = [
         number for number in range(1, requested_count + 1) if number not in existing_numbers
     ]
+    numbers_in_tree = [
+        number
+        for item in chapters
+        if item not in suspects
+        for number in [_chapter_title_number(item.title)]
+        if number is not None
+    ]
+    out_of_order = numbers_in_tree != sorted(numbers_in_tree)
+    duplicate_volumes: list[str] = []
+    seen_volume_keys: set[str] = set()
+    for volume in volumes:
+        key = _volume_plan_key(volume.title)
+        if key in seen_volume_keys:
+            duplicate_volumes.append(volume.title)
+        else:
+            seen_volume_keys.add(key)
+    position_errors = any(
+        [chapter.position for chapter in chapters if chapter.volume_id == volume.id]
+        != list(
+            range(
+                1,
+                len([chapter for chapter in chapters if chapter.volume_id == volume.id]) + 1,
+            )
+        )
+        for volume in volumes
+    )
     return {
         "requested_count": requested_count,
         "active_count": len(chapters),
@@ -1917,7 +2057,16 @@ def chapter_tree_repair_preview(db: Session, project_id: int) -> dict[str, Any]:
             for item in suspects
         ],
         "missing_numbers": missing_numbers,
-        "can_repair": bool(suspects),
+        "out_of_order": out_of_order,
+        "duplicate_volumes": duplicate_volumes,
+        "position_errors": position_errors,
+        "can_repair": bool(
+            suspects
+            or missing_numbers
+            or out_of_order
+            or duplicate_volumes
+            or position_errors
+        ),
     }
 
 
@@ -1936,7 +2085,7 @@ def repair_chapter_tree(
         project_id,
         SnapshotCreate(
             label="修复章节结构前",
-            reason="修复被 Agent 标题占用的章节名额；原正文永久保留在此快照中",
+            reason="合并重复分卷、恢复章节编号顺序并补齐缺号；原正文永久保留在此快照中",
             special=True,
         ),
     )
@@ -1946,26 +2095,6 @@ def repair_chapter_tree(
         if chapter is not None and chapter.deleted_at is None:
             chapter.deleted_at = now
             chapter.revision += 1
-    suspect_volume_ids = {
-        chapter.volume_id
-        for suspect in cast(list[dict[str, Any]], preview["suspect_chapters"])
-        for chapter in [db.get(models.Chapter, int(suspect["id"]))]
-        if chapter is not None
-    }
-    for volume_id in suspect_volume_ids:
-        remaining = int(
-            db.scalar(
-                select(func.count(models.Chapter.id)).where(
-                    models.Chapter.volume_id == volume_id,
-                    models.Chapter.deleted_at.is_(None),
-                )
-            )
-            or 0
-        )
-        volume = db.get(models.Volume, volume_id)
-        if remaining == 0 and volume is not None and volume.deleted_at is None:
-            volume.deleted_at = now
-            volume.revision += 1
     volumes = db.scalars(
         select(models.Volume)
         .where(
@@ -1976,22 +2105,44 @@ def repair_chapter_tree(
     ).all()
     if not volumes:
         raise HTTPException(status_code=409, detail="项目没有可用分卷，无法补齐章节")
-    target_volume = volumes[-1]
-    max_position = int(
-        db.scalar(
-            select(func.max(models.Chapter.position)).where(
-                models.Chapter.volume_id == target_volume.id,
+
+    canonical_by_key: dict[str, models.Volume] = {}
+    for volume in volumes:
+        key = _volume_plan_key(volume.title)
+        canonical = canonical_by_key.get(key)
+        if canonical is None:
+            canonical_by_key[key] = volume
+            continue
+        duplicate_chapters = db.scalars(
+            select(models.Chapter).where(
+                models.Chapter.volume_id == volume.id,
                 models.Chapter.deleted_at.is_(None),
             )
-        )
-        or 0
+        ).all()
+        for chapter in duplicate_chapters:
+            chapter.volume_id = canonical.id
+            chapter.revision += 1
+        volume.deleted_at = now
+        volume.revision += 1
+
+    db.flush()
+    volumes = [volume for volume in volumes if volume.deleted_at is None]
+    active_chapters = list(
+        db.scalars(
+            select(models.Chapter).where(
+                models.Chapter.volume_id.in_([volume.id for volume in volumes]),
+                models.Chapter.deleted_at.is_(None),
+            )
+        ).all()
     )
-    for offset, number in enumerate(cast(list[int], preview["missing_numbers"]), 1):
+    starts = _chapter_volume_starts(volumes, active_chapters)
+    for number in cast(list[int], preview["missing_numbers"]):
+        target_volume = volumes[_volume_index_for_chapter(number, starts)]
         chapter = models.Chapter(
             volume_id=target_volume.id,
             title=f"第{number}章",
             content="",
-            position=max_position + offset,
+            position=0,
             word_count=0,
         )
         db.add(chapter)
@@ -2005,12 +2156,78 @@ def repair_chapter_tree(
                     position=scene_position,
                 )
             )
+        active_chapters.append(chapter)
+
+    numbered: dict[int, list[models.Chapter]] = {volume.id: [] for volume in volumes}
+    unnumbered: dict[int, list[models.Chapter]] = {volume.id: [] for volume in volumes}
+    for chapter in active_chapters:
+        chapter_number = _chapter_title_number(chapter.title)
+        if chapter_number is None:
+            unnumbered.setdefault(chapter.volume_id, []).append(chapter)
+            continue
+        target_volume = volumes[_volume_index_for_chapter(chapter_number, starts)]
+        if chapter.volume_id != target_volume.id:
+            chapter.volume_id = target_volume.id
+            chapter.revision += 1
+        numbered[target_volume.id].append(chapter)
+
+    for volume_position, volume in enumerate(volumes, 1):
+        if volume.position != volume_position:
+            volume.position = volume_position
+            volume.revision += 1
+        ordered = sorted(
+            numbered.get(volume.id, []),
+            key=lambda chapter: (_chapter_title_number(chapter.title) or 10_001, chapter.id),
+        ) + sorted(
+            unnumbered.get(volume.id, []),
+            key=lambda chapter: (chapter.position, chapter.id),
+        )
+        for position, chapter in enumerate(ordered, 1):
+            if chapter.position != position:
+                chapter.position = position
+                chapter.revision += 1
     state = _state(db, project_id)
     if preview["missing_numbers"]:
         state.stage = "drafting"
         state.revision += 1
     db.flush()
     return {"repaired": True, "overview": project_overview(db, project_id)}
+
+
+def _is_placeholder_chapter_title(title: str) -> bool:
+    return bool(
+        re.fullmatch(r"第\s*\d+\s*章", title.strip(), re.I)
+        or re.fullmatch(r"chapter\s+\d+", title.strip(), re.I)
+    )
+
+
+def _chapter_volume_starts(
+    volumes: list[models.Volume], chapters: list[models.Chapter]
+) -> list[int]:
+    starts: list[int] = []
+    previous = 0
+    for volume in volumes:
+        volume_chapters = [item for item in chapters if item.volume_id == volume.id]
+        named_numbers = [
+            number
+            for item in volume_chapters
+            if not _is_placeholder_chapter_title(item.title)
+            for number in [_chapter_title_number(item.title)]
+            if number is not None
+        ]
+        all_numbers = [
+            number
+            for item in volume_chapters
+            for number in [_chapter_title_number(item.title)]
+            if number is not None
+        ]
+        candidate = min(named_numbers or all_numbers or [previous + 1])
+        start = max(previous + 1, candidate)
+        starts.append(start)
+        previous = start
+    if starts:
+        starts[0] = min(starts[0], 1)
+    return starts
 
 
 def _require_generation_prerequisites(
@@ -2610,6 +2827,17 @@ def _context_reason(metadata: dict[str, Any]) -> str:
 def _chat_proposal(
     db: Session, project_id: int, payload: ChatRequest, response_text: str
 ) -> dict[str, Any] | None:
+    workflow_words = (
+        "推进工作流",
+        "推到工作流",
+        "继续工作流",
+        "进入下一阶段",
+        "开始下一步",
+        "执行下一步",
+        "推吧",
+    )
+    if any(word in payload.message for word in workflow_words):
+        return _workflow_chat_proposal(db, project_id, payload.use_demo_model)
     action_words = ("修改", "改写", "重写", "调整", "替换", "润色", "应用")
     if not any(word in payload.message for word in action_words):
         return None
@@ -2629,6 +2857,55 @@ def _chat_proposal(
     if artifact is None:
         return None
     return {"target_type": "artifact", "target_id": artifact.id, "content": response_text}
+
+
+def _workflow_chat_proposal(
+    db: Session, project_id: int, use_demo_model: bool
+) -> dict[str, Any] | None:
+    state = _state(db, project_id)
+    phase = "world" if state.stage == "idea" else state.stage
+    if phase not in PHASE_AGENTS:
+        return None
+    chapter_id: int | None = None
+    label = f"生成{STAGE_LABELS.get(phase, phase)}"
+    if phase == "drafting":
+        chapter = db.scalar(
+            select(models.Chapter)
+            .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
+            .where(
+                models.Volume.project_id == project_id,
+                models.Volume.deleted_at.is_(None),
+                models.Chapter.deleted_at.is_(None),
+                models.Chapter.word_count == 0,
+            )
+            .order_by(models.Volume.position, models.Chapter.position, models.Chapter.id)
+        )
+        if chapter is None:
+            return None
+        chapter_id = chapter.id
+        label = f"生成{chapter.title}正文"
+        pending = db.scalars(
+            select(models.CreativeArtifact).where(
+                models.CreativeArtifact.project_id == project_id,
+                models.CreativeArtifact.kind.in_(["drafting", "scene_draft"]),
+                models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
+                models.CreativeArtifact.deleted_at.is_(None),
+            )
+        ).all()
+        if any(
+            int(_json_object(item.metadata_json).get("chapter_id") or 0) == chapter_id
+            for item in pending
+        ):
+            return None
+    proposal: dict[str, Any] = {
+        "target_type": "workflow",
+        "phase": phase,
+        "label": label,
+        "use_demo_model": use_demo_model,
+    }
+    if chapter_id is not None:
+        proposal["chapter_id"] = chapter_id
+    return proposal
 
 
 def _context_scope(payload: ChatRequest) -> str:

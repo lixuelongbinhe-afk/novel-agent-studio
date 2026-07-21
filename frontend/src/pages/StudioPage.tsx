@@ -258,6 +258,17 @@ export function StudioPage() {
   );
   const pending = overview.artifacts.filter((item) => ["pending", "changes_requested"].includes(item.status));
   const missingChapterSummary = formatMissingChapters(overview.chapter_tree_repair.missing_numbers);
+  const chapterRepairIssues = [
+    overview.chapter_tree_repair.suspect_chapters.length
+      ? `异常占位章节：${overview.chapter_tree_repair.suspect_chapters.map((item) => item.title).join("、")}`
+      : "",
+    overview.chapter_tree_repair.duplicate_volumes.length
+      ? `重复分卷：${overview.chapter_tree_repair.duplicate_volumes.join("、")}`
+      : "",
+    overview.chapter_tree_repair.out_of_order ? "章节编号顺序错乱" : "",
+    overview.chapter_tree_repair.position_errors ? "章节位置序号异常" : "",
+    overview.chapter_tree_repair.missing_numbers.length ? `需要补齐${missingChapterSummary}` : ""
+  ].filter(Boolean).join("；");
   const hasUnsavedArtifactEdits = editing !== null && (
     editTitle !== editing.title || editText !== editing.content || editNotes !== editing.notes
   );
@@ -391,9 +402,9 @@ export function StudioPage() {
               {overview.chapter_tree_repair.can_repair ? (
                 <div className="chapter-repair-banner">
                   <AlertTriangle size={17} />
-                  <div><strong>检测到章节结构异常</strong><span>“{overview.chapter_tree_repair.suspect_chapters.map((item) => item.title).join("、")}”被误当成正文，将补齐 {missingChapterSummary}。原正文会永久保留。</span></div>
+                  <div><strong>检测到章节结构异常</strong><span>{chapterRepairIssues}。现有正文、场景和版本记录会保留。</span></div>
                   <button type="button" disabled={repairChapterTree.isPending} onClick={() => {
-                    if (window.confirm(`修复章节结构？\n\n异常章节将移入回收状态，并补齐 ${missingChapterSummary}。操作前会创建永久特殊快照。`)) repairChapterTree.mutate();
+                    if (window.confirm(`修复章节结构？\n\n${chapterRepairIssues}。系统会合并重复分卷、按编号归位章节并补齐缺号；操作前会创建永久特殊快照。`)) repairChapterTree.mutate();
                   }}>{repairChapterTree.isPending ? "修复中..." : "修复章节结构"}</button>
                 </div>
               ) : null}
@@ -534,7 +545,7 @@ function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: {
       {overview.messages.map((message) => <div key={message.id} className={`chat-message ${message.role}`}>
         <div>{message.content}</div>
         {message.role === "assistant" ? <small>{message.model_name} · {message.context_scope}</small> : null}
-        {message.proposal_status === "pending" ? <div className="proposal-actions"><span>修改提案待确认</span><button onClick={() => onProposal(message.id, "reject")}>拒绝</button><button className="approve" onClick={() => onProposal(message.id, "apply")}>应用</button></div> : null}
+        {message.proposal_status === "pending" ? <div className="proposal-actions"><span>{message.proposal?.target_type === "workflow" ? `工作流操作待确认：${message.proposal.label ?? "推进下一步"}` : "修改提案待确认"}</span><button onClick={() => onProposal(message.id, "reject")}>拒绝</button><button className="approve" onClick={() => onProposal(message.id, "apply")}>{message.proposal?.target_type === "workflow" ? "执行" : "应用"}</button></div> : null}
       </div>)}
     </div>
     <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSend(); }}>

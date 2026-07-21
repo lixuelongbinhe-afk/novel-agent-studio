@@ -1,5 +1,13 @@
 # Tasks
 
+## V2.2.3 Chapter Tree And Editor Workflow Repair
+
+- [x] Merge duplicate numbered volumes and insert missing generated chapters into the correct numeric volume range.
+- [x] Detect and repair persisted duplicate volumes, out-of-order chapters, position gaps, missing chapters, and Agent-title placeholders behind explicit author confirmation.
+- [x] Preserve chapter IDs, manuscript content, scenes, versions, and a permanent pre-repair snapshot.
+- [x] Turn explicit editor workflow requests into confirmation cards and execute the real generation service only after approval.
+- [x] Validate the repair against a copied 80-chapter production database without modifying the source database.
+
 ## Phase 1 - Project Skeleton And Novel Foundations
 
 - [x] Create the repository structure, required documentation, environment example, Make targets, and Windows/POSIX scripts.

@@ -41,7 +41,7 @@ const overview: StudioOverview = {
   artifacts: [artifact],
   tree: { volumes: [], chapters: [], scenes: [] },
   jobs: [], messages: [], snapshots: [],
-  chapter_tree_repair: { requested_count: 4, active_count: 0, suspect_chapters: [], missing_numbers: [], can_repair: false },
+  chapter_tree_repair: { requested_count: 4, active_count: 0, suspect_chapters: [], missing_numbers: [], out_of_order: false, duplicate_volumes: [], position_errors: false, can_repair: false },
   library_counts: { entities: 0, timeline: 0, foreshadows: 0, style_guides: 0 },
   usage: { invocations: 0, tokens: 0, spent: 0, limit: null, currency: "USD", percent: 0, warning: false, paused: false }
 };
@@ -134,6 +134,38 @@ describe("StudioPage", () => {
       expect(await screen.findByLabelText("对话消息")).toHaveClass("chat-stream");
       expect(view.container.querySelector(".chat-composer")).toBeInTheDocument();
       expect(view.container.querySelector(".context-rail")).toBeInTheDocument();
+    } finally {
+      overview.messages = previousMessages;
+    }
+  });
+
+  it("requires explicit execution for an editor workflow proposal", async () => {
+    const previousMessages = overview.messages;
+    overview.messages = [{
+      id: 3,
+      project_id: 1,
+      role: "assistant" as const,
+      content: "已准备好下一项工作流操作，请确认后执行。",
+      context_scope: "project,drafting",
+      proposal: { target_type: "workflow", phase: "drafting", chapter_id: 21, label: "生成第1章正文" },
+      proposal_status: "pending",
+      model_name: "deepseek-chat",
+      model_reason: "",
+      created_at: "2026-07-21T00:00:00Z"
+    }];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    try {
+      render(
+        <MemoryRouter initialEntries={["/studio/1"]}>
+          <QueryClientProvider client={client}>
+            <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await screen.findByText("工作流操作待确认：生成第1章正文")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "执行" }));
+      await waitFor(() => expect(studioApi.decideProposal).toHaveBeenCalledWith(1, 3, "apply"));
     } finally {
       overview.messages = previousMessages;
     }
