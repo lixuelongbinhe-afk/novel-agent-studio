@@ -7,7 +7,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $workspace = Split-Path -Parent $root
 $outputs = Join-Path $workspace "outputs"
 $stage = Join-Path $root "work\release-package"
-$version = "2.2.3"
+$version = "2.2.4"
 $portableName = "NovelAgentStudio-Portable-$version.zip"
 $setupName = "NovelAgentStudio-Setup-$version.exe"
 
@@ -44,7 +44,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 if (-not $SkipFrontendBuild) {
   Push-Location (Join-Path $root "frontend")
   try {
-    Invoke-Checked -Command { npm.cmd run build } -Failure "Frontend production build failed"
+    Invoke-Checked -Command { pnpm.cmd run build } -Failure "Frontend production build failed"
   } finally {
     Pop-Location
   }

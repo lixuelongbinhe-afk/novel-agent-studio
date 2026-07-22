@@ -54,7 +54,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid #88948e; outline-offs
 }
 .nas-brand { height: 48px; display: flex; align-items: center; gap: 9px; padding: 0 10px; white-space: nowrap; }
 .nas-brand strong { flex: 1; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-.nas-brand-mark { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 5px; background: #30383a; }
+.nas-brand-mark { width: 25px; height: 25px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; background: #30383a; color: var(--text); }
+button.nas-brand-mark { cursor: pointer; }
+button.nas-brand-mark:hover { background: #3b4547; }
+.nas-shell.is-collapsed .nas-brand { justify-content: center; padding: 0; }
+.nas-shell.is-collapsed .primary-nav a { justify-content: center; padding: 0; }
 .primary-nav { display: grid; gap: 3px; padding: 8px; }
 .primary-nav a, .project-nav-item {
   height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 9px; border-radius: 5px; color: #b9bfbc;
@@ -68,6 +72,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid #88948e; outline-offs
 .sidebar-status { margin-top: auto; height: 45px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-top: 1px solid #293033; color: var(--muted); font-size: 11px; }
 .sidebar-status > span:nth-child(2) { flex: 1; white-space: nowrap; }
 .status-light { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px #294034; }
+.nas-shell.is-collapsed .sidebar-status { justify-content: center; padding: 0; }
+.sidebar-status-expand { width: 100%; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.sidebar-status-expand:hover { background: #263033; }
 .nas-content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px minmax(0, 1fr); }
 .nas-topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #292b2b; background: #181919; }
 .topbar-title { display: flex; align-items: center; gap: 9px; min-width: 0; }

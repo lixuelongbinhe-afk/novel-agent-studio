@@ -1,5 +1,14 @@
 # Tasks
 
+## Unreleased - GitHub Issues #1 And #2
+
+- [x] Add a PEP 517 setuptools build backend and restrict editable-install package discovery to `app*`.
+- [x] Document the first-clone Windows setup, editable backend install, migration, and frozen pnpm install.
+- [x] Make `dev.ps1` fail fast on missing dependencies and delegate process lifecycle management to `dev.py`.
+- [x] Use pnpm consistently in development, build, start, and desktop packaging instructions.
+- [x] Remove collapsed-sidebar arrow controls and make the in-bounds brand icon and status light expand the sidebar.
+- [x] Cover bootstrap configuration and collapsed-sidebar behavior with backend, component, and Playwright regressions.
+
 ## V2.2.3 Chapter Tree And Editor Workflow Repair
 
 - [x] Merge duplicate numbered volumes and insert missing generated chapters into the correct numeric volume range.

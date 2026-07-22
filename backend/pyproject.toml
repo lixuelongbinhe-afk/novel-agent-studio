@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "novel-agent-studio-backend"
-version = "2.2.3"
+version = "2.2.4"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",
@@ -29,6 +33,9 @@ dev = [
   "types-jsonschema>=4.26.0",
   "types-reportlab>=4.5.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

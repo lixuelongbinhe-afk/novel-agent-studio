@@ -4,7 +4,6 @@ import {
   BookOpenText,
   Braces,
   ChevronLeft,
-  ChevronRight,
   CircleDot,
   FolderKanban,
   PanelLeftClose,
@@ -35,16 +34,19 @@ export function AppShell() {
     <div className={`nas-shell ${sidebarCollapsed ? "is-collapsed" : ""}`}>
       <aside className="nas-sidebar">
         <div className="nas-brand">
-          <span className="nas-brand-mark"><Sparkles size={16} /></span>
-          {!sidebarCollapsed ? <strong>Novel Agent Studio</strong> : null}
-          <button
-            type="button"
-            className="icon-button subtle"
-            onClick={toggleSidebar}
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-          >
-            {sidebarCollapsed ? <ChevronRight size={16} /> : <PanelLeftClose size={16} />}
-          </button>
+          {sidebarCollapsed ? (
+            <button type="button" className="nas-brand-mark" onClick={toggleSidebar} title="展开侧栏">
+              <Sparkles size={16} />
+            </button>
+          ) : (
+            <>
+              <span className="nas-brand-mark"><Sparkles size={16} /></span>
+              <strong>Novel Agent Studio</strong>
+              <button type="button" className="icon-button subtle" onClick={toggleSidebar} title="收起侧栏">
+                <PanelLeftClose size={16} />
+              </button>
+            </>
+          )}
         </div>
 
         <nav className="primary-nav" aria-label="主导航">
@@ -85,16 +87,19 @@ export function AppShell() {
         ) : null}
 
         <div className="sidebar-status">
-          <span className="status-light" />
-          {!sidebarCollapsed ? <span>本地数据已连接</span> : null}
-          <button
-            type="button"
-            className="icon-button subtle"
-            onClick={toggleSidebar}
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-          >
-            {sidebarCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-          </button>
+          {sidebarCollapsed ? (
+            <button type="button" className="sidebar-status-expand" onClick={toggleSidebar} title="展开侧栏">
+              <span className="status-light" />
+            </button>
+          ) : (
+            <>
+              <span className="status-light" />
+              <span>本地数据已连接</span>
+              <button type="button" className="icon-button subtle" onClick={toggleSidebar} title="收起侧栏">
+                <ChevronLeft size={15} />
+              </button>
+            </>
+          )}
         </div>
       </aside>
 

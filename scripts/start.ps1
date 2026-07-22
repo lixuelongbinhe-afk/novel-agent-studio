@@ -7,7 +7,7 @@ if (-not (Test-Path $backendPython)) {
   $backendPython = "python"
 }
 if (-not (Test-Path (Join-Path $frontendDist "index.html"))) {
-  throw "Missing frontend production build. Run npm.cmd run build in frontend first."
+  throw "Missing frontend production build. Run pnpm.cmd run build in frontend first."
 }
 $env:NAS_ENV = "production"
 $env:NAS_FRONTEND_DIST = $frontendDist

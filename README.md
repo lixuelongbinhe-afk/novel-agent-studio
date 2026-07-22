@@ -76,9 +76,27 @@ Seed 会创建中文悬疑示例和 11-Agent 并行工作流。
 
 目录内包含 `studio-v2.db`、轮转日志和专用 WebView 配置。卸载器默认询问是否保留数据；`--silent` 卸载会保留数据。完整备份含未发布正文且未加密，请像保护原稿一样保护 `.nasbackup.zip` 文件。
 
-## 本地开发
+## 本地开发：首次初始化
 
-Windows：
+源码运行需要 Python 3.12、Node.js 20+ 和 pnpm 11。Windows 首次 clone 后，在仓库根目录执行：
+
+```powershell
+py -3.12 -m venv backend\.venv
+cd backend
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m app.cli migrate
+cd ..\frontend
+corepack enable
+pnpm install --frozen-lockfile
+cd ..
+```
+
+macOS/Linux 使用 `python3.12 -m venv backend/.venv` 和 `backend/.venv/bin/python` 完成同样步骤。仓库以 `pnpm-lock.yaml` 为唯一前端锁文件；开发、测试和构建统一使用 pnpm。
+
+## 本地开发：启动
+
+Windows 首选：
 
 ```powershell
 .\scripts\dev.ps1
@@ -88,7 +106,7 @@ Windows：
 
 ```powershell
 cd frontend
-npm.cmd run build
+pnpm run build
 cd ..
 .\scripts\start.ps1
 ```
@@ -110,10 +128,10 @@ cd backend
 .\.venv\Scripts\python.exe -m mypy --strict app tests
 
 cd ..\frontend
-npm.cmd test -- --run
-npm.cmd run typecheck
-npm.cmd run build
-npm.cmd run e2e
+pnpm test --run
+pnpm run typecheck
+pnpm run build
+pnpm run e2e
 ```
 
 最终发布记录见 `docs/FINAL_AUDIT.md`、`docs/SECURITY_AUDIT.md`、`docs/PERFORMANCE_AUDIT.md`、`docs/RELEASE_CHECKLIST.md` 和 `docs/KNOWN_LIMITATIONS.md`。

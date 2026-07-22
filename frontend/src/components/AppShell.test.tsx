@@ -49,17 +49,25 @@ describe("AppShell", () => {
     }]);
   });
 
-  it("toggles the sidebar and keeps the control label aligned with its action", async () => {
+  it("collapses to clickable brand and status targets without arrow controls", async () => {
     const { container } = renderShell();
     await screen.findAllByText("侧栏测试小说");
 
     fireEvent.click(screen.getAllByTitle("收起侧栏")[0]);
     expect(container.querySelector(".nas-shell")).toHaveClass("is-collapsed");
     expect(screen.getAllByTitle("展开侧栏")).toHaveLength(2);
+    expect(container.querySelector(".nas-brand > button.nas-brand-mark")).toBeInTheDocument();
+    expect(container.querySelector(".sidebar-status > button.sidebar-status-expand")).toBeInTheDocument();
+    expect(container.querySelector(".is-collapsed .nas-brand .icon-button")).not.toBeInTheDocument();
+    expect(container.querySelector(".is-collapsed .sidebar-status .icon-button")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByTitle("展开侧栏")[0]);
+    fireEvent.click(container.querySelector(".sidebar-status-expand")!);
     expect(container.querySelector(".nas-shell")).not.toHaveClass("is-collapsed");
     expect(screen.getAllByTitle("收起侧栏")).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByTitle("收起侧栏")[0]);
+    fireEvent.click(container.querySelector("button.nas-brand-mark")!);
+    expect(container.querySelector(".nas-shell")).not.toHaveClass("is-collapsed");
   });
 
   it("navigates every primary entry and persists the selected project", async () => {

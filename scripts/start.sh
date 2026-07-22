@@ -2,7 +2,7 @@
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test -f "$ROOT/frontend/dist/index.html" || {
-  echo "Missing frontend production build. Run npm run build in frontend first." >&2
+  echo "Missing frontend production build. Run pnpm run build in frontend first." >&2
   exit 1
 }
 export NAS_ENV=production

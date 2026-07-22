@@ -1,5 +1,37 @@
 import { expect, test } from "@playwright/test";
 
+test("collapsed sidebar keeps only in-bounds brand and status expand targets", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  await page.getByTitle("收起侧栏").first().click();
+  const shell = page.locator(".nas-shell");
+  const sidebar = page.locator(".nas-sidebar");
+  const brand = page.locator("button.nas-brand-mark");
+  const status = page.locator("button.sidebar-status-expand");
+  await expect(shell).toHaveClass(/is-collapsed/);
+  await expect(page.getByTitle("展开侧栏")).toHaveCount(2);
+
+  const [sidebarBox, brandBox, statusBox] = await Promise.all([
+    sidebar.boundingBox(),
+    brand.boundingBox(),
+    status.boundingBox()
+  ]);
+  expect(sidebarBox?.width).toBe(54);
+  for (const box of [brandBox, statusBox]) {
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(sidebarBox!.x);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(sidebarBox!.x + sidebarBox!.width);
+  }
+  await page.screenshot({ path: "test-results/sidebar-collapsed.png" });
+
+  await status.click();
+  await expect(shell).not.toHaveClass(/is-collapsed/);
+  await page.getByTitle("收起侧栏").first().click();
+  await brand.click();
+  await expect(shell).not.toHaveClass(/is-collapsed/);
+});
+
 test("V2 creation flow renders and generates a review item", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });

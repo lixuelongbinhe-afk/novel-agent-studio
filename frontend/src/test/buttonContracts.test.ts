@@ -83,7 +83,7 @@ describe("reachable button contracts", () => {
       visit(source);
     }
 
-    expect(auditedButtons).toBe(104);
+    expect(auditedButtons).toBe(106);
     expect(violations, `发现没有真实处理器的按钮：\n${violations.join("\n")}`).toEqual([]);
   });
 });

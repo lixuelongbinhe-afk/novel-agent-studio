@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.4] - 2026-07-22
+
+### Fixed
+
+- 为后端补齐 PEP 517 构建配置，并将 setuptools 包发现限制为 `app*`，首次克隆后可正常执行 `pip install -e ".[dev]"`。
+- 统一本地开发链路使用 pnpm；`dev.ps1` 会检查虚拟环境、前端依赖和 pnpm，再由 `dev.py` 统一启动和回收前后端进程。
+- 折叠侧栏只保留顶部品牌图标和底部状态灯，移除占位箭头；两处均可点击展开，且不会超出 54px 侧栏。
+
+### Verification
+
+- 新增首次初始化契约、折叠侧栏组件和 Playwright 尺寸回归；后端 185 项、前端 42 项、Playwright 6 项测试通过。
+- Ruff、mypy、TypeScript 类型检查、PEP 517 可编辑安装预检和 Vite 生产构建通过。
+
 ## [2.2.3] - 2026-07-21
 
 ### Fixed

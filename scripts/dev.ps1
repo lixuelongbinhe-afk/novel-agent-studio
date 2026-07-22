@@ -4,13 +4,14 @@ $backendDir = Join-Path $root "backend"
 $frontendDir = Join-Path $root "frontend"
 $backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
 if (-not (Test-Path $backendPython)) {
-  $backendPython = "python"
+  throw "Missing backend virtual environment. Run the README first-time setup commands to create backend\.venv and install -e \".[dev]\"."
 }
-$node = "node"
-$programFilesNode = Join-Path $env:ProgramFiles "nodejs\node.exe"
-if (Test-Path $programFilesNode) {
-  $node = $programFilesNode
+if (-not (Test-Path (Join-Path $frontendDir "node_modules"))) {
+  throw "Missing frontend dependencies. Run 'pnpm install --frozen-lockfile' in frontend first."
 }
-& $env:ComSpec /c "start ""Novel Agent Studio Backend"" /MIN /D ""$backendDir"" ""$backendPython"" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
-& $env:ComSpec /c "start ""Novel Agent Studio Frontend"" /MIN /D ""$frontendDir"" ""$node"" node_modules\vite\bin\vite.js --host 127.0.0.1 --port 5173"
-Write-Host "Novel Agent Studio started: backend http://127.0.0.1:8000, frontend http://127.0.0.1:5173"
+if (-not (Get-Command pnpm.cmd -ErrorAction SilentlyContinue)) {
+  throw "pnpm.cmd was not found. Enable Corepack or install pnpm 11, then retry."
+}
+
+& $backendPython (Join-Path $root "scripts\dev.py")
+exit $LASTEXITCODE
