@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -79,10 +80,29 @@ class MockAdapter:
             return _mock_error(
                 request, request_id, "provider_internal", "Mock provider error", False, 500
             )
-        text = (
-            "【Mock】已根据输入生成一段小说工作台响应："
-            f"{prompt[:80] or '请提供创作目标'}。下一步建议拆分场景、检查人物动机，并保留伏笔回收点。"
-        )
+        chapter_range = re.search(r"本次只规划第\s*(\d+)\s*至第\s*(\d+)\s*章", prompt)
+        if chapter_range:
+            start, end = (int(chapter_range.group(1)), int(chapter_range.group(2)))
+            lines = ["# 第一卷 演示规划"]
+            for number in range(start, end + 1):
+                lines.extend(
+                    [
+                        f"## 第{number}章 演示章节{number}",
+                        f"本章推进第 {number} 个核心冲突，并留下后续钩子。",
+                        "### 场景一 推进",
+                        "人物采取行动，局势发生可验证的变化。",
+                        "### 场景二 对抗",
+                        "阻力升级，人物必须付出代价才能继续。",
+                        "### 场景三 转折",
+                        "本章完成局部转折，并建立下一章的悬念。",
+                    ]
+                )
+            text = "\n".join(lines)
+        else:
+            text = (
+                "【Mock】已根据输入生成一段小说工作台响应："
+                f"{prompt[:80] or '请提供创作目标'}。下一步建议拆分场景、检查人物动机，并保留伏笔回收点。"
+            )
         structured = None
         if request.response_format == "json":
             structured = (

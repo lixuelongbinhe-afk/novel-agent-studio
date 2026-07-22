@@ -1,6 +1,6 @@
 # Known Limitations
 
-版本：2.2.3
+版本：2.2.6
 
 - 正式桌面包面向 Windows 10/11 x64，并依赖系统可用的 Microsoft Edge 或 WebView2 Runtime。源码 Web 版可在其他平台开发运行，但未发布对应安装包。
 - 安装包尚未使用商业代码签名，Windows SmartScreen 可能显示“未知发布者”。请用 `SHA256SUMS.txt` 校验来自本项目的产物。

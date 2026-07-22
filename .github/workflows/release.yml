@@ -1,0 +1,40 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: python -m venv backend/.venv
+      - run: backend/.venv/Scripts/python.exe -m pip install -e "backend[dev]" pyinstaller
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: ./scripts/package-desktop.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NovelAgentStudio-${{ github.ref_name }}
+          path: |
+            ../outputs/NovelAgentStudio-Setup-*.exe
+            ../outputs/NovelAgentStudio-Portable-*.zip
+            ../outputs/SHA256SUMS.txt

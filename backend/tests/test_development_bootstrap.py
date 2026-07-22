@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 import tomllib
 
 
@@ -26,3 +28,26 @@ def test_windows_development_bootstrap_checks_dependencies_and_uses_pnpm() -> No
     assert "pip install -e \".[dev]\"" in readme
     assert "pnpm install --frozen-lockfile" in readme
     assert "npm.cmd" not in readme
+
+
+def test_release_version_metadata_is_synchronized() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "release_metadata.py"), "verify"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.stdout.strip() == (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+def test_release_package_requires_provenance_and_fresh_frontend() -> None:
+    script = (ROOT / "scripts" / "package-desktop.ps1").read_text(encoding="utf-8")
+    assert "Release provenance check failed" in script
+    assert "Release builds require a clean Git working tree" not in script
+    assert "Tagged release builds must rebuild the frontend" in script
+    assert "Frontend dist is stale for the current version or source tree" in script
+    assert "build-provenance.json" in script
+    assert "Extracted portable ZIP smoke test failed" in script
+    assert "Extracted portable ZIP GUI lifecycle smoke test failed" in script

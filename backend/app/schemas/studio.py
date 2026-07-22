@@ -93,6 +93,7 @@ class ArtifactDecision(BaseModel):
 
 
 class GenerateRequest(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     instruction: str = Field(default="", max_length=100_000)
     agent_name: str | None = Field(default=None, min_length=1, max_length=120)
     chapter_id: int | None = Field(default=None, ge=1)

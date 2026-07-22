@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Novel Agent Studio"
-    app_version: str = Field("2.2.4", alias="NAS_APP_VERSION")
+    app_version: str = Field("2.2.6", alias="NAS_APP_VERSION")
     environment: str = Field("development", alias="NAS_ENV")
     database_url: str = Field("sqlite:///./data/novel_agent_studio.db", alias="NAS_DATABASE_URL")
     cors_origins: str = Field(
@@ -36,6 +36,26 @@ class Settings(BaseSettings):
         ge=1024,
         alias="NAS_MAX_BACKUP_UNCOMPRESSED_BYTES",
     )
+    max_import_bytes: int = Field(
+        10 * 1024 * 1024, ge=1024, alias="NAS_MAX_IMPORT_BYTES"
+    )
+    max_import_text_chars: int = Field(
+        5_000_000, ge=1000, alias="NAS_MAX_IMPORT_TEXT_CHARS"
+    )
+    import_parse_timeout_seconds: float = Field(
+        20.0, ge=1.0, le=300.0, alias="NAS_IMPORT_PARSE_TIMEOUT_SECONDS"
+    )
+    docx_max_entries: int = Field(2_048, ge=10, alias="NAS_DOCX_MAX_ENTRIES")
+    docx_max_expanded_bytes: int = Field(
+        64 * 1024 * 1024, ge=1024, alias="NAS_DOCX_MAX_EXPANDED_BYTES"
+    )
+    docx_max_member_bytes: int = Field(
+        32 * 1024 * 1024, ge=1024, alias="NAS_DOCX_MAX_MEMBER_BYTES"
+    )
+    docx_max_compression_ratio: float = Field(
+        200.0, ge=1.0, alias="NAS_DOCX_MAX_COMPRESSION_RATIO"
+    )
+    pdf_max_pages: int = Field(500, ge=1, alias="NAS_PDF_MAX_PAGES")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

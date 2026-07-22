@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,6 +32,15 @@ class Project(TimestampMixin, Base):
 
 class Volume(TimestampMixin, Base):
     __tablename__ = "volumes"
+    __table_args__ = (
+        Index(
+            "uq_active_volume_position",
+            "project_id",
+            "position",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -43,9 +52,29 @@ class Volume(TimestampMixin, Base):
 
 class Chapter(TimestampMixin, Base):
     __tablename__ = "chapters"
+    __table_args__ = (
+        Index(
+            "uq_active_chapter_position",
+            "volume_id",
+            "position",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_active_project_chapter_number",
+            "project_id",
+            "number",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL AND number IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
     volume_id: Mapped[int] = mapped_column(ForeignKey("volumes.id", ondelete="CASCADE"), index=True)
+    number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text, default="")
     position: Mapped[int] = mapped_column(Integer, default=0)
@@ -59,6 +88,15 @@ class Chapter(TimestampMixin, Base):
 
 class Scene(TimestampMixin, Base):
     __tablename__ = "scenes"
+    __table_args__ = (
+        Index(
+            "uq_active_scene_position",
+            "chapter_id",
+            "position",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id", ondelete="CASCADE"), index=True)
@@ -945,6 +983,12 @@ class StudioMessage(Base):
 
 class GenerationJob(TimestampMixin, Base):
     __tablename__ = "generation_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_generation_job_idempotency"
+        ),
+        UniqueConstraint("active_scope_key", name="uq_generation_job_active_scope"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(
@@ -957,6 +1001,8 @@ class GenerationJob(TimestampMixin, Base):
     model_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model_reason: Mapped[str] = mapped_column(Text, default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    active_scope_key: Mapped[str | None] = mapped_column(String(320), nullable=True)
     result_artifact_id: Mapped[int | None] = mapped_column(
         ForeignKey("creative_artifacts.id", ondelete="SET NULL"), nullable=True
     )

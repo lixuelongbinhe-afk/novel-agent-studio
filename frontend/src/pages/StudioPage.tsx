@@ -91,6 +91,7 @@ export function StudioPage() {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [notice, setNotice] = useState("");
+  const generationKeys = useRef(new WeakMap<object, string>());
 
   const { data: overview, isLoading, error } = useQuery({
     queryKey: ["studio-project", projectId],
@@ -115,19 +116,26 @@ export function StudioPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["studio-project", projectId] });
   const realProviders = providers.filter((item) => item.provider_type !== "mock");
   const generate = useMutation({
-    mutationFn: (payload: { phase: string; mode?: string; chapterId?: number; selection?: string; agentName?: string }) =>
-      studioApi.generate(projectId, payload.phase, {
+    mutationFn: (payload: { phase: string; mode?: string; chapterId?: number; selection?: string; agentName?: string }) => {
+      let idempotencyKey = generationKeys.current.get(payload);
+      if (!idempotencyKey) {
+        idempotencyKey = crypto.randomUUID();
+        generationKeys.current.set(payload, idempotencyKey);
+      }
+      return studioApi.generate(projectId, payload.phase, {
+        idempotency_key: idempotencyKey,
         instruction,
         agent_name: payload.agentName,
         chapter_id: payload.chapterId,
         selected_text: payload.selection,
         mode: payload.mode ?? "new",
         use_demo_model: realProviders.length === 0
-      }),
-    onSuccess: async () => {
+      });
+    },
+    onSuccess: async (result) => {
       setInstruction("");
-      setNotice("生成完成，已进入待审核列表");
-      setRightTab("reviews");
+      setNotice(result.job.status === "completed" ? "生成完成，已进入待审核列表" : "同一任务已在运行，请在进度中查看");
+      setRightTab(result.job.status === "completed" ? "reviews" : "progress");
       await refresh();
     },
     onError: (reason: Error) => setNotice(reason.message)
@@ -478,6 +486,7 @@ export function StudioPage() {
                     </header>
                     {artifact.metadata.conflict_level === "major" ? <div className="conflict-badge major"><AlertTriangle size={14} />重大设定冲突，需要你决定</div> : null}
                     {artifact.metadata.conflict_level === "minor" ? <div className="conflict-badge minor"><CheckCircle2 size={14} />轻微冲突已自动校正并标记</div> : null}
+                    <ChapterPlanValidationBadge artifact={artifact} />
                     <div className="artifact-content">{artifact.content}</div>
                     {artifact.notes ? <footer>{artifact.notes}</footer> : null}
                   </article>
@@ -574,6 +583,14 @@ function LibraryPanel({ overview }: { overview: StudioOverview }) {
   return <div className="rail-panel"><header><div><LibraryBig size={16} /><strong>资料库</strong></div><span>自动更新</span></header><div className="library-metrics">{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div><div className="memory-state"><CheckCircle2 size={15} /><span>记忆模式：{overview.state.memory_mode === "automatic" ? "自动更新" : "确认后更新"}</span></div></div>;
 }
 
+function ChapterPlanValidationBadge({ artifact }: { artifact: Artifact }) {
+  const value = artifact.metadata.chapter_plan_validation;
+  if (!value || typeof value !== "object") return null;
+  const validation = value as Record<string, unknown>;
+  const complete = validation.complete === true;
+  return <div className={complete ? "conflict-badge minor" : "conflict-badge major"}><FileCheck2 size={14} />章节覆盖率 {String(validation.coverage_percent ?? 0)}%{complete ? "，预览可审核" : "，缺失章节必须补齐"}</div>;
+}
+
 function CostPanel({ overview, onUpdate }: { overview: StudioOverview; onUpdate: (value: Record<string, unknown>) => void }) {
   const [budget, setBudget] = useState(overview.state.budget_limit?.toString() ?? "");
   return <div className="rail-panel"><header><div><CircleDollarSign size={16} /><strong>费用</strong></div><span>{overview.usage.currency}</span></header><div className="cost-summary"><strong>{overview.usage.spent.toFixed(4)}</strong><span>/ {overview.usage.limit?.toFixed(2) ?? "未设置"}</span><div className={overview.usage.warning ? "budget-bar warning" : "budget-bar"}><i style={{ width: `${Math.min(100, overview.usage.percent)}%` }} /></div><small>{overview.usage.tokens.toLocaleString()} tokens · {overview.usage.invocations} 次调用</small></div><label className="budget-input"><span>项目预算</span><div><input type="number" min="0.01" step="0.01" value={budget} onChange={(event) => setBudget(event.target.value)} /><button onClick={() => onUpdate({ budget_limit: budget ? Number(budget) : null, budget_paused: false })}>保存</button></div></label><div className="budget-rules"><span>70% 提醒</span><span>110% 任务结束后暂停</span></div>{overview.usage.paused ? <button className="primary-button full" onClick={() => onUpdate({ budget_paused: false })}>确认继续生成</button> : null}</div>;
@@ -586,11 +603,20 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
   const [dirty, setDirty] = useState(false);
   const [selection, setSelection] = useState("");
   const hydratedChapter = useRef({ id: selected?.id ?? null, revision: selected?.revision ?? null });
+  const editSequence = useRef(0);
+  const draft = useRef({ chapterId: selected?.id ?? null, title, content, sequence: 0 });
   const queryClient = useQueryClient();
   const save = useMutation({
-    mutationFn: () => studioApi.autosaveChapter(selected!, title, content),
-    onSuccess: async () => {
-      setDirty(false);
+    mutationFn: (snapshot: { chapter: Chapter; title: string; content: string; sequence: number }) =>
+      studioApi.autosaveChapter(snapshot.chapter, snapshot.title, snapshot.content),
+    onSuccess: async (saved, snapshot) => {
+      hydratedChapter.current = { id: saved.id, revision: saved.revision };
+      const current = draft.current;
+      const snapshotIsCurrent = current.chapterId === snapshot.chapter.id &&
+        current.sequence === snapshot.sequence &&
+        current.title === snapshot.title &&
+        current.content === snapshot.content;
+      setDirty(!snapshotIsCurrent);
       await queryClient.invalidateQueries({ queryKey: ["studio-project", overview.project.id] });
     },
     onError: (reason: Error) => onNotice(reason.message)
@@ -627,18 +653,25 @@ function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelectio
     setTitle(selected.title);
     setContent(selected.content);
     setDirty(false);
+    editSequence.current += 1;
+    draft.current = { chapterId: selected.id, title: selected.title, content: selected.content, sequence: editSequence.current };
     hydratedChapter.current = { id: selected.id, revision: selected.revision };
   }, [selected?.id, selected?.revision, dirty]);
   useEffect(() => {
-    if (!dirty || !selected) return;
-    const timer = window.setTimeout(() => save.mutate(), 1600);
+    if (!dirty || !selected || save.isPending) return;
+    const timer = window.setTimeout(() => save.mutate({
+      chapter: selected,
+      title: draft.current.title,
+      content: draft.current.content,
+      sequence: draft.current.sequence
+    }), 1600);
     return () => window.clearTimeout(timer);
-  }, [dirty, title, content, selected?.id]);
+  }, [dirty, title, content, selected?.id, save.isPending]);
   if (!selected) return <div className="empty-stage"><BookOpenText size={24} /><span>卷章大纲审核通过后，正文工作区会自动建立。</span></div>;
   const selectedScenes = overview.tree.scenes.filter((scene) => scene.chapter_id === selected.id);
   return <div className="writing-workspace">
     <aside className="chapter-tree"><header><span>卷章</span><div><b>{overview.tree.chapters.length}</b><button type="button" title="新增章节" aria-label="新增章节" disabled={createChapter.isPending} onClick={() => createChapter.mutate()}><Plus size={14} /></button><button type="button" title="删除当前章节" aria-label="删除当前章节" disabled={overview.tree.chapters.length <= 1 || deleteChapter.isPending} onClick={() => { if (window.confirm(`将“${selected.title}”移入回收站？`)) deleteChapter.mutate(); }}><Trash2 size={14} /></button></div></header>{overview.tree.volumes.map((volume) => <section key={volume.id}><strong>{volume.title}</strong>{overview.tree.chapters.filter((chapter) => chapter.volume_id === volume.id).map((chapter) => <button key={chapter.id} className={chapter.id === selected.id ? "active" : ""} onClick={() => onSelectChapter(chapter.id)}><FileText size={13} /><span>{chapter.title}</span><small>{chapter.word_count}</small></button>)}</section>)}</aside>
-    <section className="manuscript-pane">{overview.state.review_granularity === "scene" ? <div className="scene-review-strip"><span>场景审核</span>{selectedScenes.map((scene) => { const artifact = overview.artifacts.find((item) => item.kind === "scene_draft" && Number(item.metadata.scene_id) === scene.id && item.status !== "superseded"); return <button key={scene.id} type="button" className={artifact?.status === "approved" ? "approved" : artifact ? "pending" : "empty"} disabled={!artifact} onClick={() => artifact && onOpenArtifact(artifact)}><span>{scene.title}</span><small>{artifact ? statusLabel(artifact.status) : "未生成"}</small></button>; })}</div> : null}<header><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} /><div><span className={dirty ? "save-state dirty" : "save-state"}>{save.isPending ? "保存中" : dirty ? "未保存" : "已保存"}</span><button className="icon-button subtle" title="保存" onClick={() => save.mutate()}><Save size={15} /></button><button className="secondary-button" disabled={generating} onClick={() => onGenerate("full_rewrite", selected.id)}>全文重写</button><button className="primary-button" disabled={generating} onClick={() => onGenerate("new", selected.id)}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}续写正文</button></div></header><textarea className="manuscript-editor" value={content} onChange={(event) => { setContent(event.target.value); setDirty(true); }} onSelect={(event) => { const target = event.currentTarget; const value = target.value.slice(target.selectionStart, target.selectionEnd); setSelection(value); onSelection(value); }} placeholder="正文" /><footer><span>{content.replace(/\s/g, "").length.toLocaleString()} 字</span><div><button disabled={!selection || generating} onClick={() => onGenerate("local_revision", selected.id, selection)}><WandSparkles size={14} />局部修改</button><button disabled={generating} onClick={() => onGenerate("variants", selected.id, selection)}><SplitSquareVertical size={14} />多个方案</button></div></footer></section>
+    <section className="manuscript-pane">{overview.state.review_granularity === "scene" ? <div className="scene-review-strip"><span>场景审核</span>{selectedScenes.map((scene) => { const artifact = overview.artifacts.find((item) => item.kind === "scene_draft" && Number(item.metadata.scene_id) === scene.id && item.status !== "superseded"); return <button key={scene.id} type="button" className={artifact?.status === "approved" ? "approved" : artifact ? "pending" : "empty"} disabled={!artifact} onClick={() => artifact && onOpenArtifact(artifact)}><span>{scene.title}</span><small>{artifact ? statusLabel(artifact.status) : "未生成"}</small></button>; })}</div> : null}<header><input value={title} onChange={(event) => { const value = event.target.value; editSequence.current += 1; draft.current = { chapterId: selected.id, title: value, content: draft.current.content, sequence: editSequence.current }; setTitle(value); setDirty(true); }} /><div><span className={dirty ? "save-state dirty" : "save-state"}>{save.isPending ? "保存中" : dirty ? "未保存" : "已保存"}</span><button className="icon-button subtle" title="保存" disabled={save.isPending || !dirty} onClick={() => save.mutate({ chapter: selected, title: draft.current.title, content: draft.current.content, sequence: draft.current.sequence })}><Save size={15} /></button><button className="secondary-button" disabled={generating} onClick={() => onGenerate("full_rewrite", selected.id)}>全文重写</button><button className="primary-button" disabled={generating} onClick={() => onGenerate("new", selected.id)}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}续写正文</button></div></header><textarea className="manuscript-editor" value={content} onChange={(event) => { const value = event.target.value; editSequence.current += 1; draft.current = { chapterId: selected.id, title: draft.current.title, content: value, sequence: editSequence.current }; setContent(value); setDirty(true); }} onSelect={(event) => { const target = event.currentTarget; const value = target.value.slice(target.selectionStart, target.selectionEnd); setSelection(value); onSelection(value); }} placeholder="正文" /><footer><span>{content.replace(/\s/g, "").length.toLocaleString()} 字</span><div><button disabled={!selection || generating} onClick={() => onGenerate("local_revision", selected.id, selection)}><WandSparkles size={14} />局部修改</button><button disabled={generating} onClick={() => onGenerate("variants", selected.id, selection)}><SplitSquareVertical size={14} />多个方案</button></div></footer></section>
   </div>;
 }
 

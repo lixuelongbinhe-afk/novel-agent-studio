@@ -1,5 +1,7 @@
 param(
-  [switch]$SkipFrontendBuild
+  [switch]$SkipFrontendBuild,
+  [switch]$AllowDirty,
+  [switch]$AllowUntagged
 )
 
 $ErrorActionPreference = "Stop"
@@ -7,7 +9,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $workspace = Split-Path -Parent $root
 $outputs = Join-Path $workspace "outputs"
 $stage = Join-Path $root "work\release-package"
-$version = "2.2.4"
+$version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
 $portableName = "NovelAgentStudio-Portable-$version.zip"
 $setupName = "NovelAgentStudio-Setup-$version.exe"
 
@@ -41,12 +43,41 @@ $python = Join-Path $root "backend\.venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
   throw "Missing backend virtual environment: $python"
 }
+$releaseMetadata = Join-Path $root "scripts\release_metadata.py"
+Invoke-Checked -Command { & $python $releaseMetadata verify } -Failure "Version metadata is inconsistent"
+$buildProvenance = Join-Path $resolvedStage "build-provenance.json"
+$manifestArgs = @($releaseMetadata, "manifest", "--output", $buildProvenance)
+if ($AllowDirty) { $manifestArgs += "--allow-dirty" }
+if ($AllowUntagged) { $manifestArgs += "--allow-untagged" }
+Invoke-Checked -Command { & $python @manifestArgs } -Failure "Release provenance check failed"
+$frontendHash = (& $python $releaseMetadata frontend-hash).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $frontendHash) {
+  throw "Could not calculate the frontend source hash"
+}
+$frontendStamp = Join-Path $root "frontend\dist\build-provenance.json"
+if ($SkipFrontendBuild -and -not $AllowDirty -and -not $AllowUntagged) {
+  throw "Tagged release builds must rebuild the frontend"
+}
 if (-not $SkipFrontendBuild) {
   Push-Location (Join-Path $root "frontend")
   try {
     Invoke-Checked -Command { pnpm.cmd run build } -Failure "Frontend production build failed"
   } finally {
     Pop-Location
+  }
+  $frontendBuildInfo = [ordered]@{
+    schema_version = 1
+    version = $version
+    frontend_source_sha256 = $frontendHash
+  } | ConvertTo-Json
+  Set-Content -LiteralPath $frontendStamp -Value $frontendBuildInfo -Encoding UTF8
+} else {
+  if (-not (Test-Path -LiteralPath $frontendStamp)) {
+    throw "SkipFrontendBuild requires frontend/dist/build-provenance.json"
+  }
+  $frontendBuildInfo = Get-Content -LiteralPath $frontendStamp -Raw | ConvertFrom-Json
+  if ($frontendBuildInfo.version -ne $version -or $frontendBuildInfo.frontend_source_sha256 -ne $frontendHash) {
+    throw "Frontend dist is stale for the current version or source tree"
   }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root "frontend\dist\index.html"))) {
@@ -65,11 +96,13 @@ try {
 }
 
 $appSource = Join-Path $pyinstallerDist "NovelAgentStudio"
-foreach ($required in @("NovelAgentStudio.exe", "NovelAgentStudioConsole.exe", "_internal\frontend-dist\index.html", "_internal\alembic.ini")) {
+foreach ($required in @("NovelAgentStudio.exe", "NovelAgentStudioConsole.exe", "_internal\frontend-dist\index.html", "_internal\frontend-dist\build-provenance.json", "_internal\alembic.ini")) {
   if (-not (Test-Path -LiteralPath (Join-Path $appSource $required))) {
     throw "Packaged application is incomplete: $required"
   }
 }
+Copy-Item -LiteralPath $buildProvenance -Destination (Join-Path $appSource "build-provenance.json") -Force
+Set-Content -LiteralPath (Join-Path $appSource "VERSION") -Value $version -Encoding ASCII -NoNewline
 
 $cscCandidates = @(
   "$env:SystemRoot\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
@@ -120,13 +153,28 @@ New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot "data") | Out
 $portableZip = Join-Path $resolvedOutputs $portableName
 $setupExe = Join-Path $resolvedOutputs $setupName
 foreach ($old in Get-ChildItem -LiteralPath $resolvedOutputs -File | Where-Object {
-  $_.Name -like "NovelAgentStudio-Portable-*.zip" -or
-  $_.Name -like "NovelAgentStudio-Setup-*.exe" -or
+  $_.Name -eq $portableName -or
+  $_.Name -eq $setupName -or
   $_.Name -eq "SHA256SUMS.txt"
 }) {
   Remove-Item -LiteralPath $old.FullName -Force
 }
 Compress-Archive -LiteralPath $portableRoot -DestinationPath $portableZip -CompressionLevel Optimal
+
+$portableVerifyParent = Join-Path $resolvedStage "portable-verify"
+Expand-Archive -LiteralPath $portableZip -DestinationPath $portableVerifyParent
+$portableVerifyRoot = Join-Path $portableVerifyParent "NovelAgentStudio"
+foreach ($required in @("NovelAgentStudio.exe", "NovelAgentStudioConsole.exe", "build-provenance.json", "VERSION", "portable.flag")) {
+  if (-not (Test-Path -LiteralPath (Join-Path $portableVerifyRoot $required))) {
+    throw "Portable ZIP is incomplete after extraction: $required"
+  }
+}
+Invoke-Checked -Command {
+  & (Join-Path $portableVerifyRoot "NovelAgentStudioConsole.exe") --smoke-test --data-dir (Join-Path $resolvedStage "portable-verify-data")
+} -Failure "Extracted portable ZIP smoke test failed"
+Invoke-Checked -Command {
+  & (Join-Path $portableVerifyRoot "NovelAgentStudioConsole.exe") --gui-smoke-test-seconds 10 --data-dir (Join-Path $resolvedStage "portable-verify-gui-data")
+} -Failure "Extracted portable ZIP GUI lifecycle smoke test failed"
 
 $payloadZip = Join-Path $resolvedStage "installer-payload.zip"
 Compress-Archive -Path (Join-Path $appSource "*") -DestinationPath $payloadZip -CompressionLevel Optimal
@@ -155,6 +203,8 @@ Set-Content -LiteralPath $checksumPath -Value $checksums -Encoding ASCII
 
 Write-Host "Packaged application smoke test: PASS"
 Write-Host "Packaged GUI lifecycle smoke test: PASS"
+Write-Host "Extracted portable ZIP smoke test: PASS"
+Write-Host "Extracted portable ZIP GUI lifecycle smoke test: PASS"
 Write-Host "Portable ZIP: $portableZip"
 Write-Host "Installer EXE: $setupExe"
 Write-Host "Checksums: $checksumPath"

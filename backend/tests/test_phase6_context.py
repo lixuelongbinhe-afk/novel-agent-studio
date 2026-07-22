@@ -73,14 +73,18 @@ def seed_context(db: Session) -> ContextSeed:
     db.add(volume)
     db.flush()
     previous = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=1,
         title="第一章 雾中来信",
         content="林栀在档案馆收到一封没有署名的旧信。",
         position=1,
         word_count=20,
     )
     current = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=2,
         title="第二章 返港",
         content="林栀回到旧码头，潮水正漫过第七码头柱。",
         position=2,

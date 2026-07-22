@@ -107,7 +107,9 @@ def create_seed_data(db: Session) -> models.Project:
     db.add(volume)
     db.flush()
     chapter = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=1,
         title="第一章 返航前夜",
         content="雾从码头爬上钟楼时，林栀第一次听见旧无线电里传来自己的名字。",
         position=1,

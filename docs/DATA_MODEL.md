@@ -20,4 +20,4 @@ Classification values are `public`, `internal`, `confidential`, `personal inform
 
 Phase 7 adds `approval_requests`, `proposed_change_sets`, and `writeback_audits`. Approval rows store an immutable serialized snapshot and hash, snapshot revision, approval round, parent/replacement links, expiry, idempotent decision metadata, and optimistic revision. Change Sets store canonical extraction, base revisions, whitelisted items, conflicts, current hash, lifecycle state, and replacement/application links. Writeback audits are append-only application records tied to the run, approval, and exact Change Set hash, with before/applied evidence for each committed item.
 
-The current Alembic head is `d7e9f1a3c520`. Empty databases and proven complete legacy Phase 1/2/3/4/5/6 schemas migrate through every revision; incomplete unversioned schemas fail without being stamped current.
+The current Alembic head is `e8f1c3d5a740`. Empty databases and proven complete legacy schemas migrate through every revision; incomplete unversioned schemas fail without being stamped current. Active volume/chapter/scene positions and project-level chapter numbers are database-enforced invariants.

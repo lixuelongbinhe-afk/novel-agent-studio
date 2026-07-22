@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.core.config import get_settings
 from app.database import Base
-from app.migrations import PHASE_7_REVISION
+from app.migrations import STUDIO_V2_REVISION
 from app.schemas.release import (
     BackupManifestRead,
     BackupPreviewRead,
@@ -30,7 +30,7 @@ from app.services.context_retrieval import rebuild_fts_index
 
 
 BACKUP_FORMAT: Literal["novel-agent-studio-backup"] = "novel-agent-studio-backup"
-BACKUP_SCHEMA_VERSION: Literal[1] = 1
+BACKUP_SCHEMA_VERSION: Literal[2] = 2
 ARCHIVE_FILES = frozenset({"manifest.json", "data.json"})
 MAX_ARCHIVE_ENTRIES = 8
 MAX_COMPRESSION_RATIO = 250
@@ -96,7 +96,7 @@ def create_backup_archive(db: Session) -> bytes:
         format=BACKUP_FORMAT,
         schema_version=BACKUP_SCHEMA_VERSION,
         app_version=settings.app_version,
-        migration_revision=PHASE_7_REVISION,
+        migration_revision=STUDIO_V2_REVISION,
         created_at=datetime.now(timezone.utc),
         data_sha256=hashlib.sha256(data_bytes).hexdigest(),
         tables=counts,
@@ -275,10 +275,6 @@ def load_backup_archive(archive_bytes: bytes) -> LoadedBackup:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("备份 JSON 无效") from exc
     manifest = BackupManifestRead.model_validate(manifest_value)
-    if manifest.migration_revision != PHASE_7_REVISION:
-        raise ValueError(
-            f"备份迁移版本 {manifest.migration_revision} 与当前版本 {PHASE_7_REVISION} 不兼容"
-        )
     if hashlib.sha256(data_bytes).hexdigest() != manifest.data_sha256:
         raise ValueError("备份 data.json 哈希校验失败")
     migrated = _migrate_backup_data(data_value, manifest.schema_version)
@@ -361,16 +357,79 @@ def _validate_table_payload(
             if not isinstance(row, dict) or set(row) != columns:
                 raise ValueError(f"备份表 {name} 第 {index + 1} 行字段与 Schema 不一致")
             parsed_rows.append(cast(dict[str, Any], row))
-        if manifest_counts.get(name) != len(parsed_rows):
+        manifest_count = manifest_counts.get(name)
+        if manifest_count is None and manifest.schema_version == BACKUP_SCHEMA_VERSION:
+            raise ValueError(f"备份清单缺少表 {name} 的计数")
+        if manifest_count is not None and manifest_count != len(parsed_rows):
             raise ValueError(f"备份表 {name} 的清单计数不一致")
         validated[name] = parsed_rows
     return validated
 
 
 def _migrate_backup_data(value: Any, schema_version: int) -> Any:
+    if not isinstance(value, dict) or value.get("schema_version") != schema_version:
+        raise ValueError("备份清单与数据 Schema 版本不一致")
     if schema_version == BACKUP_SCHEMA_VERSION:
         return value
+    if schema_version == 1:
+        raw_tables = value.get("tables")
+        if not isinstance(raw_tables, dict):
+            raise ValueError("备份缺少 tables 对象")
+        expected = {table.name for table in backup_tables()}
+        unknown = set(raw_tables) - expected
+        if unknown:
+            raise ValueError(f"旧备份包含未知表：{sorted(unknown)}")
+        tables = {
+            name: [dict(row) for row in rows] if isinstance(rows, list) else rows
+            for name, rows in raw_tables.items()
+        }
+        for name in expected:
+            tables.setdefault(name, [])
+        _migrate_v1_chapters(tables)
+        for row in tables["generation_jobs"]:
+            if not isinstance(row, dict):
+                raise ValueError("旧备份 generation_jobs 行格式无效")
+            row.setdefault("idempotency_key", None)
+            row.setdefault("active_scope_key", None)
+        return {"schema_version": BACKUP_SCHEMA_VERSION, "tables": tables}
     raise ValueError(f"不支持的备份 Schema 版本：{schema_version}")
+
+
+def _migrate_v1_chapters(tables: dict[str, Any]) -> None:
+    volumes = tables.get("volumes")
+    chapters = tables.get("chapters")
+    if not isinstance(volumes, list) or not isinstance(chapters, list):
+        raise ValueError("旧备份卷章数据格式无效")
+    volume_meta: dict[int, tuple[int, int]] = {}
+    for row in volumes:
+        if not isinstance(row, dict):
+            raise ValueError("旧备份 volumes 行格式无效")
+        volume_meta[int(row["id"])] = (int(row["project_id"]), int(row["position"]))
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in chapters:
+        if not isinstance(row, dict):
+            raise ValueError("旧备份 chapters 行格式无效")
+        volume_id = int(row["volume_id"])
+        if volume_id not in volume_meta:
+            raise ValueError(f"旧备份章节引用不存在的卷：{volume_id}")
+        project_id, _ = volume_meta[volume_id]
+        row["project_id"] = project_id
+        grouped.setdefault(project_id, []).append(row)
+    for project_rows in grouped.values():
+        project_rows.sort(
+            key=lambda row: (
+                volume_meta[int(row["volume_id"])][1],
+                int(row["position"]),
+                int(row["id"]),
+            )
+        )
+        active_number = 0
+        for row in project_rows:
+            if row.get("deleted_at") is None:
+                active_number += 1
+                row["number"] = active_number
+            else:
+                row["number"] = None
 
 
 def _serialize_row(table_name: str, row: RowMapping) -> dict[str, Any]:

@@ -87,7 +87,9 @@ class ChapterCreate(BaseModel):
 
 class ChapterRead(ORMModel):
     id: int
+    project_id: int
     volume_id: int
+    number: int | None
     title: str
     content: str
     position: int

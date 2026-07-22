@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "novel-agent-studio-backend"
-version = "2.2.4"
+version = "2.2.6"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",

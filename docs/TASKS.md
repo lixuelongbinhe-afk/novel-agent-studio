@@ -1,6 +1,26 @@
 # Tasks
 
-## Unreleased - GitHub Issues #1 And #2
+## V2.2.6 Risk Audit Remediation
+
+- [x] Fix autosave response races and preserve dirty state for edits made during an in-flight save.
+- [x] Enforce generation idempotency and one active task per project/phase/chapter/mode; terminal failures release the scope.
+- [x] Reconcile partial chapter trees without overwriting prose and block approval when requested chapters are missing.
+- [x] Add active order and canonical chapter-number database constraints with a data-preserving migration.
+- [x] Isolate DOCX/PDF parsing and enforce upload, expansion, page, text and timeout budgets.
+- [x] Migrate backup schema v1 independently from Alembic revisions.
+- [x] Split chapter parsing, document import and generation-job state into focused services with concurrency tests.
+- [x] Restore zero-error Ruff and strict mypy gates; add clean tagged build provenance and CI workflows.
+
+## V2.2.5 Chapter Generator And Volume Deduplication
+
+- [x] Reproduce the duplicate first volume against the user's previous production outline.
+- [x] Parse Arabic, Chinese, financial-Chinese, bold Markdown, volume/part, and chapter numbering consistently.
+- [x] Merge same-number volumes before outline/manuscript import and generated tree writeback.
+- [x] Keep the approved volume outline authoritative when chapter batches omit volume headers.
+- [x] Increase detailed chapter-planning output capacity and replay the existing 80-chapter result.
+- [x] Pass 190 backend tests, Ruff, mypy, packaged-console smoke test, and packaged-GUI lifecycle test.
+
+## V2.2.4 - GitHub Issues #1 And #2
 
 - [x] Add a PEP 517 setuptools build backend and restrict editable-install package discovery to `app*`.
 - [x] Document the first-clone Windows setup, editable backend install, migration, and frozen pnpm install.

@@ -33,7 +33,7 @@ class BackupManifestRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     format: Literal["novel-agent-studio-backup"]
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     app_version: str
     migration_revision: str
     created_at: datetime

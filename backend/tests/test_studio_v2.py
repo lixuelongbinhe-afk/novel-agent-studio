@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from io import BytesIO
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Literal
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from reportlab.pdfgen import canvas
 
@@ -28,7 +29,7 @@ from app.schemas.studio import (
     SnapshotCreate,
     StudioProjectCreate,
 )
-from app.services import studio
+from app.services import chapter_plans, model_execution, studio
 
 
 @pytest.fixture
@@ -156,7 +157,7 @@ async def test_studio_model_call_compacts_prompt_to_real_model_window(
         captured.append(text)
         return SimpleNamespace(error=None, text="完成", control=None, warnings=[])
 
-    monkeypatch.setattr(studio.model_execution, "execute_model", fake_execute)
+    monkeypatch.setattr(model_execution, "execute_model", fake_execute)
     profile = models.ModelProfile(
         id=88,
         provider_account_id=77,
@@ -202,7 +203,7 @@ async def test_studio_model_call_recompresses_after_provider_context_error(
             )
         return SimpleNamespace(error=None, text="压缩后成功", control=None, warnings=[])
 
-    monkeypatch.setattr(studio.model_execution, "execute_model", fake_execute)
+    monkeypatch.setattr(model_execution, "execute_model", fake_execute)
     profile = models.ModelProfile(
         id=89,
         provider_account_id=77,
@@ -230,6 +231,79 @@ async def test_studio_model_call_recompresses_after_provider_context_error(
 
 
 @pytest.mark.asyncio
+async def test_generation_context_failure_marks_job_failed(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+
+    def fail_context(*_args: object, **_kwargs: object) -> tuple[str, dict[str, object]]:
+        raise RuntimeError("context build failed")
+
+    monkeypatch.setattr(studio, "_generation_context", fail_context)
+    with pytest.raises(HTTPException) as exc_info:
+        await studio.generate(
+            db,
+            project_id,
+            "world",
+            GenerateRequest(idempotency_key="context-failure", use_demo_model=True),
+        )
+
+    assert exc_info.value.status_code == 502
+    job = db.scalar(select(models.GenerationJob))
+    assert job is not None
+    assert job.status == "failed"
+    assert job.active_scope_key is None
+    assert "context build failed" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_successful_generation_replays_all_artifacts_without_duplicates(
+    db: Session,
+) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    request = GenerateRequest(idempotency_key="stable-world", use_demo_model=True)
+
+    first = await studio.generate(db, project_id, "world", request)
+    artifact_count = db.scalar(select(func.count(models.CreativeArtifact.id)))
+    replay = await studio.generate(db, project_id, "world", request)
+
+    assert first["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True
+    assert [item["id"] for item in replay["artifacts"]] == [
+        item["id"] for item in first["artifacts"]
+    ]
+    assert db.scalar(select(func.count(models.GenerationJob.id))) == 1
+    assert db.scalar(select(func.count(models.CreativeArtifact.id))) == artifact_count
+
+
+@pytest.mark.asyncio
+async def test_cancelled_generation_releases_active_scope(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+
+    async def cancel_call(*_args: object, **_kwargs: object) -> object:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(studio, "_model_call", cancel_call)
+    with pytest.raises(asyncio.CancelledError):
+        await studio.generate(
+            db,
+            project_id,
+            "world",
+            GenerateRequest(idempotency_key="cancelled-world", use_demo_model=True),
+        )
+
+    job = db.scalar(select(models.GenerationJob))
+    assert job is not None
+    assert job.status == "cancelled"
+    assert job.active_scope_key is None
+
+
+@pytest.mark.asyncio
 async def test_continuation_review_gates_build_future_chapters(db: Session) -> None:
     with db.begin():
         overview = studio.create_continuation_project(
@@ -249,7 +323,7 @@ async def test_continuation_review_gates_build_future_chapters(db: Session) -> N
         ("continuation_plan", "drafting"),
     ]:
         generated = await studio.generate(
-            db, project_id, phase, GenerateRequest(use_demo_model=True)
+            db, project_id, phase, GenerateRequest(idempotency_key=f"continuation-{phase}", use_demo_model=True)
         )
         assert all(item["status"] == "pending" for item in generated["artifacts"])
         assert studio.project_overview(db, project_id)["state"]["stage"] == phase
@@ -365,7 +439,7 @@ def test_outline_import_builds_volume_chapter_scene_tree(db: Session) -> None:
     assert len(result["tree"]["scenes"]) == 2
 
 
-def test_chapter_plan_ignores_agent_heading_and_fills_requested_count(db: Session) -> None:
+def test_incomplete_chapter_plan_blocks_tree_creation(db: Session) -> None:
     overview = create_project(db)
     project_id = int(overview["project"]["id"])  # type: ignore[index]
     plan = """## 章节规划师
@@ -386,22 +460,19 @@ def test_chapter_plan_ignores_agent_heading_and_fills_requested_count(db: Sessio
     )
     db.flush()
 
-    studio._ensure_chapter_tree_from_plan(db, project_id)
+    with pytest.raises(HTTPException) as exc_info:
+        studio._ensure_chapter_tree_from_plan(db, project_id)
 
-    chapters = studio.project_overview(db, project_id)["tree"]["chapters"]
-    assert [item["title"] for item in chapters] == [
-        "第1章 深渊之下",
-        "第2章 血色的秘密",
-        "第3章 最初的觉醒",
-        "第4章",
-    ]
+    assert exc_info.value.status_code == 409
+    assert "4" in str(exc_info.value.detail)
+    assert studio.project_overview(db, project_id)["tree"]["chapters"] == []
     assert studio._chapter_generation_ranges(80) == [
         (1, 10), (11, 20), (21, 30), (31, 40),
         (41, 50), (51, 60), (61, 70), (71, 80),
     ]
 
 
-def test_generated_plan_inserts_missing_chapters_in_order_and_merges_duplicate_volumes() -> None:
+def test_generated_plan_preserves_missing_chapters_and_merges_duplicate_volumes() -> None:
     volumes = [
         {
             "title": "第1卷 起势",
@@ -430,18 +501,129 @@ def test_generated_plan_inserts_missing_chapters_in_order_and_merges_duplicate_v
 
     assert [volume["title"] for volume in normalized] == ["第1卷 起势", "第2卷 对抗"]
     assert [
-        studio._chapter_title_number(chapter["title"])
+        chapter_plans.chapter_title_number(chapter["title"])
         for volume in normalized
         for chapter in volume["chapters"]
-    ] == list(range(1, 11))
+    ] == [1, 3, 5, 6, 9, 10]
     assert [
-        studio._chapter_title_number(chapter["title"])
+        chapter_plans.chapter_title_number(chapter["title"])
         for chapter in normalized[0]["chapters"]
-    ] == [1, 2, 3, 4]
+    ] == [1, 3]
     assert [
-        studio._chapter_title_number(chapter["title"])
+        chapter_plans.chapter_title_number(chapter["title"])
         for chapter in normalized[1]["chapters"]
-    ] == [5, 6, 7, 8, 9, 10]
+    ] == [5, 6, 9, 10]
+
+
+def test_outline_preamble_does_not_create_a_duplicate_first_volume() -> None:
+    outline = """故事总览和世界背景说明。
+
+# 第一卷：矿井中的火种
+## 第一章 七号矿奴
+矿井中发现弑魔矿石。
+
+# 第二卷：残域起义
+## 第二章 火种扩散
+反抗军开始集结。
+"""
+
+    parsed = studio.parse_outline(outline, "五域")
+
+    assert parsed["volume_count"] == 2
+    assert [volume["title"] for volume in parsed["volumes"]] == [
+        "第一卷：矿井中的火种",
+        "第二卷：残域起义",
+    ]
+    assert [
+        chapter_plans.chapter_title_number(chapter["title"])
+        for volume in parsed["volumes"]
+        for chapter in volume["chapters"]
+    ] == [1, 2]
+
+
+def test_manuscript_preamble_is_preserved_without_duplicate_first_volume() -> None:
+    manuscript = """序言正文。
+
+# 第一卷：矿井中的火种
+## 第一章 七号矿奴
+第一章正文。
+"""
+
+    parsed = studio.parse_manuscript(manuscript, "五域")
+
+    assert parsed["volume_count"] == 1
+    assert parsed["volumes"][0]["title"] == "第一卷：矿井中的火种"
+    assert [chapter["title"] for chapter in parsed["volumes"][0]["chapters"]] == [
+        "序章",
+        "第一章 七号矿奴",
+    ]
+    assert parsed["volumes"][0]["chapters"][0]["content"] == "序言正文。"
+
+
+def test_generated_plan_accepts_chinese_numbers_and_markdown_volume_titles() -> None:
+    plan = """## 章节规划师
+# **第一卷：起势**
+## 第一章 开端
+## 第二章 追踪
+# 第1卷 起势补充
+## 第三章 转折
+# 第二卷：对抗
+## 第四章 交锋
+"""
+
+    parsed = studio.parse_outline(plan, "测试小说")
+    normalized = studio._normalize_generated_chapter_plan(parsed["volumes"], 4)
+
+    assert [volume["title"] for volume in normalized] == [
+        "第一卷：起势",
+        "第二卷：对抗",
+    ]
+    assert [
+        chapter_plans.chapter_title_number(chapter["title"])
+        for volume in normalized
+        for chapter in volume["chapters"]
+    ] == [1, 2, 3, 4]
+
+
+def test_generated_plan_keeps_approved_volume_count_when_batches_omit_headers() -> None:
+    partial = [
+        {"title": "第一卷 起势", "chapters": [{"title": "第一章 开端"}]},
+        {"title": "第五卷 幻境", "chapters": [{"title": "第三十一章 入境"}]},
+        {"title": "第六卷 联合", "chapters": [{"title": "第四十一章 真相"}]},
+        {"title": "第七卷 决战", "chapters": [{"title": "第六十一章 终局"}]},
+    ]
+    approved_titles = [
+        "第一卷 起势",
+        "第二卷 扩散",
+        "第三卷 反攻",
+        "第四卷 囚笼",
+        "第五卷 幻境",
+        "第六卷 联合",
+        "第七卷 决战",
+    ]
+
+    normalized = studio._normalize_generated_chapter_plan(partial, 80, approved_titles)
+
+    assert [volume["title"] for volume in normalized] == approved_titles
+    numbers = [
+        chapter_plans.chapter_title_number(chapter["title"])
+        for volume in normalized
+        for chapter in volume["chapters"]
+    ]
+    assert sorted(number for number in numbers if number is not None) == [1, 31, 41, 61]
+    assert [bool(volume["chapters"]) for volume in normalized] == [
+        True,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+    ]
+
+
+def test_chapter_generation_reserves_enough_output_for_detailed_batches() -> None:
+    assert studio._phase_output_tokens("chapters") >= 5_000
 
 
 def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Session) -> None:
@@ -470,7 +652,7 @@ def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Sess
             (duplicate, "第8章", 6),
         ]
         for volume, title, position in rows:
-            db.add(models.Chapter(volume_id=volume.id, title=title, position=position))
+            db.add(models.Chapter(project_id=project_id, volume_id=volume.id, number=chapter_plans.chapter_title_number(title), title=title, position=position))
 
     preview = studio.chapter_tree_repair_preview(db, project_id)
     assert preview["can_repair"] is True
@@ -486,12 +668,12 @@ def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Sess
         "第2卷 对抗",
     ]
     assert [
-        studio._chapter_title_number(chapter["title"])
+        chapter_plans.chapter_title_number(chapter["title"])
         for chapter in repaired["tree"]["chapters"]
     ] == list(range(1, 11))
     first_volume_id = int(repaired["tree"]["volumes"][0]["id"])
     assert [
-        studio._chapter_title_number(chapter["title"])
+        chapter_plans.chapter_title_number(chapter["title"])
         for chapter in repaired["tree"]["chapters"]
         if int(chapter["volume_id"]) == first_volume_id
     ] == [1, 2, 3, 4]
@@ -507,7 +689,7 @@ async def test_editor_chat_requires_confirmation_then_runs_the_real_workflow(db:
         volume = models.Volume(project_id=project_id, title="第一卷", position=1)
         db.add(volume)
         db.flush()
-        chapter = models.Chapter(volume_id=volume.id, title="第1章 起点", position=1)
+        chapter = models.Chapter(project_id=project_id, volume_id=volume.id, number=1, title="第1章 起点", position=1)
         db.add(chapter)
         db.flush()
         chapter_id = chapter.id
@@ -546,7 +728,9 @@ def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session
     db.add(volume)
     db.flush()
     suspect = models.Chapter(
+        project_id=project_id,
         volume_id=volume.id,
+        number=None,
         title="章节规划师",
         content="误写入该占位章节的正文",
         position=1,
@@ -556,7 +740,9 @@ def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session
     for position in range(1, 4):
         db.add(
             models.Chapter(
+                project_id=project_id,
                 volume_id=volume.id,
+                number=position,
                 title=f"第{position}章",
                 content="已完成正文",
                 position=position + 1,
@@ -648,7 +834,7 @@ async def test_multi_agent_generation_requires_review_before_advancing(db: Sessi
         db,
         project_id,
         "world",
-        GenerateRequest(use_demo_model=True),
+        GenerateRequest(idempotency_key="world-first", use_demo_model=True),
     )
     artifacts = generated["artifacts"]
     assert generated["job"]["status"] == "completed"
@@ -680,14 +866,24 @@ async def test_multi_agent_generation_requires_review_before_advancing(db: Sessi
 async def test_regenerate_one_planning_item_supersedes_old_version(db: Session) -> None:
     overview = create_project(db)
     project_id = int(overview["project"]["id"])  # type: ignore[index]
-    first = await studio.generate(db, project_id, "world", GenerateRequest(use_demo_model=True))
+    first = await studio.generate(
+        db,
+        project_id,
+        "world",
+        GenerateRequest(idempotency_key="world-version-1", use_demo_model=True),
+    )
     agent_name = str(first["artifacts"][0]["metadata"]["agent_name"])
 
     replacement = await studio.generate(
         db,
         project_id,
         "world",
-        GenerateRequest(use_demo_model=True, agent_name=agent_name, instruction="加强主题冲突"),
+        GenerateRequest(
+            idempotency_key="world-version-2",
+            use_demo_model=True,
+            agent_name=agent_name,
+            instruction="加强主题冲突",
+        ),
     )
 
     current = studio.project_overview(db, project_id)["artifacts"]
@@ -711,7 +907,7 @@ async def test_scene_review_creates_independent_pending_artifacts(db: Session) -
         db,
         project_id,
         "drafting",
-        GenerateRequest(use_demo_model=True, chapter_id=chapter_id),
+        GenerateRequest(idempotency_key="scene-drafting", use_demo_model=True, chapter_id=chapter_id),
     )
 
     assert len(generated["artifacts"]) == 2
@@ -840,7 +1036,7 @@ async def test_full_planning_approval_gate_builds_writing_tree(db: Session) -> N
             db,
             project_id,
             phase,
-            GenerateRequest(use_demo_model=True),
+            GenerateRequest(idempotency_key=f"creative-{phase}", use_demo_model=True),
         )
         if index == 0:
             with pytest.raises(HTTPException, match="请先完成并批准"):
@@ -848,7 +1044,7 @@ async def test_full_planning_approval_gate_builds_writing_tree(db: Session) -> N
                     db,
                     project_id,
                     "drafting",
-                    GenerateRequest(use_demo_model=True, chapter_id=1),
+                    GenerateRequest(idempotency_key="premature-drafting", use_demo_model=True, chapter_id=1),
                 )
         for artifact in generated["artifacts"]:
             studio.decide_artifact(

@@ -41,7 +41,9 @@ def seed_story(db: Session) -> dict[str, Any]:
     db.add(volume)
     db.flush()
     chapter = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=1,
         title="第一章",
         content="<p>旧港仍在下雨。</p>",
         word_count=7,

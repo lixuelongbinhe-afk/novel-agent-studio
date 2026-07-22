@@ -6,6 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.migrations import (
     PHASE_1_REVISION,
@@ -122,5 +123,89 @@ def test_partial_legacy_database_fails_without_claiming_success(tmp_path: Path) 
     engine = create_engine(url)
     try:
         assert "alembic_version" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_story_order_migration_normalizes_legacy_rows_and_enforces_uniqueness(
+    tmp_path: Path,
+) -> None:
+    url = database_url(tmp_path / "legacy-story-order.db")
+    config = alembic_config(url)
+    command.upgrade(config, "c5e7a9b1d320")
+    engine = create_engine(url)
+    timestamp = "2026-01-01 00:00:00"
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO projects "
+                    "(id, title, summary, language, target_words, created_at, updated_at, revision) "
+                    "VALUES (1, '旧项目', '', 'zh-CN', 100000, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO volumes "
+                    "(id, project_id, title, position, created_at, updated_at, revision) VALUES "
+                    "(1, 1, '第一卷', 7, :ts, :ts, 1), "
+                    "(2, 1, '第二卷', 7, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO chapters "
+                    "(id, volume_id, title, content, position, word_count, created_at, updated_at, revision) VALUES "
+                    "(1, 1, '第一章', '', 5, 0, :ts, :ts, 1), "
+                    "(2, 1, '第二章', '', 5, 0, :ts, :ts, 1), "
+                    "(3, 2, '第三章', '', 9, 0, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO scenes "
+                    "(id, chapter_id, title, synopsis, content, position, created_at, updated_at, revision) VALUES "
+                    "(1, 1, '场景一', '', '', 4, :ts, :ts, 1), "
+                    "(2, 1, '场景二', '', '', 4, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, STUDIO_V2_REVISION)
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT position FROM volumes ORDER BY id")
+            ).scalars().all() == [1, 2]
+            assert connection.execute(
+                text("SELECT position FROM chapters WHERE volume_id = 1 ORDER BY id")
+            ).scalars().all() == [1, 2]
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    text("SELECT project_id, number FROM chapters ORDER BY id")
+                ).all()
+            ] == [(1, 1), (1, 2), (1, 3)]
+            assert connection.execute(
+                text("SELECT position FROM scenes ORDER BY id")
+            ).scalars().all() == [1, 2]
+
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO chapters "
+                        "(project_id, volume_id, number, title, content, position, word_count, "
+                        "created_at, updated_at, revision) "
+                        "VALUES (1, 2, 2, '重复第二章', '', 2, 0, :ts, :ts, 1)"
+                    ),
+                    {"ts": timestamp},
+                )
     finally:
         engine.dispose()

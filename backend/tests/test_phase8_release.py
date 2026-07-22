@@ -45,7 +45,9 @@ def seed_release_data(db: Session) -> dict[str, Any]:
     db.add(volume)
     db.flush()
     chapter = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=None,
         title="夜航",
         content="雾从防波堤漫上来，林栀听见旧钟响了三次。",
         position=1,
@@ -198,6 +200,45 @@ def test_complete_backup_round_trip_and_fts_rebuild(
     assert db.scalar(select(func.count(models.Project.id))) == 1
     assert result.fts_records > 0
     assert db.scalar(text("SELECT count(*) FROM context_fts")) == result.fts_records
+
+
+def test_schema_v1_backup_is_migrated_without_revision_lockout(db: Session) -> None:
+    seeded = seed_release_data(db)
+    current_archive = create_backup_archive(db)
+    with zipfile.ZipFile(io.BytesIO(current_archive)) as source:
+        manifest = json.loads(source.read("manifest.json"))
+        data = json.loads(source.read("data.json"))
+
+    manifest["schema_version"] = 1
+    manifest["migration_revision"] = "d7e9f1a3c520"
+    data["schema_version"] = 1
+    for row in data["tables"]["chapters"]:
+        row.pop("project_id")
+        row.pop("number")
+    for row in data["tables"]["generation_jobs"]:
+        row.pop("idempotency_key")
+        row.pop("active_scope_key")
+    legacy_archive = _repack(manifest, data)
+
+    loaded = load_backup_archive(legacy_archive)
+    assert loaded.manifest.schema_version == 1
+    assert loaded.manifest.migration_revision == "d7e9f1a3c520"
+    assert loaded.tables["chapters"][0]["project_id"] == seeded["project_id"]
+    assert loaded.tables["chapters"][0]["number"] == 1
+
+    db.commit()
+    with db.begin():
+        result = restore_backup_archive(
+            db,
+            legacy_archive,
+            strategy="replace_all",
+            expected_sha256=hashlib.sha256(legacy_archive).hexdigest(),
+        )
+    assert result.integrity_errors == []
+    restored = db.get(models.Chapter, seeded["chapter_id"])
+    assert restored is not None
+    assert restored.project_id == seeded["project_id"]
+    assert restored.number == 1
 
 
 def test_restore_failure_rolls_back_original_database(

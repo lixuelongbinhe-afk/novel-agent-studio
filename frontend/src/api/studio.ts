@@ -75,7 +75,7 @@ export type GenerationJob = {
   project_id: number;
   kind: string;
   label: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   model_name: string | null;
   model_reason: string;
@@ -96,7 +96,9 @@ export type Snapshot = {
 export type Volume = { id: number; project_id: number; title: string; position: number; revision: number };
 export type Chapter = {
   id: number;
+  project_id?: number;
   volume_id: number;
+  number?: number | null;
   title: string;
   content: string;
   position: number;
@@ -253,8 +255,8 @@ export const studioApi = {
   generate: (
     projectId: number,
     phase: string,
-    payload: { instruction?: string; agent_name?: string; chapter_id?: number; selected_text?: string; mode?: string; use_demo_model?: boolean }
-  ) => request<{ job: GenerationJob; artifact: Artifact; artifacts: Artifact[] }>(
+    payload: { idempotency_key: string; instruction?: string; agent_name?: string; chapter_id?: number; selected_text?: string; mode?: string; use_demo_model?: boolean }
+  ) => request<{ job: GenerationJob; artifact: Artifact | null; artifacts: Artifact[]; idempotent_replay?: boolean }>(
     `/api/studio/projects/${projectId}/generate/${phase}`,
     json("POST", payload)
   ),

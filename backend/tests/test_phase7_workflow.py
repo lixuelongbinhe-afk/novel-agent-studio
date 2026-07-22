@@ -57,7 +57,9 @@ def seed_runtime(
     db.add(volume)
     db.flush()
     chapter = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=1,
         title="第一章",
         content="<p>审批前正文。</p>",
         word_count=6,

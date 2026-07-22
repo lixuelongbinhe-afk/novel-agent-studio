@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from io import BytesIO
-from pathlib import Path
 from typing import Any, Literal
 
-from docx import Document
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
-from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.database import get_db
 from app.schemas.studio import (
     ArtifactDecision,
@@ -26,11 +23,10 @@ from app.schemas.studio import (
     StudioProjectCreate,
     StudioStateUpdate,
 )
-from app.services import studio
+from app.services import document_import, studio
 
 
 router = APIRouter(prefix="/studio", tags=["studio-v2"])
-MAX_OUTLINE_BYTES = 10 * 1024 * 1024
 
 
 @router.get("/projects")
@@ -66,10 +62,7 @@ async def create_continuation_from_file(
     user_outline: str = Form(""),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    content = await file.read(MAX_OUTLINE_BYTES + 1)
-    if len(content) > MAX_OUTLINE_BYTES:
-        raise HTTPException(status_code=413, detail="半成品小说文件不得超过 10 MB")
-    text = _extract_document_text(content, file.filename or "导入正文")
+    text = await _read_document(file)
     payload = ContinuationImportRequest(
         title=title,
         text=text,
@@ -192,22 +185,7 @@ async def preview_outline_file(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     project = studio._project(db, project_id)
-    content = await file.read(MAX_OUTLINE_BYTES + 1)
-    if len(content) > MAX_OUTLINE_BYTES:
-        raise HTTPException(status_code=413, detail="大纲文件不得超过 10 MB")
-    suffix = Path(file.filename or "").suffix.lower()
-    try:
-        if suffix == ".docx":
-            document = Document(BytesIO(content))
-            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-        elif suffix in {".txt", ".md", ".markdown"}:
-            text = content.decode("utf-8-sig")
-        else:
-            raise HTTPException(status_code=415, detail="仅支持 TXT、Markdown 和 DOCX 文件")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=422, detail="文本文件必须使用 UTF-8 编码") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Word 文件损坏或格式不受支持") from exc
+    text = await _read_document(file, allowed={".txt", ".md", ".markdown", ".docx"})
     return {**studio.parse_outline(text, project.title), "source_text": text}
 
 
@@ -219,22 +197,7 @@ async def upload_style_reference(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     studio._project(db, project_id)
-    content = await file.read(MAX_OUTLINE_BYTES + 1)
-    if len(content) > MAX_OUTLINE_BYTES:
-        raise HTTPException(status_code=413, detail="参考文风文件不得超过 10 MB")
-    suffix = Path(file.filename or "").suffix.lower()
-    try:
-        if suffix == ".docx":
-            document = Document(BytesIO(content))
-            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-        elif suffix in {".txt", ".md", ".markdown"}:
-            text = content.decode("utf-8-sig")
-        else:
-            raise HTTPException(status_code=415, detail="参考文风仅支持 TXT、Markdown 和 DOCX")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=422, detail="文本文件必须使用 UTF-8 编码") from exc
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="参考文风文件没有可分析的文本")
+    text = await _read_document(file, allowed={".txt", ".md", ".markdown", ".docx"})
     return await studio.extract_style_reference(
         db, project_id, text[:200_000], file.filename or "参考文本", use_demo_model
     )
@@ -317,22 +280,42 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)) -> Response
 
 
 def _extract_document_text(content: bytes, filename: str) -> str:
-    suffix = Path(filename).suffix.lower()
+    """Backward-compatible synchronous entry point used by tests and tools."""
     try:
-        if suffix == ".docx":
-            document = Document(BytesIO(content))
-            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-        elif suffix == ".pdf":
-            reader = PdfReader(BytesIO(content))
-            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        elif suffix in {".txt", ".md", ".markdown"}:
-            text = content.decode("utf-8-sig")
-        else:
-            raise HTTPException(status_code=415, detail="仅支持 TXT、Markdown、DOCX 和 PDF 文件")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=422, detail="文本文件必须使用 UTF-8 编码") from exc
-    except (ValueError, OSError) as exc:
-        raise HTTPException(status_code=422, detail="文件损坏、加密或格式不受支持") from exc
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="文件中没有可识别的正文文本")
-    return text.strip()
+        return document_import.extract_document_text(
+            content, filename, limits=_import_limits()
+        )
+    except document_import.DocumentImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+async def _read_document(
+    file: UploadFile,
+    *,
+    allowed: set[str] | None = None,
+) -> str:
+    limits = _import_limits()
+    content = await file.read(limits.max_upload_bytes + 1)
+    try:
+        return await document_import.extract_document_text_async(
+            content,
+            file.filename or "导入文件",
+            allowed=allowed,
+            limits=limits,
+        )
+    except document_import.DocumentImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+def _import_limits() -> document_import.ImportLimits:
+    settings = get_settings()
+    return document_import.ImportLimits(
+        max_upload_bytes=settings.max_import_bytes,
+        max_text_chars=settings.max_import_text_chars,
+        parse_timeout_seconds=settings.import_parse_timeout_seconds,
+        docx_max_entries=settings.docx_max_entries,
+        docx_max_expanded_bytes=settings.docx_max_expanded_bytes,
+        docx_max_member_bytes=settings.docx_max_member_bytes,
+        docx_max_compression_ratio=settings.docx_max_compression_ratio,
+        pdf_max_pages=settings.pdf_max_pages,
+    )

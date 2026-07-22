@@ -1,48 +1,52 @@
 # Release Checklist
 
-版本：2.2.3
-发布日期：2026-07-21
-状态：GO，本机单用户 Windows 发布。
+版本：2.2.6
+发布日期：2026-07-22
+状态：候选版本；完成干净标签构建后方可标记 GO。
 
 ## 质量门禁
 
-- [x] 后端 `183 passed`；唯一警告来自 Starlette TestClient 的上游弃用提示。
-- [x] Ruff 全部通过。
-- [x] strict mypy：72 个应用源文件无问题。
-- [x] 前端 16 个测试文件、42 个测试全部通过；当前桌面路由 104 个按钮声明均有真实点击或提交处理器，并包含删除、模型、自定义 API、侧栏、正文审核、上下文压缩、右栏滚动、总编工作流确认和半成品续写回归。
+- [x] 后端全量 pytest 通过（204 项）。
+- [x] Ruff `app tests` 全部通过。
+- [x] strict mypy `app tests` 零错误。
+- [x] 前端 Vitest 全量通过（43 项）。
 - [x] TypeScript strict 检查通过。
-- [x] Vite 生产构建通过，1,648 modules transformed。
-- [x] Playwright 最终 E2E：5 passed，覆盖创建、独立审核、正文审核写入、半成品导入续写、长回复右栏滚动，以及项目删除后的刷新和接口持久化验证。
-- [x] PyInstaller GUI/Console 构建通过。
-- [x] 打包目录控制台自检通过。
-- [x] 打包目录 GUI 生命周期自检 10 秒通过。
+- [x] Vite 从当前源码完整生产构建通过。
+- [x] Playwright 桌面与移动视口关键流程通过（6 项）。
+- [x] 空库与旧库 Alembic 升级通过，旧场景和正文无丢失。
+- [ ] PyInstaller GUI/Console 从干净标签提交完整构建通过。
+- [x] 本地候选包的打包目录控制台自检和 GUI 生命周期自检通过。
+
+## 可复现发布约束
+
+- [x] 根目录 `VERSION` 是发布版本基准，脚本会核对 Python、前端、桌面、安装器和 Windows 文件版本。
+- [x] 正式打包默认拒绝脏工作区和未带精确 `v2.2.6` 标签的提交。
+- [x] 正式打包禁止跳过前端重建；本地跳过构建时必须通过源码哈希戳校验。
+- [x] 包内 `build-provenance.json` 记录 commit、标签、源码哈希、前端锁文件哈希和 dirty 状态。
+- [x] GitHub Actions 对 push/PR 执行后端和前端质量门，对版本标签执行 Windows 打包。
 
 ## 安装版与便携版
 
-- [x] 安装器编译通过，内嵌 payload 带 SHA-256 校验，文件产品版本核对为 2.2.3.0。
-- [ ] 未在本轮覆盖安装：用户当前正运行便携版 2.2.2，保留活动会话，不强制关闭。
-- [x] 最终便携 ZIP 实际解压后控制台自检通过。
-- [x] 最终便携 ZIP 实际解压后 GUI 生命周期自检 10 秒通过。
-- [x] 安装版产品版本为 2.2.3。
+- [x] 本地候选安装器编译通过，内嵌 payload SHA-256 校验通过，产品版本为 2.2.6.0。
+- [x] 本地候选便携 ZIP 解压后控制台自检通过。
+- [x] 本地候选便携 ZIP 解压后 GUI 生命周期自检通过。
 - [x] 安装数据位于 `%LOCALAPPDATA%\NovelAgentStudioV2\data`。
 - [x] 便携数据位于解压目录的 `NovelAgentStudio\data`。
 - [x] 安装版和便携版数据目录互不混用。
-- [x] 关闭窗口支持托盘继续或停止退出，并记住选择。
 
 ## 产物
 
-| 文件 | 字节 | SHA-256 |
-| --- | ---: | --- |
-| `NovelAgentStudio-Setup-2.2.3.exe` | 60,426,240 | `57e2b66b7e69712cd3dc94f109aa970f3b9e917a39645a4500024c6d52b679bd` |
-| `NovelAgentStudio-Portable-2.2.3.zip` | 60,421,646 | `051624b3547b2e0c45bf5baf8787b268228dc637fe5ad48b52279c1b9f9dffc1` |
+产物必须由 `scripts/package-desktop.ps1` 在干净的 `v2.2.6` 标签提交上生成：
 
-哈希同时写入 `outputs/SHA256SUMS.txt`，并已与产物重新计算结果比对一致。
+- `NovelAgentStudio-Setup-2.2.6.exe`
+- `NovelAgentStudio-Portable-2.2.6.zip`
+- `SHA256SUMS.txt`
+
+文件大小和 SHA-256 不在源码文档中手填；以同次构建生成的 `SHA256SUMS.txt` 和包内来源清单为准。
 
 ## 发布边界
 
-- [x] README 说明安装、便携启动、数据位置、Mock 演示和 Provider 配置。
-- [x] 安全、性能、最终审计、逐项需求验收和已知限制文档已更新。
 - [x] 自动测试不调用付费 API。
 - [x] 第三方 Provider 只由用户显式配置，不会静默切换模型。
-- [x] 本次安装器未进行代码签名，Windows 可能显示未知发布者提示；哈希可用于完整性核验。
+- [x] 安装器尚未商业代码签名，Windows 可能显示未知发布者；用户应核对 SHA-256。
 - [x] 不声称支持公网服务、多租户或自动合规。

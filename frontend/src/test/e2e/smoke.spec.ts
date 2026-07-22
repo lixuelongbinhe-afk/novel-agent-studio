@@ -144,7 +144,12 @@ test("approved Agent draft is written into the chapter editor", async ({ page })
   const overview = await overviewResponse.json();
   const chapterId = overview.tree.chapters[0].id as number;
   const generateResponse = await page.request.post(`${api}/projects/${projectId}/generate/drafting`, {
-    data: { chapter_id: chapterId, mode: "new", use_demo_model: true }
+    data: {
+      idempotency_key: `e2e-drafting-${projectId}-${chapterId}`,
+      chapter_id: chapterId,
+      mode: "new",
+      use_demo_model: true
+    }
   });
   expect(generateResponse.ok()).toBe(true);
 

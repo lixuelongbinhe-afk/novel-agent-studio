@@ -104,7 +104,9 @@ def test_100k_character_chapter_autosave(db: Session) -> None:
     db.add(volume)
     db.flush()
     chapter = models.Chapter(
+        project_id=project.id,
         volume_id=volume.id,
+        number=None,
         title="长章节",
         content="起",
         word_count=1,

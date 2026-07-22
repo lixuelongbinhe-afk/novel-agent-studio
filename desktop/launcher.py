@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import multiprocessing
 import os
 import socket
 import sys
@@ -17,7 +18,7 @@ from typing import Any
 
 APP_NAME = "Novel Agent Studio"
 APP_FOLDER = "NovelAgentStudioV2"
-VERSION = "2.2.4"
+VERSION = "2.2.6"
 HOST = "127.0.0.1"
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0
@@ -410,4 +411,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())

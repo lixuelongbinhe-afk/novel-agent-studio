@@ -42,6 +42,7 @@ from app.schemas import (
     VolumeCreate,
     VolumeUpdate,
 )
+from app.services.chapter_plans import chapter_title_number
 
 
 RESOURCE_MODELS: dict[str, type[Any]] = {
@@ -66,7 +67,14 @@ def create_project(db: Session, payload: ProjectCreate) -> models.Project:
     volume = models.Volume(project_id=project.id, title="第一卷", position=1)
     db.add(volume)
     db.flush()
-    chapter = models.Chapter(volume_id=volume.id, title="第一章", content="", position=1)
+    chapter = models.Chapter(
+        project_id=project.id,
+        volume_id=volume.id,
+        number=1,
+        title="第一章",
+        content="",
+        position=1,
+    )
     db.add(chapter)
     db.flush()
     from app.services.context_memory import ensure_default_context_policy
@@ -108,6 +116,7 @@ def project_tree(db: Session, project_id: int) -> dict[str, object]:
 
 def create_volume(db: Session, project_id: int, payload: VolumeCreate) -> models.Volume:
     get_or_404(db, models.Project, project_id)
+    _require_available_position(db, models.Volume, "project_id", project_id, payload.position)
     volume = models.Volume(project_id=project_id, **payload.model_dump())
     db.add(volume)
     db.flush()
@@ -116,14 +125,25 @@ def create_volume(db: Session, project_id: int, payload: VolumeCreate) -> models
 
 def update_volume(db: Session, volume_id: int, payload: VolumeUpdate) -> models.Volume:
     volume = cast(models.Volume, get_or_404(db, models.Volume, volume_id))
+    _require_available_position(
+        db, models.Volume, "project_id", volume.project_id, payload.position, volume.id
+    )
     _apply_revision_update(volume, payload.model_dump())
     db.flush()
     return volume
 
 
 def create_chapter(db: Session, volume_id: int, payload: ChapterCreate) -> models.Chapter:
-    get_or_404(db, models.Volume, volume_id)
-    chapter = models.Chapter(**payload.model_dump(), volume_id=volume_id)
+    volume = cast(models.Volume, get_or_404(db, models.Volume, volume_id))
+    number = chapter_title_number(payload.title)
+    _require_available_chapter_number(db, volume.project_id, number)
+    _require_available_position(db, models.Chapter, "volume_id", volume_id, payload.position)
+    chapter = models.Chapter(
+        **payload.model_dump(),
+        project_id=volume.project_id,
+        volume_id=volume_id,
+        number=number,
+    )
     chapter.word_count = word_count(chapter.content)
     db.add(chapter)
     db.flush()
@@ -134,12 +154,32 @@ def autosave_chapter(db: Session, chapter_id: int, payload: ChapterAutosave) -> 
     chapter = cast(models.Chapter, get_or_404(db, models.Chapter, chapter_id))
     require_revision(chapter, payload.expected_revision)
     _snapshot_chapter(db, chapter, "autosave_before_update")
+    number = chapter_title_number(payload.title)
+    _require_available_chapter_number(db, chapter.project_id, number, chapter.id)
     chapter.title = payload.title
+    chapter.number = number
     chapter.content = payload.content
     chapter.word_count = word_count(payload.content)
     chapter.revision += 1
     db.flush()
     return chapter
+
+
+def _require_available_chapter_number(
+    db: Session, project_id: int, number: int | None, current_id: int | None = None
+) -> None:
+    if number is None:
+        return
+    duplicate = db.scalar(
+        select(models.Chapter.id).where(
+            models.Chapter.project_id == project_id,
+            models.Chapter.number == number,
+            models.Chapter.deleted_at.is_(None),
+            models.Chapter.id != (current_id or -1),
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail=f"项目中已经存在第 {number} 章")
 
 
 def list_chapter_versions(db: Session, chapter_id: int) -> list[models.ChapterVersion]:
@@ -172,6 +212,7 @@ def restore_chapter_version(
 
 def create_scene(db: Session, chapter_id: int, payload: SceneCreate) -> models.Scene:
     get_or_404(db, models.Chapter, chapter_id)
+    _require_available_position(db, models.Scene, "chapter_id", chapter_id, payload.position)
     scene = models.Scene(chapter_id=chapter_id, **payload.model_dump())
     db.add(scene)
     db.flush()
@@ -180,13 +221,16 @@ def create_scene(db: Session, chapter_id: int, payload: SceneCreate) -> models.S
 
 def update_scene(db: Session, scene_id: int, payload: SceneUpdate) -> models.Scene:
     scene = cast(models.Scene, get_or_404(db, models.Scene, scene_id))
+    _require_available_position(
+        db, models.Scene, "chapter_id", scene.chapter_id, payload.position, scene.id
+    )
     _apply_revision_update(scene, payload.model_dump())
     db.flush()
     return scene
 
 
 def reorder_records(db: Session, resource: str, payload: ReorderRequest) -> list[Any]:
-    model = {"volume": models.Volume, "chapter": models.Chapter, "scene": models.Scene, "timeline": models.TimelineEvent}.get(resource)
+    model: Any = {"volume": models.Volume, "chapter": models.Chapter, "scene": models.Scene, "timeline": models.TimelineEvent}.get(resource)
     if model is None:
         raise HTTPException(status_code=400, detail="Unsupported sortable resource")
     records = []
@@ -201,11 +245,49 @@ def reorder_records(db: Session, resource: str, payload: ReorderRequest) -> list
         records.append((record, requested.position))
     if len(parent_values) != 1:
         raise HTTPException(status_code=400, detail="All reordered records must share one parent")
+    requested_positions = [position for _, position in records]
+    if len(set(requested_positions)) != len(requested_positions):
+        raise HTTPException(status_code=422, detail="排序位置不能重复")
+    parent_field, parent_id = next(iter(parent_values))
+    selected_ids = {record.id for record, _ in records}
+    occupied = db.scalars(
+        select(model.position).where(
+            getattr(model, parent_field) == parent_id,
+            model.deleted_at.is_(None),
+            model.id.not_in(selected_ids),
+        )
+    ).all()
+    collisions = sorted(set(requested_positions) & set(occupied))
+    if collisions:
+        raise HTTPException(status_code=409, detail=f"排序位置已被其他记录占用：{collisions}")
+    for index, (record, _) in enumerate(records, 1):
+        record.position = -1_000_000 - index
+    db.flush()
     for record, position in records:
         record.position = position
         record.revision += 1
     db.flush()
     return [record for record, _ in records]
+
+
+def _require_available_position(
+    db: Session,
+    model: type[Any],
+    parent_field: str,
+    parent_id: int,
+    position: int,
+    current_id: int | None = None,
+) -> None:
+    duplicate = db.scalar(
+        select(model.id).where(
+            getattr(model, parent_field) == parent_id,
+            model.position == position,
+            model.deleted_at.is_(None),
+            model.id != (current_id or -1),
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail=f"位置 {position} 已被同级记录占用")
 
 
 def create_entity(db: Session, project_id: int, payload: StoryEntityCreate) -> models.StoryEntity:

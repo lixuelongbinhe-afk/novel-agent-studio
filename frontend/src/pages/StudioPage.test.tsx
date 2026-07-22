@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { studioApi, type StudioOverview } from "../api/studio";
@@ -368,5 +368,46 @@ describe("StudioPage", () => {
 
     expect(await screen.findByPlaceholderText("正文")).toHaveValue("可继续修改的正文");
     expect(screen.getByRole("button", { name: "生成全文审阅" })).toBeInTheDocument();
+  });
+
+  it("keeps newer edits dirty when an older autosave finishes", async () => {
+    const chapter = { id: 21, volume_id: 1, title: "第一章", content: "初稿", position: 1, word_count: 2, revision: 1, updated_at: "" };
+    const writingOverview: StudioOverview = {
+      ...overview,
+      state: { ...overview.state, stage: "drafting", stage_label: "正文创作", generation_mode: "manual" },
+      artifacts: [],
+      tree: {
+        volumes: [{ id: 1, project_id: 1, title: "第一卷", position: 1, revision: 1 }],
+        chapters: [chapter],
+        scenes: []
+      }
+    };
+    vi.mocked(studioApi.project).mockResolvedValue(writingOverview);
+    let finishSave!: (value: typeof chapter) => void;
+    vi.mocked(studioApi.autosaveChapter).mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <MemoryRouter initialEntries={["/studio/1"]}>
+        <QueryClientProvider client={client}>
+          <Routes><Route path="/studio/:projectId" element={<StudioPage />} /></Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    const editor = await screen.findByPlaceholderText("正文");
+    fireEvent.change(editor, { target: { value: "第一次编辑" } });
+    const saveButton = screen.getByTitle("保存");
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(studioApi.autosaveChapter).toHaveBeenCalledTimes(1));
+    fireEvent.change(editor, { target: { value: "保存期间继续输入" } });
+    await act(async () => {
+      finishSave({ ...chapter, content: "第一次编辑", revision: 2 });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByText("未保存")).toBeInTheDocument());
+    expect(editor).toHaveValue("保存期间继续输入");
   });
 });

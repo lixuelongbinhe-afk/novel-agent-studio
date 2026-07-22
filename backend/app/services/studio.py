@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -27,7 +28,13 @@ from app.schemas.studio import (
     StudioProjectCreate,
     StudioStateUpdate,
 )
-from app.services import context_builder, model_execution
+from app.services import context_builder, generation_jobs, model_execution
+from app.services.chapter_plans import (
+    chapter_title_number as _chapter_title_number,
+    clean_outline_label as _clean_outline_label,
+    is_generic_volume_title as _is_generic_volume_title,
+    volume_title_number as _volume_title_number,
+)
 from app.services.credential_store import (
     delete_provider_secret,
     has_provider_secret,
@@ -124,6 +131,22 @@ PHASE_AGENTS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 AGENT_HEADINGS = {name for agents in PHASE_AGENTS.values() for name, _ in agents}
+
+def _merge_parsed_volumes(volumes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for index, volume in enumerate(volumes):
+        title = _clean_outline_label(str(volume.get("title") or f"第{index + 1}卷"))
+        key = _volume_plan_key(title)
+        if key not in merged:
+            merged[key] = {**volume, "title": title, "chapters": list(volume.get("chapters") or [])}
+            order.append(key)
+            continue
+        current = merged[key]
+        if _is_generic_volume_title(str(current.get("title") or "")) and not _is_generic_volume_title(title):
+            current["title"] = title
+        current["chapters"].extend(cast(list[dict[str, Any]], volume.get("chapters") or []))
+    return [merged[key] for key in order]
 
 
 def create_project(db: Session, payload: StudioProjectCreate) -> dict[str, Any]:
@@ -282,10 +305,6 @@ def update_continuation_settings(
 
 def parse_manuscript(text: str, title: str = "导入小说") -> dict[str, Any]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    volume_pattern = re.compile(r"^(第.{1,12}卷(?:\s|[:：].*|$).*)$", re.I)
-    chapter_pattern = re.compile(
-        r"^((?:第.{1,12}章(?:\s|[:：].*|$).*)|(?:chapter\s+\d+.*))$", re.I
-    )
     volumes: list[dict[str, Any]] = []
     current_volume: dict[str, Any] | None = None
     current_title: str | None = None
@@ -314,20 +333,22 @@ def parse_manuscript(text: str, title: str = "导入小说") -> dict[str, Any]:
 
     for raw_line in normalized.splitlines():
         stripped = raw_line.strip()
-        heading = re.sub(r"^#{1,6}\s+", "", stripped).strip()
-        if volume_pattern.match(heading):
+        heading = _clean_outline_label(re.sub(r"^#{1,6}\s+", "", stripped).strip())
+        if _volume_title_number(heading) is not None:
             flush_chapter()
             current_volume = {"title": heading, "chapters": []}
             volumes.append(current_volume)
             continue
-        if chapter_pattern.match(heading):
+        if _chapter_title_number(heading) is not None:
             flush_chapter()
             ensure_volume()
             current_title = heading
             continue
         body.append(raw_line)
     flush_chapter()
-    volumes = [volume for volume in volumes if volume["chapters"]]
+    volumes = _merge_parsed_volumes(
+        [volume for volume in volumes if volume["chapters"]]
+    )
     if not volumes:
         volumes = [{"title": "第一卷", "chapters": [{"title": "第一章", "content": normalized}]}]
     chapter_count = sum(len(volume["chapters"]) for volume in volumes)
@@ -378,7 +399,9 @@ def _create_imported_manuscript_tree(
         for chapter_position, chapter_data in enumerate(volume_data["chapters"], 1):
             content = str(chapter_data.get("content") or "")
             chapter = models.Chapter(
+                project_id=project_id,
                 volume_id=volume.id,
+                number=_chapter_title_number(str(chapter_data["title"])),
                 title=str(chapter_data["title"]),
                 content=content,
                 position=chapter_position,
@@ -466,6 +489,7 @@ def mark_interrupted_generation_jobs(db: Session) -> int:
         job.status = "failed"
         job.progress = 100
         job.error_message = "应用在任务完成前退出；部分输出未写入，请重新生成。"
+        job.active_scope_key = None
         job.revision += 1
     db.flush()
     return len(jobs)
@@ -594,6 +618,31 @@ def update_artifact(
         notes=payload.notes if payload.notes is not None else current.notes,
         metadata_json=current.metadata_json,
     )
+    replacement_metadata = _json_object(replacement.metadata_json)
+    if replacement.kind == "chapters" and str(
+        replacement_metadata.get("agent_name") or replacement.title
+    ) == "章节规划师":
+        state = _state(db, replacement.project_id)
+        requested = max(
+            1,
+            min(
+                int(_json_object(state.config_json).get("chapter_count") or 12),
+                10_000,
+            ),
+        )
+        validation = _chapter_plan_validation(
+            replacement.content,
+            requested,
+            _approved_volume_titles(db, replacement.project_id),
+        )
+        replacement.content = str(validation["preview_markdown"])
+        replacement_metadata["chapter_plan_validation"] = {
+            key: value
+            for key, value in validation.items()
+            if key not in {"volumes", "preview_markdown"}
+        }
+        replacement_metadata["normalized_preview"] = True
+        replacement.metadata_json = _dump(replacement_metadata)
     db.add(replacement)
     db.flush()
     return _artifact_record(replacement)
@@ -642,6 +691,8 @@ def decide_artifact(
         if payload.conflict_resolution == "manual_merge" and artifact.source != "user":
             raise HTTPException(status_code=409, detail="请先编辑合并内容并保存新版本，再选择手工合并")
     if payload.action == "approve":
+        if artifact.kind == "chapters":
+            _validate_chapter_plan_approval(db, artifact)
         artifact.status = "approved"
         _apply_artifact(db, artifact)
         db.flush()
@@ -673,48 +724,58 @@ async def generate(
     if state.budget_paused:
         raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, payload.use_demo_model)
-    job = models.GenerationJob(
+    lease = generation_jobs.acquire(
+        db,
         project_id=project_id,
-        kind=phase,
+        phase=phase,
+        chapter_id=payload.chapter_id,
+        mode=payload.mode,
+        idempotency_key=payload.idempotency_key,
         label=f"{STAGE_LABELS.get(phase, phase)} · {len(phase_agents)} 个 Agent",
-        status="running",
-        progress=5,
         model_name=profile.display_name if profile is not None else "内置演示模型",
         model_reason=reason,
     )
-    db.add(job)
-    db.commit()
+    job = lease.job
+    if lease.replayed:
+        replay_artifacts = _generation_job_artifacts(db, job)
+        artifact = replay_artifacts[0] if replay_artifacts else None
+        return {
+            "job": _record(job),
+            "artifact": _artifact_record(artifact) if artifact is not None else None,
+            "artifacts": [_artifact_record(item) for item in replay_artifacts],
+            "idempotent_replay": True,
+        }
 
-    phase_max_tokens = _phase_output_tokens(phase)
-    context, context_metadata = _generation_context(
-        db,
-        project_id,
-        payload.chapter_id,
-        profile=profile,
-        use_demo=payload.use_demo_model,
-        max_tokens=phase_max_tokens,
-        query=(
-            f"{STAGE_LABELS.get(phase, phase)}；{payload.instruction or '按已审核资料执行'}"
-        ),
-    )
-    if phase in {"continuation_analysis", "continuation_outline"}:
-        mapped_context, mapped_metadata = await _continuation_source_context(
+    try:
+        phase_max_tokens = _phase_output_tokens(phase)
+        context, context_metadata = _generation_context(
             db,
             project_id,
-            phase,
-            profile,
+            payload.chapter_id,
+            profile=profile,
             use_demo=payload.use_demo_model,
             max_tokens=phase_max_tokens,
+            query=(
+                f"{STAGE_LABELS.get(phase, phase)}；{payload.instruction or '按已审核资料执行'}"
+            ),
         )
-        context = _fit_text_to_token_budget(
-            f"{context}\n\n{mapped_context}",
-            _studio_input_budget(profile, payload.use_demo_model, phase_max_tokens),
-        )
-        context_metadata.update(mapped_metadata)
-    job.model_reason = f"{reason} {_context_reason(context_metadata)}"
-    db.commit()
-    outputs: list[str] = []
-    try:
+        if phase in {"continuation_analysis", "continuation_outline"}:
+            mapped_context, mapped_metadata = await _continuation_source_context(
+                db,
+                project_id,
+                phase,
+                profile,
+                use_demo=payload.use_demo_model,
+                max_tokens=phase_max_tokens,
+            )
+            context = _fit_text_to_token_budget(
+                f"{context}\n\n{mapped_context}",
+                _studio_input_budget(profile, payload.use_demo_model, phase_max_tokens),
+            )
+            context_metadata.update(mapped_metadata)
+        job.model_reason = f"{reason} {_context_reason(context_metadata)}"
+        db.commit()
+        outputs: list[str] = []
         requested_chapters = max(
             1,
             min(
@@ -767,12 +828,47 @@ async def generate(
                 )
                 if response.error is not None:
                     raise RuntimeError(f"{response.error.code}: {response.error.message}")
-                agent_parts.append(response.text.strip())
+                response_text = response.text.strip()
                 _record_response_cost(state, response)
+                if phase == "chapters" and agent_name == "章节规划师":
+                    missing = _missing_chapter_numbers(
+                        response_text, range_start, range_end
+                    )
+                    if missing:
+                        repair_prompt = (
+                            f"{prompt}\n\n上一次输出缺少以下章节：{_format_number_ranges(missing)}。"
+                            "请只补充这些缺失章节，每章必须使用二级标题“## 第N章 标题”，"
+                            "不要重写已经生成的章节。"
+                        )
+                        repair_response = await _model_call(
+                            db,
+                            project_id,
+                            repair_prompt,
+                            profile,
+                            use_demo=payload.use_demo_model,
+                            max_tokens=phase_max_tokens,
+                        )
+                        if repair_response.error is not None:
+                            raise RuntimeError(
+                                f"{repair_response.error.code}: {repair_response.error.message}"
+                            )
+                        _record_response_cost(state, repair_response)
+                        response_text = (
+                            response_text + "\n\n" + repair_response.text.strip()
+                        ).strip()
+                agent_parts.append(response_text)
                 completed_calls += 1
                 job.progress = min(90, int((completed_calls / total_calls) * 85) + 5)
                 db.commit()
-            outputs.append(f"## {agent_name}\n\n" + "\n\n".join(agent_parts))
+            agent_output = f"## {agent_name}\n\n" + "\n\n".join(agent_parts)
+            if phase == "chapters" and agent_name == "章节规划师":
+                validation = _chapter_plan_validation(
+                    agent_output,
+                    requested_chapters,
+                    _approved_volume_titles(db, project_id),
+                )
+                agent_output = str(validation["preview_markdown"])
+            outputs.append(agent_output)
         metadata: dict[str, Any] = {
             "agents": [name for name, _ in phase_agents],
             "model": job.model_name,
@@ -780,6 +876,7 @@ async def generate(
             "chapter_id": payload.chapter_id,
             "mode": payload.mode,
             "context": context_metadata,
+            "generation_idempotency_key": payload.idempotency_key,
         }
         artifact_kind = phase
         if payload.mode not in {"new", "continue"}:
@@ -807,6 +904,18 @@ async def generate(
                     "required_count": len(PHASE_AGENTS[phase]),
                     "series_key": f"{phase}:{agent_name}",
                 })
+                if phase == "chapters" and agent_name == "章节规划师":
+                    validation = _chapter_plan_validation(
+                        output,
+                        requested_chapters,
+                        _approved_volume_titles(db, project_id),
+                    )
+                    item_metadata["chapter_plan_validation"] = {
+                        key: value
+                        for key, value in validation.items()
+                        if key not in {"volumes", "preview_markdown"}
+                    }
+                    item_metadata["normalized_preview"] = True
                 _supersede_series(db, project_id, str(item_metadata["series_key"]))
                 artifacts.append(_new_artifact(project_id, artifact_kind, agent_name, output, item_metadata, agent_index))
         elif phase == "drafting" and state.review_granularity == "scene":
@@ -874,25 +983,47 @@ async def generate(
             state.config_json = _dump(state_config)
             state.revision += 1
         db.flush()
-        job.result_artifact_id = artifacts[0].id
-        job.status = "completed"
-        job.progress = 100
+        generation_jobs.complete(db, job, result_artifact_id=artifacts[0].id)
         _apply_budget_after_task(state)
         db.commit()
         return {
             "job": _record(job),
             "artifact": _artifact_record(artifacts[0]),
             "artifacts": [_artifact_record(item) for item in artifacts],
+            "idempotent_replay": False,
         }
+    except asyncio.CancelledError:
+        generation_jobs.fail(db, job.id, "生成任务已取消", cancelled=True)
+        raise
+    except HTTPException as exc:
+        generation_jobs.fail(db, job.id, str(exc.detail))
+        raise
     except Exception as exc:
-        db.rollback()
-        failed_job = db.get(models.GenerationJob, job.id)
-        if failed_job is not None:
-            failed_job.status = "failed"
-            failed_job.error_message = str(exc)[:2000]
-            failed_job.progress = 100
-            db.commit()
+        generation_jobs.fail(db, job.id, str(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _generation_job_artifacts(
+    db: Session, job: models.GenerationJob
+) -> list[models.CreativeArtifact]:
+    candidates = db.scalars(
+        select(models.CreativeArtifact)
+        .where(
+            models.CreativeArtifact.project_id == job.project_id,
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+        .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id)
+    ).all()
+    matches = [
+        item
+        for item in candidates
+        if _json_object(item.metadata_json).get("generation_idempotency_key")
+        == job.idempotency_key
+    ]
+    if matches:
+        return matches
+    fallback = db.get(models.CreativeArtifact, job.result_artifact_id or 0)
+    return [fallback] if fallback is not None else []
 
 
 async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, Any]:
@@ -968,6 +1099,7 @@ async def decide_message_proposal(
             project_id,
             phase,
             GenerateRequest(
+                idempotency_key=f"chat-proposal:{message.id}",
                 chapter_id=chapter_id,
                 use_demo_model=bool(proposal.get("use_demo_model")),
             ),
@@ -1020,6 +1152,7 @@ def parse_outline(text: str, title: str = "导入大纲") -> dict[str, Any]:
     current_volume: dict[str, Any] | None = None
     current_chapter: dict[str, Any] | None = None
     body: list[str] = []
+    preamble: list[str] = []
 
     def ensure_volume() -> dict[str, Any]:
         nonlocal current_volume
@@ -1044,15 +1177,11 @@ def parse_outline(text: str, title: str = "导入大纲") -> dict[str, Any]:
             continue
         heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         level = len(heading.group(1)) if heading else 0
-        label = heading.group(2).strip() if heading else stripped
+        label = _clean_outline_label(heading.group(2).strip() if heading else stripped)
         if heading and label in AGENT_HEADINGS:
             continue
-        is_volume = bool(re.match(r"^第.{1,12}卷(?:\s|[:：]|$)", label, re.I)) or (
-            level == 1 and not volumes
-        )
-        is_chapter = bool(re.match(r"^第.{1,12}章(?:\s|[:：]|$)", label, re.I)) or bool(
-            re.match(r"^chapter\s+\d+", label, re.I)
-        ) or level == 2
+        is_volume = _volume_title_number(label) is not None or (level == 1 and not volumes)
+        is_chapter = _chapter_title_number(label) is not None or level == 2
         is_scene = bool(re.match(r"^(场景|scene)\s*[一二三四五六七八九十0-9]*", label, re.I)) or level >= 3
         if is_volume and not is_chapter:
             flush_body()
@@ -1064,17 +1193,23 @@ def parse_outline(text: str, title: str = "导入大纲") -> dict[str, Any]:
             volume = ensure_volume()
             current_chapter = {"title": label, "synopsis": "", "scenes": []}
             volume["chapters"].append(current_chapter)
+            if preamble:
+                body.extend(preamble)
+                preamble = []
         elif is_scene and current_chapter is not None:
             flush_body()
             current_chapter["scenes"].append({"title": label, "synopsis": ""})
         else:
             if current_chapter is None:
+                if not volumes:
+                    preamble.append(stripped)
+                    continue
                 volume = ensure_volume()
                 current_chapter = {"title": "第一章", "synopsis": "", "scenes": []}
                 volume["chapters"].append(current_chapter)
             body.append(stripped)
     flush_body()
-    volumes = [item for item in volumes if item["chapters"]]
+    volumes = _merge_parsed_volumes([item for item in volumes if item["chapters"]])
     if not volumes:
         volumes = [{"title": "第一卷", "chapters": [{"title": "第一章", "synopsis": text.strip(), "scenes": []}]}]
     chapter_count = sum(len(item["chapters"]) for item in volumes)
@@ -1117,7 +1252,9 @@ def import_outline(
         db.flush()
         for chapter_position, chapter_data in enumerate(volume_data["chapters"], 1):
             chapter = models.Chapter(
+                project_id=project_id,
                 volume_id=volume.id,
+                number=_chapter_title_number(str(chapter_data["title"])),
                 title=str(chapter_data["title"]),
                 content="",
                 position=chapter_position,
@@ -1627,17 +1764,6 @@ def _supersede_series(db: Session, project_id: int, series_key: str) -> None:
 
 
 def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
-    existing = int(
-        db.scalar(
-            select(func.count(models.Volume.id)).where(
-                models.Volume.project_id == project_id,
-                models.Volume.deleted_at.is_(None),
-            )
-        )
-        or 0
-    )
-    if existing:
-        return
     state = _state(db, project_id)
     config = _json_object(state.config_json)
     requested_chapters = max(1, min(int(config.get("chapter_count") or 12), 10_000))
@@ -1660,8 +1786,23 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
     source = "\n\n".join(item.content for item in (chapter_plans or approved))
     parsed = parse_outline(source, _project(db, project_id).title)
     parsed["volumes"] = _normalize_generated_chapter_plan(
-        parsed["volumes"], requested_chapters
+        parsed["volumes"], requested_chapters, _approved_volume_titles(db, project_id)
     )
+    planned_numbers = [
+        number
+        for volume in parsed["volumes"]
+        for chapter in volume["chapters"]
+        for number in [_chapter_title_number(str(chapter.get("title") or ""))]
+        if number is not None
+    ]
+    expected_numbers = list(range(1, requested_chapters + 1))
+    if sorted(planned_numbers) != expected_numbers:
+        missing = sorted(set(expected_numbers) - set(planned_numbers))
+        raise HTTPException(
+            status_code=409,
+            detail="批准的章节规划不能建立完整卷章树；仍缺少第 "
+            f"{_format_number_ranges(missing)} 章，请返回章节规划重新生成。",
+        )
     scene_plans = [
         item
         for item in approved
@@ -1686,36 +1827,216 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
                 number or 0,
                 _default_chapter_scenes(str(planned_chapter.get("synopsis") or "")),
             )
-    for volume_position, volume_data in enumerate(parsed["volumes"], 1):
-        volume = models.Volume(
-            project_id=project_id,
-            title=str(volume_data["title"]),
-            position=volume_position,
+    _reconcile_chapter_tree(db, project_id, parsed["volumes"], requested_chapters)
+
+
+def _reconcile_chapter_tree(
+    db: Session,
+    project_id: int,
+    planned_volumes: list[dict[str, Any]],
+    requested_chapters: int,
+) -> None:
+    existing_volumes = list(
+        db.scalars(
+            select(models.Volume)
+            .where(
+                models.Volume.project_id == project_id,
+                models.Volume.deleted_at.is_(None),
+            )
+            .order_by(models.Volume.position, models.Volume.id)
+        ).all()
+    )
+    volume_ids = [volume.id for volume in existing_volumes]
+    existing_chapters = list(
+        db.scalars(
+            select(models.Chapter)
+            .where(
+                models.Chapter.volume_id.in_(volume_ids or [-1]),
+                models.Chapter.deleted_at.is_(None),
+            )
+            .order_by(models.Chapter.volume_id, models.Chapter.position, models.Chapter.id)
+        ).all()
+    )
+    chapters_by_number: dict[int, models.Chapter] = {}
+    unplanned_with_prose: list[models.Chapter] = []
+    for chapter in existing_chapters:
+        number = _chapter_title_number(chapter.title)
+        if number is None or not 1 <= number <= requested_chapters:
+            if chapter.content.strip():
+                unplanned_with_prose.append(chapter)
+            continue
+        if number in chapters_by_number:
+            raise HTTPException(
+                status_code=409,
+                detail=f"现有卷章树包含重复的第 {number} 章，请先使用章节修复工具处理。",
+            )
+        chapters_by_number[number] = chapter
+    if unplanned_with_prose:
+        names = "、".join(chapter.title for chapter in unplanned_with_prose[:8])
+        raise HTTPException(
+            status_code=409,
+            detail=f"现有正文中有不属于批准计划的章节：{names}。为避免丢失正文，系统已停止推进，请先手工确认。",
         )
-        db.add(volume)
-        db.flush()
-        for chapter_position, chapter_data in enumerate(volume_data["chapters"], 1):
-            chapter = models.Chapter(
-                volume_id=volume.id,
-                title=str(chapter_data["title"]),
-                content="",
-                position=chapter_position,
-                word_count=0,
+
+    volumes_by_number = {
+        number: volume
+        for volume in existing_volumes
+        for number in [_volume_title_number(volume.title)]
+        if number is not None
+    }
+    used_volume_ids: set[int] = set()
+    used_chapter_ids: set[int] = set()
+    for index, volume in enumerate(existing_volumes, 1):
+        volume.position = -10_000 - index
+    for index, chapter in enumerate(existing_chapters, 1):
+        chapter.position = -10_000 - index
+    db.flush()
+
+    for volume_position, volume_data in enumerate(planned_volumes, 1):
+        volume_title = str(volume_data["title"])
+        volume_number = _volume_title_number(volume_title)
+        planned_volume = volumes_by_number.get(volume_number or -1)
+        if planned_volume is None:
+            planned_volume = models.Volume(
+                project_id=project_id,
+                title=volume_title,
+                position=volume_position,
             )
-            db.add(chapter)
+            db.add(planned_volume)
             db.flush()
-            scene_data = chapter_data.get("scenes") or _default_chapter_scenes(
-                str(chapter_data.get("synopsis") or "")
-            )
-            for scene_position, scene in enumerate(scene_data, 1):
-                db.add(
-                    models.Scene(
-                        chapter_id=chapter.id,
-                        title=str(scene["title"]),
-                        synopsis=str(scene.get("synopsis") or ""),
-                        position=scene_position,
-                    )
+        else:
+            planned_volume.title = volume_title
+            planned_volume.position = volume_position
+            planned_volume.revision += 1
+        used_volume_ids.add(planned_volume.id)
+
+        for chapter_position, chapter_data in enumerate(volume_data["chapters"], 1):
+            chapter_title = str(chapter_data["title"])
+            number = _chapter_title_number(chapter_title)
+            if number is None:
+                raise HTTPException(status_code=409, detail=f"章节标题缺少规范编号：{chapter_title}")
+            planned_chapter = chapters_by_number.get(number)
+            if planned_chapter is None:
+                planned_chapter = models.Chapter(
+                    project_id=project_id,
+                    volume_id=planned_volume.id,
+                    number=number,
+                    title=chapter_title,
+                    content="",
+                    position=chapter_position,
+                    word_count=0,
                 )
+                db.add(planned_chapter)
+                db.flush()
+            else:
+                planned_chapter.project_id = project_id
+                planned_chapter.number = number
+                planned_chapter.volume_id = planned_volume.id
+                if not planned_chapter.content.strip() or _is_placeholder_chapter_title(planned_chapter.title):
+                    planned_chapter.title = chapter_title
+                planned_chapter.position = chapter_position
+                planned_chapter.revision += 1
+            used_chapter_ids.add(planned_chapter.id)
+            _reconcile_chapter_scenes(
+                db,
+                planned_chapter,
+                cast(list[dict[str, Any]], chapter_data.get("scenes") or []),
+            )
+
+    now = datetime.now(timezone.utc)
+    for chapter in existing_chapters:
+        if chapter.id not in used_chapter_ids:
+            chapter.deleted_at = now
+            chapter.revision += 1
+    for volume in existing_volumes:
+        if volume.id not in used_volume_ids:
+            volume.deleted_at = now
+            volume.revision += 1
+    db.flush()
+
+    active_chapters = db.scalars(
+        select(models.Chapter)
+        .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
+        .where(
+            models.Volume.project_id == project_id,
+            models.Volume.deleted_at.is_(None),
+            models.Chapter.deleted_at.is_(None),
+        )
+    ).all()
+    active_numbers = sorted(
+        number
+        for chapter in active_chapters
+        for number in [_chapter_title_number(chapter.title)]
+        if number is not None
+    )
+    if active_numbers != list(range(1, requested_chapters + 1)):
+        raise HTTPException(
+            status_code=409,
+            detail="卷章树校验失败，阶段未推进；请保留项目并运行章节结构修复。",
+        )
+
+
+def _reconcile_chapter_scenes(
+    db: Session, chapter: models.Chapter, planned_scenes: list[dict[str, Any]]
+) -> None:
+    if not planned_scenes:
+        return
+    existing = list(
+        db.scalars(
+            select(models.Scene)
+            .where(
+                models.Scene.chapter_id == chapter.id,
+                models.Scene.deleted_at.is_(None),
+            )
+            .order_by(models.Scene.position, models.Scene.id)
+        ).all()
+    )
+    for index, scene in enumerate(existing, 1):
+        scene.position = -10_000 - index
+    db.flush()
+    for position, scene_data in enumerate(planned_scenes, 1):
+        if position <= len(existing):
+            scene = existing[position - 1]
+            scene.title = str(scene_data.get("title") or f"场景{position}")
+            scene.synopsis = str(scene_data.get("synopsis") or "")
+            scene.position = position
+            scene.revision += 1
+        else:
+            db.add(
+                models.Scene(
+                    chapter_id=chapter.id,
+                    title=str(scene_data.get("title") or f"场景{position}"),
+                    synopsis=str(scene_data.get("synopsis") or ""),
+                    position=position,
+                )
+            )
+    for offset, scene in enumerate(existing[len(planned_scenes):], len(planned_scenes) + 1):
+        scene.position = offset
+    db.flush()
+
+
+def _approved_volume_titles(db: Session, project_id: int) -> list[str]:
+    artifacts = db.scalars(
+        select(models.CreativeArtifact)
+        .where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.kind == "volumes",
+            models.CreativeArtifact.status == "approved",
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+        .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id)
+    ).all()
+    titles: dict[int, str] = {}
+    for artifact in artifacts:
+        for line in artifact.content.splitlines():
+            heading = re.match(r"^#{1,6}\s+(.+)$", line.strip())
+            if heading is None:
+                continue
+            title = _clean_outline_label(heading.group(1))
+            number = _volume_title_number(title)
+            if number is not None and number not in titles:
+                titles[number] = title
+    return [titles[number] for number in sorted(titles)]
 
 
 def _ensure_continuation_tree_from_plan(db: Session, project_id: int) -> None:
@@ -1798,7 +2119,9 @@ def _ensure_continuation_tree_from_plan(db: Session, project_id: int) -> None:
         if _chapter_title_number(title) is None:
             title = f"第{number}章 {title}"
         chapter = models.Chapter(
+            project_id=project_id,
             volume_id=target_volume.id,
+            number=number,
             title=title,
             content="",
             position=max_position + offset + 1,
@@ -1824,14 +2147,6 @@ def _ensure_continuation_tree_from_plan(db: Session, project_id: int) -> None:
     state.config_json = _dump(config)
     state.revision += 1
     db.flush()
-
-
-def _chapter_title_number(title: str) -> int | None:
-    match = re.match(r"^第\s*(\d+)\s*章(?:\s|[:：]|$)", title, re.I)
-    if match:
-        return int(match.group(1))
-    match = re.match(r"^chapter\s+(\d+)(?:\s|[:：]|$)", title, re.I)
-    return int(match.group(1)) if match else None
 
 
 def _chapter_generation_ranges(
@@ -1866,16 +2181,22 @@ def _default_chapter_scenes(synopsis: str = "") -> list[dict[str, str]]:
 
 
 def _normalize_generated_chapter_plan(
-    volumes: list[dict[str, Any]], requested_chapters: int
+    volumes: list[dict[str, Any]],
+    requested_chapters: int,
+    approved_volume_titles: list[str] | None = None,
+    *,
+    fill_missing: bool = False,
 ) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for index, volume in enumerate(volumes):
-        title = str(volume.get("title") or f"第{index + 1}卷").strip()
+        title = _clean_outline_label(str(volume.get("title") or f"第{index + 1}卷"))
         key = _volume_plan_key(title)
         if key not in merged:
             merged[key] = {**volume, "title": title, "chapters": []}
             order.append(key)
+        elif _is_generic_volume_title(str(merged[key].get("title") or "")) and not _is_generic_volume_title(title):
+            merged[key]["title"] = title
         merged[key]["chapters"].extend(
             cast(list[dict[str, Any]], volume.get("chapters") or [])
         )
@@ -1898,29 +2219,66 @@ def _normalize_generated_chapter_plan(
         normalized = [{"title": "第一卷", "chapters": []}]
 
     normalized.sort(key=_planned_volume_sort_key)
-    starts = [
-        min(
-            (
-                _chapter_title_number(str(chapter.get("title") or ""))
-                or requested_chapters + 1
-                for chapter in cast(list[dict[str, Any]], volume["chapters"])
-            ),
-            default=1,
+    approved = _normalized_approved_volume_titles(
+        approved_volume_titles or [], requested_chapters
+    )
+    if approved:
+        approved_numbers = [_volume_title_number(title) for title in approved]
+        index_by_number = {
+            number: index
+            for index, number in enumerate(approved_numbers)
+            if number is not None
+        }
+        known_starts: dict[int, int] = {}
+        existing_chapters: list[dict[str, Any]] = []
+        for volume in normalized:
+            chapters = cast(list[dict[str, Any]], volume.get("chapters") or [])
+            existing_chapters.extend(chapters)
+            volume_number = _volume_title_number(str(volume.get("title") or ""))
+            chapter_numbers = [
+                number
+                for chapter in chapters
+                for number in [_chapter_title_number(str(chapter.get("title") or ""))]
+                if number is not None
+            ]
+            if volume_number in index_by_number and chapter_numbers:
+                known_starts[index_by_number[volume_number]] = min(chapter_numbers)
+        starts = _interpolate_volume_starts(
+            len(approved), requested_chapters, known_starts
         )
-        for volume in normalized
-    ]
-    for number in range(1, requested_chapters + 1):
-        if number in used_numbers:
-            continue
-        target_index = _volume_index_for_chapter(number, starts)
-        normalized[target_index]["chapters"].append(
-            {
-                "title": f"第{number}章",
-                "synopsis": f"依据已批准的章节与场景规划完成第 {number} 章。",
-                "scenes": _default_chapter_scenes(),
-            }
-        )
-        used_numbers.add(number)
+        normalized = [{"title": title, "chapters": []} for title in approved]
+        for chapter in existing_chapters:
+            number = _chapter_title_number(str(chapter.get("title") or ""))
+            if number is not None:
+                normalized[_volume_index_for_chapter(number, starts)]["chapters"].append(
+                    chapter
+                )
+    else:
+        starts = [
+            min(
+                (
+                    _chapter_title_number(str(chapter.get("title") or ""))
+                    or requested_chapters + 1
+                    for chapter in cast(list[dict[str, Any]], volume["chapters"])
+                ),
+                default=1,
+            )
+            for volume in normalized
+        ]
+    if fill_missing:
+        for number in range(1, requested_chapters + 1):
+            if number in used_numbers:
+                continue
+            target_index = _volume_index_for_chapter(number, starts)
+            normalized[target_index]["chapters"].append(
+                {
+                    "title": f"第{number}章 [待规划]",
+                    "synopsis": "待作者确认或重新生成本章规划。",
+                    "scenes": [],
+                    "planning_status": "missing",
+                }
+            )
+            used_numbers.add(number)
     for volume in normalized:
         volume["chapters"].sort(
             key=lambda chapter: _chapter_title_number(str(chapter.get("title") or ""))
@@ -1929,29 +2287,155 @@ def _normalize_generated_chapter_plan(
     return normalized
 
 
+def _chapter_plan_validation(
+    content: str,
+    requested_chapters: int,
+    approved_volume_titles: list[str] | None = None,
+) -> dict[str, Any]:
+    raw_numbers = [
+        number
+        for line in content.splitlines()
+        for number in [_chapter_title_number(_clean_outline_label(re.sub(r"^#{1,6}\s+", "", line.strip())))]
+        if number is not None
+    ]
+    counts: dict[int, int] = {}
+    for number in raw_numbers:
+        counts[number] = counts.get(number, 0) + 1
+    duplicates = sorted(number for number, count in counts.items() if count > 1)
+    out_of_range = sorted(number for number in counts if number > requested_chapters)
+    valid = {number for number in counts if 1 <= number <= requested_chapters}
+    missing = sorted(set(range(1, requested_chapters + 1)) - valid)
+    parsed = parse_outline(content, "章节规划")
+    volumes = _normalize_generated_chapter_plan(
+        parsed["volumes"], requested_chapters, approved_volume_titles
+    )
+    return {
+        "requested_chapters": requested_chapters,
+        "planned_chapters": len(valid),
+        "coverage_percent": round((len(valid) / requested_chapters) * 100, 2),
+        "missing_numbers": missing,
+        "duplicate_numbers": duplicates,
+        "out_of_range_numbers": out_of_range,
+        "complete": not missing and not duplicates and not out_of_range,
+        "volumes": volumes,
+        "preview_markdown": _render_chapter_plan(volumes),
+    }
+
+
+def _render_chapter_plan(volumes: list[dict[str, Any]]) -> str:
+    lines = ["## 章节规划师", "", "> 系统已规范化以下预览；审核通过后将按此结构写入卷章树。", ""]
+    for volume in volumes:
+        lines.append(f"# {volume['title']}")
+        for chapter in cast(list[dict[str, Any]], volume.get("chapters") or []):
+            lines.extend([f"## {chapter['title']}", str(chapter.get("synopsis") or "").strip(), ""])
+    return "\n".join(lines).strip()
+
+
+def _missing_chapter_numbers(content: str, start: int, end: int) -> list[int]:
+    found = {
+        number
+        for line in content.splitlines()
+        for number in [_chapter_title_number(_clean_outline_label(re.sub(r"^#{1,6}\s+", "", line.strip())))]
+        if number is not None and start <= number <= end
+    }
+    return sorted(set(range(start, end + 1)) - found)
+
+
+def _format_number_ranges(numbers: list[int]) -> str:
+    if not numbers:
+        return "无"
+    ranges: list[str] = []
+    start = previous = numbers[0]
+    for number in numbers[1:]:
+        if number == previous + 1:
+            previous = number
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = number
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return "、".join(ranges)
+
+
+def _validate_chapter_plan_approval(
+    db: Session, artifact: models.CreativeArtifact
+) -> None:
+    metadata = _json_object(artifact.metadata_json)
+    agent_name = str(metadata.get("agent_name") or artifact.title)
+    if agent_name != "章节规划师":
+        return
+    state = _state(db, artifact.project_id)
+    requested = max(
+        1, min(int(_json_object(state.config_json).get("chapter_count") or 12), 10_000)
+    )
+    validation = _chapter_plan_validation(
+        artifact.content, requested, _approved_volume_titles(db, artifact.project_id)
+    )
+    metadata["chapter_plan_validation"] = {
+        key: value
+        for key, value in validation.items()
+        if key not in {"volumes", "preview_markdown"}
+    }
+    artifact.metadata_json = _dump(metadata)
+    if not validation["complete"]:
+        detail = []
+        if validation["missing_numbers"]:
+            detail.append(f"缺少第 {_format_number_ranges(validation['missing_numbers'])} 章")
+        if validation["duplicate_numbers"]:
+            detail.append(f"重复章节号：{_format_number_ranges(validation['duplicate_numbers'])}")
+        if validation["out_of_range_numbers"]:
+            detail.append(f"越界章节号：{_format_number_ranges(validation['out_of_range_numbers'])}")
+        raise HTTPException(
+            status_code=409,
+            detail="章节规划尚不完整（覆盖率 "
+            f"{validation['coverage_percent']}%）：{'；'.join(detail)}。请重新生成缺失章节后再审核。",
+        )
+
+
+def _normalized_approved_volume_titles(
+    titles: list[str], requested_chapters: int
+) -> list[str]:
+    numbered: dict[int, str] = {}
+    for title_value in titles:
+        title = _clean_outline_label(title_value)
+        number = _volume_title_number(title)
+        if number is not None and number not in numbered:
+            numbered[number] = title
+    return [numbered[number] for number in sorted(numbered)][:requested_chapters]
+
+
+def _interpolate_volume_starts(
+    volume_count: int,
+    requested_chapters: int,
+    known_starts: dict[int, int],
+) -> list[int]:
+    if volume_count <= 0:
+        return []
+    anchors = {0: 1, volume_count: requested_chapters + 1}
+    previous = 1
+    for index, value in sorted(known_starts.items()):
+        if 0 < index < volume_count and previous < value <= requested_chapters:
+            anchors[index] = value
+            previous = value
+    starts = [1] * volume_count
+    ordered = sorted(anchors.items())
+    for (left_index, left_value), (right_index, right_value) in zip(
+        ordered, ordered[1:]
+    ):
+        width = right_index - left_index
+        for offset in range(width):
+            starts[left_index + offset] = left_value + (
+                (right_value - left_value) * offset // width
+            )
+    for index in range(1, len(starts)):
+        starts[index] = max(starts[index], starts[index - 1] + 1)
+    return starts
+
+
 def _volume_plan_key(title: str) -> str:
     number = _volume_title_number(title)
     if number is not None:
         return f"number:{number}"
     return "title:" + re.sub(r"\s+", "", title).casefold()
-
-
-def _volume_title_number(title: str) -> int | None:
-    match = re.match(r"^第\s*([0-9]+|[一二三四五六七八九十]+)\s*卷", title.strip(), re.I)
-    if not match:
-        return None
-    value = match.group(1)
-    if value.isdigit():
-        return int(value)
-    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    if value == "十":
-        return 10
-    if "十" in value:
-        left, right = value.split("十", 1)
-        tens = digits.get(left, 1) if left else 1
-        ones = digits.get(right, 0) if right else 0
-        return tens * 10 + ones
-    return digits.get(value)
 
 
 def _planned_volume_sort_key(volume: dict[str, Any]) -> tuple[int, int]:
@@ -2120,6 +2604,7 @@ def repair_chapter_tree(
             )
         ).all()
         for chapter in duplicate_chapters:
+            chapter.position = -30_000 - chapter.id
             chapter.volume_id = canonical.id
             chapter.revision += 1
         volume.deleted_at = now
@@ -2139,10 +2624,12 @@ def repair_chapter_tree(
     for number in cast(list[int], preview["missing_numbers"]):
         target_volume = volumes[_volume_index_for_chapter(number, starts)]
         chapter = models.Chapter(
+            project_id=project_id,
             volume_id=target_volume.id,
+            number=number,
             title=f"第{number}章",
             content="",
-            position=0,
+            position=-20_000 - number,
             word_count=0,
         )
         db.add(chapter)
@@ -2170,6 +2657,12 @@ def repair_chapter_tree(
             chapter.volume_id = target_volume.id
             chapter.revision += 1
         numbered[target_volume.id].append(chapter)
+
+    for index, volume in enumerate(volumes, 1):
+        volume.position = -40_000 - index
+    for index, chapter in enumerate(active_chapters, 1):
+        chapter.position = -50_000 - index
+    db.flush()
 
     for volume_position, volume in enumerate(volumes, 1):
         if volume.position != volume_position:
@@ -2560,7 +3053,7 @@ def _phase_output_tokens(phase: str) -> int:
     if phase == "drafting":
         return 3_600
     if phase == "chapters":
-        return 2_800
+        return 5_200
     return 2_200
 
 
@@ -3009,7 +3502,9 @@ def _restore_tree(db: Session, project_id: int, tree: dict[str, Any]) -> None:
         if volume_id is None:
             continue
         chapter = models.Chapter(
+            project_id=project_id,
             volume_id=volume_id,
+            number=_chapter_title_number(str(item.get("title") or "")),
             title=str(item.get("title") or "未命名章"),
             content=str(item.get("content") or ""),
             position=int(item.get("position") or 0),
