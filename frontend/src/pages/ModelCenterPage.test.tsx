@@ -58,7 +58,7 @@ vi.mock("../api/client", () => ({
   api: {
     listProviders: async () => [{ id: 1, name: "Mock Provider", provider_type: "mock", credential_env_var: null, base_url: null, enabled: true, revision: 1, deleted_at: null }],
     listModels: async () => [{ id: 1, provider_account_id: 1, name: "mock-novel-v1", display_name: "Mock Novel", context_window: 8192, enabled: true, revision: 1, deleted_at: null }],
-    listPresets: async () => [{ id: 1, slug: "deepseek", name: "DeepSeek", protocol: "openai_chat", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-chat", credential_env_var_hint: "DEEPSEEK_API_KEY", options: {}, revision: 1 }],
+    listPresets: async () => [{ id: 1, slug: "deepseek", name: "DeepSeek", protocol: "openai_chat", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-v4-flash", credential_env_var_hint: "DEEPSEEK_API_KEY", options: {}, revision: 1 }],
     listRoutes: async () => [],
     createProvider: mocks.createProvider,
     updateProvider: vi.fn(),

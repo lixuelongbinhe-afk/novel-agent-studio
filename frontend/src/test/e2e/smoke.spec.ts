@@ -109,7 +109,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "添加模型服务" })).toBeVisible();
   await expect(page.getByRole("button", { name: "DeepSeek", exact: true })).toHaveClass(/selected/);
   await expect(page.getByLabel("API 地址")).toHaveValue("https://api.deepseek.com/v1");
-  await expect(page.getByLabel("模型名称")).toHaveValue("deepseek-chat");
+  await expect(page.getByLabel("模型名称")).toHaveValue("deepseek-v4-flash");
   await page.screenshot({ path: "test-results/v2-deepseek-dialog.png" });
   await page.getByRole("button", { name: "取消" }).click();
 

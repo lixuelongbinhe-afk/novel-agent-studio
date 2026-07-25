@@ -9,6 +9,7 @@ from typing import Literal
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from reportlab.pdfgen import canvas
@@ -26,6 +27,7 @@ from app.schemas.studio import (
     ContinuationImportRequest,
     GenerateRequest,
     OutlineImportRequest,
+    ProviderSetup,
     SnapshotCreate,
     StudioProjectCreate,
 )
@@ -70,6 +72,37 @@ def test_project_flow_has_expected_defaults_and_dashboard(db: Session) -> None:
     assert overview["state"]["budget_warning_percent"] == 70  # type: ignore[index]
     assert overview["state"]["budget_pause_percent"] == 110  # type: ignore[index]
     assert studio.dashboard(db)[0]["id"] == project_id
+
+
+def test_deepseek_setup_uses_current_v4_model_metadata(db: Session) -> None:
+    payload = ProviderSetup(
+        preset="deepseek",
+        name="DeepSeek V4",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-v4-pro",
+        env_var_name="DEEPSEEK_API_KEY",
+    )
+
+    with db.begin():
+        result = studio.setup_provider(db, payload)
+
+    assert result["model"] == "deepseek-v4-pro"
+    profile = db.scalar(
+        select(models.ModelProfile).where(models.ModelProfile.name == "deepseek-v4-pro")
+    )
+    assert profile is not None
+    assert profile.context_window == 1_000_000
+
+
+def test_deepseek_setup_rejects_retired_model_aliases() -> None:
+    with pytest.raises(ValidationError, match="DeepSeek 官方 API"):
+        ProviderSetup(
+            preset="deepseek",
+            name="Retired DeepSeek",
+            base_url="https://api.deepseek.com/v1",
+            model="deepseek-chat",
+            env_var_name="DEEPSEEK_API_KEY",
+        )
 
 
 def test_delete_project_route_removes_project_from_dashboard(db: Session) -> None:

@@ -117,7 +117,7 @@ describe("StudioPage", () => {
       context_scope: "project,plot,chapter:1",
       proposal: null,
       proposal_status: "none",
-      model_name: "deepseek-chat",
+      model_name: "deepseek-v4-flash",
       model_reason: "",
       created_at: "2026-07-21T00:00:00Z"
     }];
@@ -149,7 +149,7 @@ describe("StudioPage", () => {
       context_scope: "project,drafting",
       proposal: { target_type: "workflow", phase: "drafting", chapter_id: 21, label: "生成第1章正文" },
       proposal_status: "pending",
-      model_name: "deepseek-chat",
+      model_name: "deepseek-v4-flash",
       model_reason: "",
       created_at: "2026-07-21T00:00:00Z"
     }];

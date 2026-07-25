@@ -1411,7 +1411,7 @@ def setup_provider(db: Session, payload: ProviderSetup) -> dict[str, Any]:
         provider_account_id=provider.id,
         name=payload.model,
         display_name=payload.model,
-        context_window=128_000,
+        context_window=1_000_000 if payload.preset == "deepseek" else 128_000,
         enabled=True,
     )
     db.add(profile)

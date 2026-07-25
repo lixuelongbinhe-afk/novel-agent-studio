@@ -28,7 +28,7 @@ const presets: Record<PresetKey, { label: string; baseUrl: string; model: string
   deepseek: {
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
+    model: "deepseek-v4-flash",
     env: "DEEPSEEK_API_KEY"
   },
   openai: {
@@ -248,7 +248,17 @@ export function ModelsPage() {
             </div>
             <div className="form-grid two-columns">
               <label><span>显示名称</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-              <label><span>模型名称</span><input required value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="例如 deepseek-chat" /></label>
+              <label>
+                <span>模型名称</span>
+                {form.preset === "deepseek" ? (
+                  <select required value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })}>
+                    <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+                    <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+                  </select>
+                ) : (
+                  <input required value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="输入供应商提供的模型 ID" />
+                )}
+              </label>
               <label className="wide"><span>API 地址</span><input required value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} /></label>
             </div>
             <div className="segmented-control compact">

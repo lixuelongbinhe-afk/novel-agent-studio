@@ -159,6 +159,17 @@ class ProviderSetup(BaseModel):
     def strip_secret(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
 
+    @model_validator(mode="after")
+    def validate_official_deepseek_model(self) -> "ProviderSetup":
+        if self.preset == "deepseek" and self.model not in {
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        }:
+            raise ValueError(
+                "DeepSeek 官方 API 仅支持 deepseek-v4-flash 或 deepseek-v4-pro"
+            )
+        return self
+
 
 class ProviderSecretUpdate(BaseModel):
     api_key: str = Field(min_length=1, max_length=10_000)

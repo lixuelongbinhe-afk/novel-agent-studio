@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.7] - 2026-07-26
+
+### Fixed
+
+- DeepSeek 官方预设改为当前 V4 模型：默认 `deepseek-v4-flash`，可选 `deepseek-v4-pro`。
+- 启动迁移会将官方 DeepSeek 服务中的旧模型配置升级到 V4，并将上下文窗口更新为 1M；自定义兼容网关不受影响。
+- 前后端拒绝为 DeepSeek 官方预设保存已停用的 `deepseek-chat` 或 `deepseek-reasoner`。
+
 ## [2.2.6] - 2026-07-22
 
 ### Fixed

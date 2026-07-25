@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import "../test/setup";
 import { ModelsPage } from "./ModelsPage";
 
 const mocks = vi.hoisted(() => ({
@@ -24,7 +25,7 @@ const provider = {
   env_var_name: null,
   secret_stored: true,
   enabled: true,
-  model: "deepseek-chat",
+  model: "deepseek-v4-flash",
   revision: 1
 };
 
@@ -74,6 +75,16 @@ describe("ModelsPage", () => {
       api_key: "test-secret",
       env_var_name: null
     })));
+  });
+
+  it("offers only current DeepSeek V4 models for the official preset", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /连接第一个模型服务/ }));
+
+    expect(screen.getByLabelText("模型名称")).toHaveValue("deepseek-v4-flash");
+    expect(screen.getByRole("option", { name: "DeepSeek V4 Flash" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "DeepSeek V4 Pro" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /deepseek-chat/i })).not.toBeInTheDocument();
   });
 
   it("tests, updates, and deletes an existing provider through real mutations", async () => {

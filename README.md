@@ -1,18 +1,18 @@
 # Novel Agent Studio
 
-Novel Agent Studio（小说智能体工作室）v2.2.6 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
+Novel Agent Studio（小说智能体工作室）v2.2.7 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
 
 ## Windows 直接使用
 
 安装版：
 
-1. 双击 `outputs/NovelAgentStudio-Setup-2.2.6.exe`。
+1. 双击 `outputs/NovelAgentStudio-Setup-2.2.7.exe`。
 2. 安装完成后，从开始菜单打开“小说智能体工作室”。
 3. 实际程序位于 `%LOCALAPPDATA%\Programs\NovelAgentStudio\NovelAgentStudio.exe`。
 
 免安装版：
 
-1. 完整解压 `outputs/NovelAgentStudio-Portable-2.2.6.zip`，不要只拖出单个 EXE。
+1. 完整解压 `outputs/NovelAgentStudio-Portable-2.2.7.zip`，不要只拖出单个 EXE。
 2. 双击解压目录中的 `NovelAgentStudio\NovelAgentStudio.exe`。
 
 从 v2.1.2 升级后，如果旧项目把“章节规划师”显示成正文且缺少后续章节，请打开项目并点击顶部的“修复章节结构”。程序会先创建永久特殊快照，再将错误占位章移入回收状态，并按项目设定补齐缺失章节。
@@ -66,6 +66,8 @@ Seed 会创建中文悬疑示例和 11-Agent 并行工作流。
 | OpenAI / Anthropic / Gemini / OpenRouter | 对应官方或兼容协议 | 界面预填 | 按服务设置 |
 | OpenAI 兼容服务 | OpenAI Chat | 用户填写 | 用户填写 |
 
+DeepSeek 官方预设默认使用 `deepseek-v4-flash`，并可切换到 `deepseek-v4-pro`。升级时，官方 DeepSeek 地址下的旧 `deepseek-chat` 与 `deepseek-reasoner` 配置会按官方兼容关系迁移到 `deepseek-v4-flash`；自定义兼容网关中的同名别名不会被改写。
+
 设置或修改环境变量后需完全退出并重新打开桌面程序。模型 ID、价格、上下文窗口和服务条款可能变化，应以用户账户和供应商当前文档为准。
 
 ## 数据与备份
@@ -117,7 +119,7 @@ cd ..
 .\scripts\package-desktop.ps1
 ```
 
-正式打包要求当前提交带有 `v2.2.6` 标签且 Git 工作区干净。脚本会完整构建前端和 PyInstaller 程序，执行控制台自检及真实 GUI 生命周期自检，再生成安装包、便携 ZIP、SHA-256 文件和包内构建来源清单。开发中的本地试包可显式使用 `-AllowDirty -AllowUntagged`，该状态会记录在来源清单中。
+正式打包要求当前提交带有 `v2.2.7` 标签且 Git 工作区干净。脚本会完整构建前端和 PyInstaller 程序，执行控制台自检及真实 GUI 生命周期自检，再生成安装包、便携 ZIP、SHA-256 文件和包内构建来源清单。开发中的本地试包可显式使用 `-AllowDirty -AllowUntagged`，该状态会记录在来源清单中。
 
 ## 质量检查
 

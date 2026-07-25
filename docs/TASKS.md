@@ -1,5 +1,12 @@
 # Tasks
 
+## V2.2.7 DeepSeek V4 Compatibility
+
+- [x] Replace the retired DeepSeek Chat/Reasoner defaults with V4 Flash and V4 Pro.
+- [x] Migrate official DeepSeek presets and profiles without modifying custom compatible gateways.
+- [x] Enforce current DeepSeek model IDs in the backend and expose a finite V4 selector in the UI.
+- [x] Pass backend, frontend, type, production-build, and packaged desktop release gates.
+
 ## V2.2.6 Risk Audit Remediation
 
 - [x] Fix autosave response races and preserve dirty state for edits made during an in-flight save.

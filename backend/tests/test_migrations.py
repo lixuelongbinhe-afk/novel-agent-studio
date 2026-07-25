@@ -71,6 +71,9 @@ def test_empty_database_reaches_studio_v2_with_presets(tmp_path: Path) -> None:
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == STUDIO_V2_REVISION
             assert connection.scalar(text("SELECT COUNT(*) FROM provider_presets")) == 9
+            assert connection.scalar(
+                text("SELECT default_model FROM provider_presets WHERE slug = 'deepseek'")
+            ) == "deepseek-v4-flash"
     finally:
         engine.dispose()
 
@@ -175,7 +178,6 @@ def test_story_order_migration_normalizes_legacy_rows_and_enforces_uniqueness(
             )
     finally:
         engine.dispose()
-
     command.upgrade(config, STUDIO_V2_REVISION)
     engine = create_engine(url)
     try:
@@ -207,5 +209,85 @@ def test_story_order_migration_normalizes_legacy_rows_and_enforces_uniqueness(
                     ),
                     {"ts": timestamp},
                 )
+    finally:
+        engine.dispose()
+
+
+def test_deepseek_v4_migration_updates_only_official_deepseek_profiles(
+    tmp_path: Path,
+) -> None:
+    url = database_url(tmp_path / "deepseek-v4.db")
+    config = alembic_config(url)
+    command.upgrade(config, "e8f1c3d5a740")
+    engine = create_engine(url)
+    timestamp = "2026-07-25 00:00:00"
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO provider_accounts "
+                    "(id, name, provider_type, base_url, enabled, created_at, updated_at, revision) VALUES "
+                    "(1, 'DeepSeek official', 'openai_chat', 'https://api.deepseek.com/v1', 1, :ts, :ts, 1), "
+                    "(2, 'Compatible gateway', 'openai_chat', 'https://gateway.example/v1', 1, :ts, :ts, 1), "
+                    "(3, 'DeepSeek with V4', 'openai_chat', 'https://api.deepseek.com', 1, :ts, :ts, 1), "
+                    "(4, 'DeepSeek reasoner only', 'openai_chat', 'https://api.deepseek.com/v1/', 1, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO model_profiles "
+                    "(id, provider_account_id, name, display_name, context_window, enabled, "
+                    "created_at, updated_at, revision) VALUES "
+                    "(1, 1, 'deepseek-chat', 'deepseek-chat', 128000, 1, :ts, :ts, 1), "
+                    "(2, 1, 'deepseek-reasoner', 'My reasoning model', 128000, 1, :ts, :ts, 1), "
+                    "(3, 2, 'deepseek-chat', 'Gateway alias', 64000, 1, :ts, :ts, 1), "
+                    "(4, 3, 'deepseek-chat', 'Legacy routed model', 128000, 1, :ts, :ts, 1), "
+                    "(5, 3, 'deepseek-v4-flash', 'Existing V4 model', 128000, 1, :ts, :ts, 1), "
+                    "(6, 4, 'deepseek-reasoner', 'deepseek-reasoner', 128000, 1, :ts, :ts, 1), "
+                    "(7, 3, 'deepseek-v4-pro', 'Existing V4 Pro', 128000, 1, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO model_routes "
+                    "(id, name, strategy, required_capabilities_json, allow_degradation, enabled, "
+                    "created_at, updated_at, revision) "
+                    "VALUES (1, 'DeepSeek route', 'ordered_fallback', '[]', 1, 1, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO model_route_entries "
+                    "(id, route_id, model_profile_id, position, enabled, created_at, updated_at, revision) "
+                    "VALUES (1, 1, 4, 1, 1, :ts, :ts, 1)"
+                ),
+                {"ts": timestamp},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, STUDIO_V2_REVISION)
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT provider_account_id, name, display_name, context_window "
+                    "FROM model_profiles ORDER BY id"
+                )
+            ).all()
+            assert [tuple(row) for row in rows] == [
+                (1, "deepseek-v4-flash", "deepseek-v4-flash", 1_000_000),
+                (2, "deepseek-chat", "Gateway alias", 64_000),
+                (3, "deepseek-v4-flash", "Existing V4 model", 1_000_000),
+                (4, "deepseek-v4-flash", "deepseek-v4-flash", 1_000_000),
+                (3, "deepseek-v4-pro", "Existing V4 Pro", 1_000_000),
+            ]
+            assert connection.scalar(
+                text("SELECT model_profile_id FROM model_route_entries WHERE id = 1")
+            ) == 5
     finally:
         engine.dispose()

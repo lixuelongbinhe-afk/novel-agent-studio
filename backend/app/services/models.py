@@ -33,7 +33,7 @@ from app.services.gateway_http import (
 
 DEFAULT_PRESETS: tuple[dict[str, str], ...] = (
     {"slug": "openai", "name": "OpenAI", "protocol": "openai_responses", "base_url": "https://api.openai.com/v1", "default_model": "gpt-5-mini", "credential_env_var_hint": "OPENAI_API_KEY"},
-    {"slug": "deepseek", "name": "DeepSeek", "protocol": "openai_chat", "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-chat", "credential_env_var_hint": "DEEPSEEK_API_KEY"},
+    {"slug": "deepseek", "name": "DeepSeek", "protocol": "openai_chat", "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash", "credential_env_var_hint": "DEEPSEEK_API_KEY"},
     {"slug": "xai", "name": "xAI / Grok", "protocol": "openai_chat", "base_url": "https://api.x.ai/v1", "default_model": "grok-4", "credential_env_var_hint": "XAI_API_KEY"},
     {"slug": "anthropic", "name": "Anthropic", "protocol": "anthropic", "base_url": "https://api.anthropic.com", "default_model": "claude-sonnet-4-5", "credential_env_var_hint": "ANTHROPIC_API_KEY"},
     {"slug": "gemini", "name": "Gemini", "protocol": "gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "default_model": "gemini-2.5-flash", "credential_env_var_hint": "GEMINI_API_KEY"},
@@ -211,10 +211,20 @@ def update_preset(
 
 
 def ensure_provider_presets(db: Session) -> None:
-    existing_slugs = set(db.scalars(select(models.ProviderPreset.slug)).all())
+    existing = {
+        preset.slug: preset
+        for preset in db.scalars(select(models.ProviderPreset)).all()
+    }
     for data in DEFAULT_PRESETS:
-        if data["slug"] not in existing_slugs:
+        preset = existing.get(data["slug"])
+        if preset is None:
             db.add(models.ProviderPreset(**data, options_json="{}"))
+        elif (
+            data["slug"] == "deepseek"
+            and preset.default_model in {"deepseek-chat", "deepseek-reasoner"}
+        ):
+            preset.default_model = data["default_model"]
+            preset.revision += 1
     db.flush()
 
 
