@@ -129,8 +129,11 @@ export function ReleasePage() {
     }
   });
   const exportFile = useMutation({
-    mutationFn: (kind: ReleaseExportKind) =>
-      api.downloadReleaseExport(kind, projectId, kind === "chapter_markdown" ? selectedChapterId ?? undefined : undefined),
+    mutationFn: ({ kind, exportProjectId, chapterId }: {
+      kind: ReleaseExportKind;
+      exportProjectId: number | undefined;
+      chapterId: number | undefined;
+    }) => api.downloadReleaseExport(kind, exportProjectId, kind === "chapter_markdown" ? chapterId : undefined),
     onSuccess: (file) => {
       saveDownloadedFile(file);
       setNotice(`${file.filename} 已生成。`);
@@ -338,7 +341,7 @@ export function ReleasePage() {
               <article key={spec.kind}>
                 <Icon size={18} />
                 <span><strong>{spec.label}</strong><small>{spec.description}</small></span>
-                <button className="secondary-button compact" type="button" disabled={disabled} onClick={() => exportFile.mutate(spec.kind)}><Download size={15} />导出</button>
+                <button className="secondary-button compact" type="button" disabled={disabled} onClick={() => exportFile.mutate({ kind: spec.kind, exportProjectId: projectId, chapterId: selectedChapterId ?? undefined })}><Download size={15} />导出</button>
               </article>
             );
           })}
