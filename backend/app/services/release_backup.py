@@ -6,11 +6,17 @@ import io
 import json
 import os
 import re
+import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, cast
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from sqlalchemy import DateTime, LargeBinary, Table, delete, insert, select, text, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Session
@@ -28,12 +34,22 @@ from app.schemas.release import (
 )
 from app.services.context_retrieval import rebuild_fts_index
 
-
 BACKUP_FORMAT: Literal["novel-agent-studio-backup"] = "novel-agent-studio-backup"
 BACKUP_SCHEMA_VERSION: Literal[2] = 2
+BackupArchiveSource = bytes | Path
 ARCHIVE_FILES = frozenset({"manifest.json", "data.json"})
 MAX_ARCHIVE_ENTRIES = 8
 MAX_COMPRESSION_RATIO = 250
+ENCRYPTED_BACKUP_MAGIC = b"NASBKP1\0"
+ENCRYPTED_BACKUP_SALT_BYTES = 16
+ENCRYPTED_BACKUP_NONCE_BYTES = 12
+ENCRYPTED_BACKUP_TAG_BYTES = 16
+ENCRYPTED_BACKUP_OVERHEAD = (
+    len(ENCRYPTED_BACKUP_MAGIC)
+    + ENCRYPTED_BACKUP_SALT_BYTES
+    + ENCRYPTED_BACKUP_NONCE_BYTES
+    + ENCRYPTED_BACKUP_TAG_BYTES
+)
 
 _REFERENCE_COLUMNS = frozenset(
     {"credential_env_var", "credential_env_var_hint", "env_var_name", "credential_reference_id"}
@@ -70,68 +86,182 @@ def backup_tables() -> tuple[Table, ...]:
 
 
 def create_backup_archive(db: Session) -> bytes:
+    archive_path = create_backup_archive_file(db)
+    try:
+        return archive_path.read_bytes()
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
+def create_backup_archive_file(db: Session) -> Path:
     settings = get_settings()
-    tables: dict[str, list[dict[str, Any]]] = {}
+    data_path = _temporary_path(".json")
+    archive_path = _temporary_path(".nasbackup.zip")
     counts: list[BackupTableCount] = []
-    for table in backup_tables():
-        rows = [
-            _serialize_row(table.name, row)
-            for row in db.execute(select(table)).mappings().all()
-        ]
-        tables[table.name] = rows
-        counts.append(BackupTableCount(table=table.name, records=len(rows)))
+    findings: list[str] = []
+    environment_secrets = _bound_environment_secrets(db)
+    data_hash = hashlib.sha256()
+    data_size = 0
 
-    data_payload = {
-        "schema_version": BACKUP_SCHEMA_VERSION,
-        "tables": tables,
-    }
-    data_bytes = _canonical_json(data_payload)
-    findings = scan_backup_secrets(data_payload)
-    findings.extend(_scan_bound_environment_values(data_bytes.decode("utf-8"), tables))
-    if findings:
-        locations = ", ".join(sorted(set(findings))[:12])
-        raise ValueError(f"备份 Secret 扫描失败：{locations}")
+    def write_data(target: Any, payload: bytes) -> None:
+        nonlocal data_size
+        data_size += len(payload)
+        if data_size > settings.max_backup_uncompressed_bytes:
+            raise ValueError("备份数据超过允许的解压后大小")
+        data_hash.update(payload)
+        target.write(payload)
 
-    manifest = BackupManifestRead(
-        format=BACKUP_FORMAT,
-        schema_version=BACKUP_SCHEMA_VERSION,
-        app_version=settings.app_version,
-        migration_revision=STUDIO_V2_REVISION,
-        created_at=datetime.now(timezone.utc),
-        data_sha256=hashlib.sha256(data_bytes).hexdigest(),
-        tables=counts,
-        includes=[
-            "novels_and_versions",
-            "story_library_and_timeline",
-            "context_memory_and_snapshots",
-            "agents_workflows_and_history",
-            "provider_model_route_budget_configuration",
-            "approval_changesets_and_writeback_audits",
-        ],
-        excludes=[
-            "credential_values",
-            "authorization_and_cookie_headers",
-            "unredacted_adapter_test_payloads",
-            "hidden_reasoning",
-            "temporary_caches",
-            "log_files",
-        ],
-    )
-    manifest_bytes = _canonical_json(manifest.model_dump(mode="json"))
-    output = io.BytesIO()
-    with zipfile.ZipFile(
-        output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
-    ) as archive:
-        _write_zip_member(archive, "manifest.json", manifest_bytes)
-        _write_zip_member(archive, "data.json", data_bytes)
-    result = output.getvalue()
-    if len(result) > settings.max_backup_bytes:
-        raise ValueError("备份超过允许的压缩文件大小")
-    return result
+    try:
+        with data_path.open("wb") as data_file:
+            write_data(data_file, b'{"schema_version":2,"tables":{')
+            for table_index, table in enumerate(backup_tables()):
+                if table_index:
+                    write_data(data_file, b",")
+                write_data(data_file, _canonical_json(table.name) + b":[")
+                row_count = 0
+                for row in db.execute(select(table)).mappings():
+                    serialized = _serialize_row(table.name, row)
+                    findings.extend(
+                        scan_backup_secrets(
+                            serialized, f"$.tables.{table.name}[{row_count}]"
+                        )
+                    )
+                    row_bytes = _canonical_json(serialized)
+                    findings.extend(
+                        _scan_serialized_environment_values(row_bytes, environment_secrets)
+                    )
+                    if row_count:
+                        write_data(data_file, b",")
+                    write_data(data_file, row_bytes)
+                    row_count += 1
+                write_data(data_file, b"]")
+                counts.append(BackupTableCount(table=table.name, records=row_count))
+            write_data(data_file, b"}}")
+
+        if findings:
+            locations = ", ".join(sorted(set(findings))[:12])
+            raise ValueError(f"备份 Secret 扫描失败：{locations}")
+
+        manifest = BackupManifestRead(
+            format=BACKUP_FORMAT,
+            schema_version=BACKUP_SCHEMA_VERSION,
+            app_version=settings.app_version,
+            migration_revision=STUDIO_V2_REVISION,
+            created_at=datetime.now(timezone.utc),
+            data_sha256=data_hash.hexdigest(),
+            tables=counts,
+            includes=[
+                "novels_and_versions",
+                "story_library_and_timeline",
+                "context_memory_and_snapshots",
+                "agents_workflows_and_history",
+                "provider_model_route_budget_configuration",
+                "approval_changesets_and_writeback_audits",
+            ],
+            excludes=[
+                "credential_values",
+                "authorization_and_cookie_headers",
+                "unredacted_adapter_test_payloads",
+                "hidden_reasoning",
+                "temporary_caches",
+                "log_files",
+            ],
+        )
+        manifest_bytes = _canonical_json(manifest.model_dump(mode="json"))
+        with zipfile.ZipFile(
+            archive_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+        ) as archive:
+            _write_zip_member(archive, "manifest.json", manifest_bytes)
+            _write_zip_file(archive, "data.json", data_path)
+        if archive_path.stat().st_size > settings.max_backup_bytes:
+            raise ValueError("备份超过允许的压缩文件大小")
+        return archive_path
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    finally:
+        data_path.unlink(missing_ok=True)
 
 
-def preview_backup_archive(db: Session, archive_bytes: bytes) -> BackupPreviewRead:
-    loaded = load_backup_archive(archive_bytes)
+def encrypt_backup_archive_file(archive_path: Path, password: str) -> Path:
+    password_bytes = _validate_backup_password(password)
+    salt = os.urandom(ENCRYPTED_BACKUP_SALT_BYTES)
+    nonce = os.urandom(ENCRYPTED_BACKUP_NONCE_BYTES)
+    header = ENCRYPTED_BACKUP_MAGIC + salt + nonce
+    key = _derive_backup_key(password_bytes, salt)
+    encrypted_path = _temporary_path(".nasbackup.enc")
+    try:
+        encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(header)
+        with archive_path.open("rb") as source, encrypted_path.open("wb") as target:
+            target.write(header)
+            while chunk := source.read(1024 * 1024):
+                target.write(encryptor.update(chunk))
+            target.write(encryptor.finalize())
+            target.write(encryptor.tag)
+        if encrypted_path.stat().st_size > get_settings().max_backup_bytes + ENCRYPTED_BACKUP_OVERHEAD:
+            raise ValueError("加密备份超过允许的文件大小")
+        return encrypted_path
+    except Exception:
+        encrypted_path.unlink(missing_ok=True)
+        raise
+
+
+def decrypt_backup_archive_file(archive_path: Path, password: str | None) -> tuple[Path, bool]:
+    if not is_encrypted_backup(archive_path):
+        return archive_path, False
+    if password is None:
+        raise ValueError("此备份已加密，请输入备份密码")
+    password_bytes = _validate_backup_password(password)
+    size = archive_path.stat().st_size
+    if size <= ENCRYPTED_BACKUP_OVERHEAD:
+        raise ValueError("加密备份文件不完整")
+    with archive_path.open("rb") as source:
+        header = source.read(
+            len(ENCRYPTED_BACKUP_MAGIC)
+            + ENCRYPTED_BACKUP_SALT_BYTES
+            + ENCRYPTED_BACKUP_NONCE_BYTES
+        )
+        salt_start = len(ENCRYPTED_BACKUP_MAGIC)
+        nonce_start = salt_start + ENCRYPTED_BACKUP_SALT_BYTES
+        salt = header[salt_start:nonce_start]
+        nonce = header[nonce_start:]
+        source.seek(-ENCRYPTED_BACKUP_TAG_BYTES, os.SEEK_END)
+        tag = source.read(ENCRYPTED_BACKUP_TAG_BYTES)
+        ciphertext_bytes = size - len(header) - ENCRYPTED_BACKUP_TAG_BYTES
+        source.seek(len(header))
+        key = _derive_backup_key(password_bytes, salt)
+        decrypted_path = _temporary_path(".nasbackup.zip")
+        try:
+            decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+            decryptor.authenticate_additional_data(header)
+            remaining = ciphertext_bytes
+            with decrypted_path.open("wb") as target:
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("加密备份文件不完整")
+                    remaining -= len(chunk)
+                    target.write(decryptor.update(chunk))
+                target.write(decryptor.finalize())
+            if decrypted_path.stat().st_size > get_settings().max_backup_bytes:
+                raise ValueError("解密后的备份超过允许的文件大小")
+            return decrypted_path, True
+        except InvalidTag as exc:
+            decrypted_path.unlink(missing_ok=True)
+            raise ValueError("备份密码错误或加密文件已损坏") from exc
+        except Exception:
+            decrypted_path.unlink(missing_ok=True)
+            raise
+
+
+def is_encrypted_backup(archive_path: Path) -> bool:
+    with archive_path.open("rb") as source:
+        return source.read(len(ENCRYPTED_BACKUP_MAGIC)) == ENCRYPTED_BACKUP_MAGIC
+
+
+def preview_backup_archive(db: Session, archive_source: BackupArchiveSource) -> BackupPreviewRead:
+    loaded = load_backup_archive(archive_source)
     current = current_table_counts(db)
     current_total = sum(
         item.records for item in current if item.table != "provider_presets"
@@ -160,12 +290,12 @@ def preview_backup_archive(db: Session, archive_bytes: bytes) -> BackupPreviewRe
 
 def restore_backup_archive(
     db: Session,
-    archive_bytes: bytes,
+    archive_source: BackupArchiveSource,
     *,
     strategy: RestoreStrategy,
     expected_sha256: str,
 ) -> BackupRestoreRead:
-    loaded = load_backup_archive(archive_bytes)
+    loaded = load_backup_archive(archive_source)
     if loaded.archive_sha256 != expected_sha256:
         raise ValueError("恢复文件与已预览文件的 SHA-256 不一致")
     if loaded.secret_findings:
@@ -242,53 +372,66 @@ def restore_backup_archive(
     )
 
 
-def load_backup_archive(archive_bytes: bytes) -> LoadedBackup:
+def load_backup_archive(archive_source: BackupArchiveSource) -> LoadedBackup:
     settings = get_settings()
+    archive_bytes = (
+        len(archive_source) if isinstance(archive_source, bytes) else archive_source.stat().st_size
+    )
     if not archive_bytes:
         raise ValueError("备份文件为空")
-    if len(archive_bytes) > settings.max_backup_bytes:
+    if archive_bytes > settings.max_backup_bytes:
         raise ValueError("备份文件超过大小限制")
-    archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
-    stream = io.BytesIO(archive_bytes)
+    archive_sha256 = _source_sha256(archive_source)
+    stream: Any = (
+        io.BytesIO(archive_source) if isinstance(archive_source, bytes) else archive_source
+    )
     if not zipfile.is_zipfile(stream):
         raise ValueError("备份不是有效 ZIP 文件")
-    stream.seek(0)
-    with zipfile.ZipFile(stream) as archive:
-        infos = archive.infolist()
-        if len(infos) > MAX_ARCHIVE_ENTRIES:
-            raise ValueError("备份 ZIP 条目过多")
-        names = {info.filename for info in infos}
-        if names != ARCHIVE_FILES:
-            raise ValueError("备份 ZIP 只能包含 manifest.json 和 data.json")
-        uncompressed_bytes = 0
-        for info in infos:
-            _validate_zip_member(info)
-            uncompressed_bytes += info.file_size
-            if uncompressed_bytes > settings.max_backup_uncompressed_bytes:
-                raise ValueError("备份解压后超过大小限制")
-        manifest_bytes = archive.read("manifest.json")
-        data_bytes = archive.read("data.json")
-
+    data_path = _temporary_path(".json")
     try:
-        manifest_value = json.loads(manifest_bytes)
-        data_value = json.loads(data_bytes)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("备份 JSON 无效") from exc
-    manifest = BackupManifestRead.model_validate(manifest_value)
-    if hashlib.sha256(data_bytes).hexdigest() != manifest.data_sha256:
-        raise ValueError("备份 data.json 哈希校验失败")
-    migrated = _migrate_backup_data(data_value, manifest.schema_version)
-    tables = _validate_table_payload(migrated, manifest)
-    findings = scan_backup_secrets(migrated)
-    findings.extend(_scan_bound_environment_values(data_bytes.decode("utf-8"), tables))
-    return LoadedBackup(
-        manifest=manifest,
-        tables=tables,
-        archive_sha256=archive_sha256,
-        archive_bytes=len(archive_bytes),
-        uncompressed_bytes=uncompressed_bytes,
-        secret_findings=sorted(set(findings)),
-    )
+        with zipfile.ZipFile(stream) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_ARCHIVE_ENTRIES:
+                raise ValueError("备份 ZIP 条目过多")
+            names = {info.filename for info in infos}
+            if names != ARCHIVE_FILES:
+                raise ValueError("备份 ZIP 只能包含 manifest.json 和 data.json")
+            uncompressed_bytes = 0
+            for info in infos:
+                _validate_zip_member(info)
+                uncompressed_bytes += info.file_size
+                if uncompressed_bytes > settings.max_backup_uncompressed_bytes:
+                    raise ValueError("备份解压后超过大小限制")
+            manifest_bytes = archive.read("manifest.json")
+            data_hash = hashlib.sha256()
+            with archive.open("data.json") as source, data_path.open("wb") as target:
+                while chunk := source.read(1024 * 1024):
+                    data_hash.update(chunk)
+                    target.write(chunk)
+
+        try:
+            manifest_value = json.loads(manifest_bytes)
+            with data_path.open("r", encoding="utf-8") as data_file:
+                data_value = json.load(data_file)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("备份 JSON 无效") from exc
+        manifest = BackupManifestRead.model_validate(manifest_value)
+        if data_hash.hexdigest() != manifest.data_sha256:
+            raise ValueError("备份 data.json 哈希校验失败")
+        migrated = _migrate_backup_data(data_value, manifest.schema_version)
+        tables = _validate_table_payload(migrated, manifest)
+        findings = scan_backup_secrets(migrated)
+        findings.extend(_scan_bound_environment_file(data_path, tables))
+        return LoadedBackup(
+            manifest=manifest,
+            tables=tables,
+            archive_sha256=archive_sha256,
+            archive_bytes=archive_bytes,
+            uncompressed_bytes=uncompressed_bytes,
+            secret_findings=sorted(set(findings)),
+        )
+    finally:
+        data_path.unlink(missing_ok=True)
 
 
 def current_table_counts(db: Session) -> list[BackupTableCount]:
@@ -464,8 +607,8 @@ def _deserialize_row(table: Table, row: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-def _scan_bound_environment_values(
-    serialized: str, tables: dict[str, list[dict[str, Any]]]
+def _scan_bound_environment_file(
+    data_path: Path, tables: dict[str, list[dict[str, Any]]]
 ) -> list[str]:
     names: set[str] = set()
     for table_name, column_name in (
@@ -479,9 +622,59 @@ def _scan_bound_environment_values(
     findings: list[str] = []
     for name in names:
         secret = os.getenv(name)
-        if secret and len(secret) >= 8 and secret in serialized:
+        if secret and len(secret) >= 8 and _file_contains(data_path, secret.encode("utf-8")):
             findings.append(f"$.environment_value[{name}]")
     return findings
+
+
+def _file_contains(path: Path, needle: bytes) -> bool:
+    overlap = max(0, len(needle) - 1)
+    previous = b""
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            window = previous + chunk
+            if needle in window:
+                return True
+            previous = window[-overlap:] if overlap else b""
+    return False
+
+
+def _source_sha256(source: BackupArchiveSource) -> str:
+    if isinstance(source, bytes):
+        return hashlib.sha256(source).hexdigest()
+    digest = hashlib.sha256()
+    with source.open("rb") as archive_file:
+        while chunk := archive_file.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _bound_environment_secrets(db: Session) -> dict[str, bytes]:
+    result: dict[str, bytes] = {}
+    for table_name, column_name in (
+        ("provider_accounts", "credential_env_var"),
+        ("credential_references", "env_var_name"),
+    ):
+        table = Base.metadata.tables.get(table_name)
+        if table is None or column_name not in table.c:
+            continue
+        for name in db.scalars(select(table.c[column_name])):
+            if not isinstance(name, str) or not name:
+                continue
+            secret = os.getenv(name)
+            if secret and len(secret) >= 8:
+                result[name] = secret.encode("utf-8")
+    return result
+
+
+def _scan_serialized_environment_values(
+    payload: bytes, environment_secrets: dict[str, bytes]
+) -> list[str]:
+    return [
+        f"$.environment_value[{name}]"
+        for name, secret in environment_secrets.items()
+        if secret in payload
+    ]
 
 
 def _secret_field_name(name: str) -> bool:
@@ -525,6 +718,33 @@ def _write_zip_member(archive: zipfile.ZipFile, name: str, payload: bytes) -> No
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o600 << 16
     archive.writestr(info, payload)
+
+
+def _write_zip_file(archive: zipfile.ZipFile, name: str, source_path: Path) -> None:
+    info = zipfile.ZipInfo(name, date_time=datetime.now().timetuple()[:6])
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o600 << 16
+    with source_path.open("rb") as source, archive.open(info, "w") as target:
+        shutil.copyfileobj(source, target, length=1024 * 1024)
+
+
+def _temporary_path(suffix: str) -> Path:
+    descriptor, raw_path = tempfile.mkstemp(prefix="novel-agent-studio-", suffix=suffix)
+    os.close(descriptor)
+    return Path(raw_path)
+
+
+def _validate_backup_password(password: str) -> bytes:
+    encoded = password.encode("utf-8")
+    if len(encoded) < 8:
+        raise ValueError("备份密码至少需要 8 个字节")
+    if len(encoded) > 1024:
+        raise ValueError("备份密码过长")
+    return encoded
+
+
+def _derive_backup_key(password: bytes, salt: bytes) -> bytes:
+    return Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(password)
 
 
 def _canonical_json(value: Any) -> bytes:

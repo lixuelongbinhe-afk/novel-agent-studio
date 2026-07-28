@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 从空数据库启动与迁移 | 通过 | Playwright 从空库迁移到最新 revision |
 | 无 API Key 完整 Mock 演示 | 通过 | Mock Adapter、Seed 和 Workflow E2E |
-| 核心按钮连接真实 API | 通过 | 104 个当前可达按钮声明契约、16 个前端测试文件、42 个测试及端到端操作 |
+| 核心按钮连接真实 API | 通过 | 当前可达按钮声明契约、前端回归及端到端操作；数量由 CI 报告生成 |
 | 五种协议与流解析 | 通过 | 本地 Fake Provider 成功、错误、中断和取消覆盖 |
 | Generic Adapter 安全 | 通过 | 模板、JSONPath、SSRF、重定向、凭据隔离和 Manifest 测试 |
 | Route、限流、预算与数据边界 | 通过 | Phase 4/6 后端回归 |
@@ -25,10 +25,10 @@
 | 密钥不进入数据库、日志和导出 | 通过 | 环境变量引用、脱敏导出和 Secret 扫描测试 |
 | 不记录隐藏推理 | 通过 | 只保存标准化输出、事件、usage、错误和明确元数据 |
 | V2 创作流程门禁 | 通过 | 独立规划审核、场景审核、冲突决策、文风提取、版本比较、自动续写 |
-| 后端测试 | 通过 | 183 passed |
-| 前端测试 | 通过 | 16 files / 42 tests passed，含项目删除、侧栏、模型与自定义 API 生命周期、WebView2 卸载崩溃、正文审核写回、章节修复、总编工作流确认、上下文压缩、右栏滚动、半成品续写与全文审阅编辑回归 |
+| 后端测试 | 通过 | 当前数量由 `docs/generated/test-summary.md` 生成 |
+| 前端测试 | 通过 | 当前数量由 `docs/generated/test-summary.md` 生成；覆盖项目删除、侧栏、模型与自定义 API 生命周期、WebView2 卸载崩溃、正文审核写回、章节修复、总编工作流确认、上下文压缩、右栏滚动、半成品续写与全文审阅编辑回归 |
 | 严格类型与静态检查 | 通过 | mypy 72 source files；Ruff passed；TypeScript passed |
-| 生产构建 | 通过 | Vite 1,648 modules transformed；PyInstaller 发布步骤复验 |
+| 生产构建 | 通过 | Vite 与 PyInstaller 发布步骤复验；当前指标见自动生成报告 |
 | 最终 E2E | 通过 | 5 passed，空库创建、独立审核、正文写回、半成品导入续写、长回复右栏滚动、项目删除持久化与响应式检查 |
 | 文档与已知限制 | 通过 | README 与五份发布审计文档已更新 |
 

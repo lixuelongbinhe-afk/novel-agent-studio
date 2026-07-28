@@ -12,6 +12,9 @@ $stage = Join-Path $root "work\release-package"
 $version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
 $portableName = "NovelAgentStudio-Portable-$version.zip"
 $setupName = "NovelAgentStudio-Setup-$version.exe"
+$signingCertificate = $env:NAS_SIGN_CERTIFICATE_PATH
+$requireSigning = $env:NAS_REQUIRE_CODE_SIGNING -eq "1"
+$timestampUrl = if ($env:NAS_SIGN_TIMESTAMP_URL) { $env:NAS_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
 
 function Assert-ChildPath {
   param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Parent)
@@ -29,6 +32,41 @@ function Invoke-Checked {
   if ($LASTEXITCODE -ne 0) {
     throw "$Failure (exit code $LASTEXITCODE)"
   }
+}
+
+function Get-SignTool {
+  $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+  if (-not (Test-Path -LiteralPath $kitsRoot)) {
+    throw "Windows SignTool was not found. Install the Windows SDK signing tools."
+  }
+  $candidate = Get-ChildItem -LiteralPath $kitsRoot -Recurse -Filter signtool.exe -File |
+    Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1
+  if (-not $candidate) {
+    throw "Windows SignTool x64 executable was not found under $kitsRoot"
+  }
+  return $candidate.FullName
+}
+
+function Protect-ReleaseArtifact {
+  param([Parameter(Mandatory=$true)][string]$Path)
+  if (-not $signingCertificate) { return }
+  if (-not (Test-Path -LiteralPath $signingCertificate)) {
+    throw "Signing certificate does not exist: $signingCertificate"
+  }
+  $signTool = Get-SignTool
+  $arguments = @("sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $timestampUrl, "/f", $signingCertificate)
+  if ($env:NAS_SIGN_CERTIFICATE_PASSWORD) {
+    $arguments += @("/p", $env:NAS_SIGN_CERTIFICATE_PASSWORD)
+  }
+  $arguments += $Path
+  Invoke-Checked -Command { & $signTool @arguments } -Failure "Code signing failed for $Path"
+  Invoke-Checked -Command { & $signTool verify /pa $Path } -Failure "Signature verification failed for $Path"
+}
+
+if ($requireSigning -and -not $signingCertificate) {
+  throw "NAS_REQUIRE_CODE_SIGNING=1 but NAS_SIGN_CERTIFICATE_PATH is not configured"
 }
 
 $resolvedStage = Assert-ChildPath -Path $stage -Parent $root
@@ -117,6 +155,13 @@ $uninstaller = Join-Path $appSource "Uninstall.exe"
 Invoke-Checked -Command {
   & $csc /nologo /target:winexe /optimize+ /out:$uninstaller /reference:System.Windows.Forms.dll (Join-Path $root "scripts\NovelAgentStudioUninstaller.cs")
 } -Failure "Uninstaller compilation failed"
+foreach ($executable in @(
+  (Join-Path $appSource "NovelAgentStudio.exe"),
+  (Join-Path $appSource "NovelAgentStudioConsole.exe"),
+  $uninstaller
+)) {
+  Protect-ReleaseArtifact -Path $executable
+}
 
 $readme = @(
   "Novel Agent Studio"
@@ -187,6 +232,7 @@ $hashResource = "/resource:$payloadHashFile,payload.sha256"
 Invoke-Checked -Command {
   & $csc /nologo /target:winexe /optimize+ /out:$setupExe $payloadResource $hashResource /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll (Join-Path $root "scripts\NovelAgentStudioInstaller.cs")
 } -Failure "Installer compilation failed"
+Protect-ReleaseArtifact -Path $setupExe
 
 foreach ($artifact in @($portableZip, $setupExe)) {
   if (-not (Test-Path -LiteralPath $artifact) -or (Get-Item -LiteralPath $artifact).Length -lt 1MB) {

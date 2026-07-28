@@ -1,2 +1,9 @@
 allowBuilds:
   esbuild: true
+auditConfig:
+  ignoreGhsas:
+    - GHSA-qwww-vcr4-c8h2
+overrides:
+  esbuild: 0.25.12
+  postcss: 8.5.23
+  vite: 6.4.3

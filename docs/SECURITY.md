@@ -40,3 +40,6 @@
 - Entity matching is conservative. Ambiguous or unmatched names remain explicit conflicts/candidates rather than being silently merged into an existing entity.
 - Writeback checks the frozen Change Set hash, approval snapshot, project ownership, and current record revisions immediately before mutation. Rebase and manual merge produce a new revision and require reapproval.
 - Chapter version creation, accepted item mutations, append-only audit data, revision increments, and FTS rebuild share one transaction. Any failure rolls back every part, and API callers cannot request a partial commit.
+- Complete backups may be wrapped in a streaming AES-256-GCM container. The password is derived with scrypt, sent only in the local authenticated request header, and is never persisted or placed in a URL.
+- Official Windows signing follows `docs/CODE_SIGNING.md`; release packaging can fail closed when signing is required, and verifies every Authenticode signature before producing checksums.
+- Frontend dependency audit temporarily ignores only `GHSA-qwww-vcr4-c8h2`: the advisory affects React Router RSC server actions, which this client-only local application does not use, and the announced fixed package version is not yet available. The exception must be removed as soon as a compatible fix is published.

@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import ipaddress
 import json
 import multiprocessing
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -14,6 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 APP_NAME = "Novel Agent Studio"
@@ -57,7 +60,7 @@ def resolve_data_dir(override: Path | None) -> Path:
     return local / APP_FOLDER / "data"
 
 
-def configure_environment(data_dir: Path) -> None:
+def configure_environment(data_dir: Path) -> str:
     data_dir.mkdir(parents=True, exist_ok=True)
     logs = data_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -69,37 +72,55 @@ def configure_environment(data_dir: Path) -> None:
     os.environ["NAS_ALLOWED_HOSTS"] = "127.0.0.1,localhost"
     os.environ["NAS_CORS_ORIGINS"] = ""
     os.environ["NAS_FRONTEND_DIST"] = str(resource_dir() / "frontend-dist")
+    api_token = secrets.token_urlsafe(32)
+    os.environ["NAS_LOCAL_API_TOKEN"] = api_token
     if not getattr(sys, "frozen", False):
         backend = program_dir() / "backend"
         if str(backend) not in sys.path:
             sys.path.insert(0, str(backend))
+    return api_token
 
 
-def choose_port(requested: int) -> int:
+def reserve_listener(requested: int, host: str = HOST) -> socket.socket:
+    if not ipaddress.ip_address(host).is_loopback:
+        raise ValueError("桌面本地服务只允许监听 loopback 地址")
     if requested:
         if not 1 <= requested <= 65535:
             raise ValueError("端口必须在 1 到 65535 之间")
-        return requested
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind((HOST, 0))
-        return int(listener.getsockname()[1])
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, requested))
+        listener.listen(socket.SOMAXCONN)
+        return listener
+    except BaseException:
+        listener.close()
+        raise
 
 
-def start_server(port: int) -> tuple[Any, threading.Thread]:
+def start_server(listener: socket.socket) -> tuple[Any, threading.Thread]:
     import uvicorn
     from app.main import app
 
+    bound_host, port = listener.getsockname()[:2]
+    if not ipaddress.ip_address(str(bound_host)).is_loopback:
+        raise ValueError("拒绝启动监听非 loopback 地址的桌面服务")
     config = uvicorn.Config(
         app,
-        host=HOST,
-        port=port,
+        host=str(bound_host),
+        port=int(port),
         log_level="warning",
         access_log=False,
         server_header=False,
         log_config=None,
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, name="nas-local-service", daemon=True)
+    thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [listener]},
+        name="nas-local-service",
+        daemon=True,
+    )
     thread.start()
     return server, thread
 
@@ -121,12 +142,16 @@ def wait_for_ready(url: str, thread: threading.Thread, timeout: float = 45.0) ->
     raise TimeoutError(f"本地服务启动超时：{last_error}")
 
 
-def smoke_test(url: str) -> None:
+def smoke_test(url: str, api_token: str) -> None:
     with urllib.request.urlopen(url, timeout=5.0) as response:
         index = response.read()
     if b'<div id="root"></div>' not in index:
         raise RuntimeError("生产前端未正确内置")
-    with urllib.request.urlopen(f"{url}/api/release/status", timeout=5.0) as response:
+    status_request = urllib.request.Request(
+        f"{url}/api/release/status",
+        headers={"Authorization": f"Bearer {api_token}"},
+    )
+    with urllib.request.urlopen(status_request, timeout=5.0) as response:
         status = json.loads(response.read().decode("utf-8"))
     if status.get("app_version") != VERSION or not status.get("frontend_bundled"):
         raise RuntimeError("发布状态与桌面包不一致")
@@ -228,11 +253,19 @@ def prompt_close_choice() -> tuple[str, bool]:
 
 
 class DesktopController:
-    def __init__(self, data_dir: Path, url: str, reopen_event: int | None, gui_smoke_seconds: float) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        url: str,
+        reopen_event: int | None,
+        gui_smoke_seconds: float,
+        api_token: str = "",
+    ) -> None:
         self.data_dir = data_dir
         self.url = url
         self.reopen_event = reopen_event
         self.gui_smoke_seconds = gui_smoke_seconds
+        self.api_token = api_token
         self.window: Any | None = None
         self.tray: Any | None = None
         self.force_exit = False
@@ -320,7 +353,7 @@ class DesktopController:
         if self.gui_smoke_seconds <= 0:
             return
         time.sleep(self.gui_smoke_seconds)
-        smoke_test(self.url)
+        smoke_test(self.url.split("#", 1)[0], self.api_token)
         print(f"{APP_NAME} {VERSION} GUI smoke test passed")
         self.exit_app()
 
@@ -340,10 +373,18 @@ def show_error(message: str, data_dir: Path) -> None:
         print(message, file=sys.stderr)
 
 
-def run_desktop(url: str, data_dir: Path, reopen_event: int | None, gui_smoke_seconds: float) -> None:
+def run_desktop(
+    url: str,
+    data_dir: Path,
+    reopen_event: int | None,
+    gui_smoke_seconds: float,
+    api_token: str,
+) -> None:
     import webview
 
-    controller = DesktopController(data_dir, url, reopen_event, gui_smoke_seconds)
+    controller = DesktopController(
+        data_dir, url, reopen_event, gui_smoke_seconds, api_token
+    )
     window = webview.create_window(
         APP_NAME,
         url=url,
@@ -373,30 +414,39 @@ def run_desktop(url: str, data_dir: Path, reopen_event: int | None, gui_smoke_se
 def main() -> int:
     args = parse_args()
     data_dir = resolve_data_dir(args.data_dir)
-    configure_environment(data_dir)
+    api_token = configure_environment(data_dir)
     mutex: int | None = None
     reopen_event: int | None = None
     server: Any | None = None
     thread: threading.Thread | None = None
+    listener: socket.socket | None = None
     try:
         if not args.smoke_test and not args.server_only:
             mutex, reopen_event, already_running = instance_handles(data_dir)
             if already_running:
                 signal_existing_instance(reopen_event)
                 return 0
-        port = choose_port(args.port)
+        listener = reserve_listener(args.port)
+        port = int(listener.getsockname()[1])
         url = f"http://{HOST}:{port}"
-        server, thread = start_server(port)
+        desktop_url = f"{url}#nas-token={quote(api_token, safe='')}"
+        server, thread = start_server(listener)
         wait_for_ready(url, thread)
         if args.smoke_test:
-            smoke_test(url)
+            smoke_test(url, api_token)
             print(f"{APP_NAME} {VERSION} smoke test passed")
             return 0
         if args.server_only:
             while thread.is_alive():
                 time.sleep(0.25)
             return 0
-        run_desktop(url, data_dir, reopen_event, args.gui_smoke_test_seconds)
+        run_desktop(
+            desktop_url,
+            data_dir,
+            reopen_event,
+            args.gui_smoke_test_seconds,
+            api_token,
+        )
         return 0
     except Exception as exc:
         show_error(f"{type(exc).__name__}: {exc}", data_dir)
@@ -406,6 +456,8 @@ def main() -> int:
             server.should_exit = True
         if thread is not None:
             thread.join(timeout=10.0)
+        if listener is not None:
+            listener.close()
         close_handle(reopen_event)
         close_handle(mutex)
 

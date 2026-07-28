@@ -21,7 +21,14 @@ from app.schemas import (
     WorkflowNodeWrite,
     WorkflowRunCreate,
 )
-from app.services import agents, approvals, change_sets, workflow_runtime, workflows
+from app.services import (
+    agents,
+    approvals,
+    change_sets,
+    workflow_events,
+    workflow_runtime,
+    workflows,
+)
 from app.services.approval_runtime import approval_signals
 
 
@@ -41,6 +48,7 @@ def session_factory(
         expire_on_commit=False,
     )
     monkeypatch.setattr(workflow_runtime, "SessionLocal", factory)
+    monkeypatch.setattr(workflow_events, "SessionLocal", factory)
     workflow_runtime.event_bus._locks.clear()
     approval_signals._events.clear()
     yield factory

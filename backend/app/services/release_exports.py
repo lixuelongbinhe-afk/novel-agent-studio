@@ -33,6 +33,7 @@ from app.migrations import STUDIO_V2_REVISION
 from app.schemas.release import ExportKind, ReleaseStatusRead
 from app.services import agents, custom_adapters, workflows
 from app.services.release_backup import current_table_counts
+from app.services.runtime_metrics import performance_snapshot
 
 
 @dataclass(frozen=True)
@@ -379,6 +380,8 @@ def _timeline_csv(db: Session, project_id: int) -> bytes:
 
 
 def _diagnostics_export(db: Session, *, frontend_bundled: bool) -> ExportArtifact:
+    from app.services.workflow_runtime import event_bus, workflow_concurrency
+
     settings = get_settings()
     status = release_status(db, frontend_bundled=frontend_bundled)
     packages: dict[str, str] = {}
@@ -405,6 +408,10 @@ def _diagnostics_export(db: Session, *, frontend_bundled: bool) -> ExportArtifac
             "filename": database_path.name if database_path else "non-file-database",
             "tables": [item.model_dump() for item in counts],
         },
+        "performance": performance_snapshot(
+            event_bus.writer_metrics(),
+            workflow_concurrency.metrics(),
+        ),
         "privacy": {
             "telemetry_enabled": False,
             "manuscript_content_included": False,

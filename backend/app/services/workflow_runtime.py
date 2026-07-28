@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, TypeGuard, cast
 
@@ -12,74 +11,41 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.core.config import get_settings
 from app.database import SessionLocal
 from app.schemas import (
     ApprovalCreate,
     ApprovalSnapshot,
     ContextBuildRequest,
-    ModelDebugRequest,
-    NormalizedContentPart,
-    NormalizedMessage,
     ProposedChangeSetCreate,
     StateExtractionResult,
     WritebackRequest,
 )
-from app.services import approvals, change_sets, context_builder, model_execution, writeback
+from app.services import approvals, change_sets, context_builder, writeback
 from app.services.approval_runtime import approval_signals
 from app.services.safe_templates import SafeTemplateError, render_template, resolve_path
+from app.services.workflow_events import event_bus as event_bus
+from app.services.workflow_model_executor import (
+    WorkflowModelExecutionHooks,
+    execute_agent_attempt,
+)
+from app.services.workflow_types import NodeExecutionResult, WorkflowNodeError
+from app.services.workflow_scheduler import (
+    NodeResourceClass,
+    WorkflowConcurrencyController,
+    WorkflowNodeLease,
+    WorkflowSchedulingCancelled,
+)
 
 
-@dataclass
-class NodeExecutionResult:
-    node_key: str
-    status: str
-    output: Any = None
-    error: dict[str, Any] | None = None
-
-
-class WorkflowNodeError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.retryable = retryable
-
-    def value(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message, "retryable": self.retryable}
-
-
-class WorkflowEventBus:
-    def __init__(self) -> None:
-        self._locks: dict[int, asyncio.Lock] = {}
-
-    async def emit(
-        self,
-        run_id: int,
-        event_type: str,
-        *,
-        node_key: str | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> int:
-        lock = self._locks.setdefault(run_id, asyncio.Lock())
-        async with lock:
-            with SessionLocal() as db, db.begin():
-                run = db.get(models.WorkflowRun, run_id)
-                if run is None:
-                    return 0
-                run.event_sequence += 1
-                event = models.WorkflowRunEvent(
-                    workflow_run_id=run_id,
-                    sequence=run.event_sequence,
-                    event_type=event_type,
-                    node_key=node_key,
-                    payload_json=_dump(payload or {}),
-                )
-                db.add(event)
-                db.flush()
-                return event.sequence
-
-
-event_bus = WorkflowEventBus()
+_scheduler_settings = get_settings()
+workflow_concurrency = WorkflowConcurrencyController(
+    max_global=_scheduler_settings.workflow_max_parallel_nodes_global,
+    max_per_run=_scheduler_settings.workflow_max_parallel_nodes_per_run,
+    max_per_provider=_scheduler_settings.workflow_max_parallel_nodes_per_provider,
+    max_context_builds=_scheduler_settings.workflow_max_parallel_context_builds,
+    max_database_tasks=_scheduler_settings.workflow_max_parallel_database_tasks,
+)
 
 
 class WorkflowRunManager:
@@ -104,6 +70,18 @@ class WorkflowRunManager:
         if task is not None:
             await task
 
+    async def shutdown(self, timeout_seconds: float = 5.0) -> None:
+        tasks = [task for task in self._tasks.values() if not task.done()]
+        if not tasks:
+            return
+        for cancel_event in self._cancel_events.values():
+            cancel_event.set()
+        _done, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def _runner(self, run_id: int, cancel_event: asyncio.Event) -> None:
         try:
             await execute_run(run_id, cancel_event=cancel_event)
@@ -117,7 +95,15 @@ workflow_run_manager = WorkflowRunManager()
 
 async def execute_run(run_id: int, *, cancel_event: asyncio.Event | None = None) -> None:
     cancellation = cancel_event or asyncio.Event()
-    plan, run_input, project_id, workflow_id, statuses, outputs = _start_run(run_id)
+    (
+        plan,
+        snapshot,
+        run_input,
+        project_id,
+        workflow_id,
+        statuses,
+        outputs,
+    ) = await _start_run(run_id)
     await event_bus.emit(run_id, "run_started", payload={"plan_hash": plan["hash"]})
 
     nodes = cast(dict[str, dict[str, Any]], plan["nodes"])
@@ -165,7 +151,7 @@ async def execute_run(run_id: int, *, cancel_event: asyncio.Event | None = None)
                     ]
                     if states and not active_edges:
                         statuses[key] = "skipped"
-                        _mark_skipped(run_id, key)
+                        await _mark_skipped(run_id, key)
                         await event_bus.emit(run_id, "node_skipped", node_key=key)
                         _resolve_outgoing(
                             key,
@@ -178,17 +164,32 @@ async def execute_run(run_id: int, *, cancel_event: asyncio.Event | None = None)
                         )
                         changed = True
                         continue
-                    statuses[key] = "ready"
+                    if len(running) >= _scheduler_settings.workflow_max_parallel_nodes_per_run:
+                        continue
                     upstream = {
                         str(edges[edge_key]["source"]): outputs.get(
                             str(edges[edge_key]["source"])
                         )
                         for edge_key in active_edges
                     }
-                    _mark_ready(run_id, key)
+                    try:
+                        lease = await workflow_concurrency.acquire(
+                            run_id=run_id,
+                            provider_id=_node_provider_id(nodes[key], snapshot),
+                            resource_class=_node_resource_class(str(nodes[key]["type"])),
+                            cancellation=cancellation,
+                        )
+                    except WorkflowSchedulingCancelled:
+                        cancellation.set()
+                        await _cancel_running(running)
+                        await _finish_cancelled(run_id)
+                        return
+                    statuses[key] = "ready"
+                    await _mark_ready(run_id, key)
                     await event_bus.emit(run_id, "node_ready", node_key=key)
                     running[key] = asyncio.create_task(
-                        _execute_node(
+                        _execute_node_with_lease(
+                            lease,
                             run_id,
                             project_id,
                             workflow_id,
@@ -295,7 +296,7 @@ async def _execute_node(
     node_outputs: dict[str, Any],
     upstream: dict[str, Any],
 ) -> NodeExecutionResult:
-    _mark_running(run_id, node_key)
+    await _mark_running(run_id, node_key)
     await event_bus.emit(run_id, "node_started", node_key=node_key)
     context = {
         "input": run_input,
@@ -332,17 +333,17 @@ async def _execute_node(
             )
         else:
             output = await _execute_local_node(run_id, node_key, node, context)
-        _complete_node(run_id, node_key, output)
+        await _complete_node(run_id, node_key, output)
         await event_bus.emit(
             run_id, "node_completed", node_key=node_key, payload={"output": output}
         )
         return NodeExecutionResult(node_key=node_key, status="completed", output=output)
     except asyncio.CancelledError:
-        _cancel_node(run_id, node_key)
+        await _cancel_node(run_id, node_key)
         await asyncio.shield(event_bus.emit(run_id, "node_cancelled", node_key=node_key))
         raise
     except WorkflowNodeError as exc:
-        _fail_node(run_id, node_key, exc.value())
+        await _fail_node(run_id, node_key, exc.value())
         await event_bus.emit(
             run_id, "node_failed", node_key=node_key, payload={"error": exc.value()}
         )
@@ -351,24 +352,50 @@ async def _execute_node(
         )
     except (SafeTemplateError, ValidationError, json.JSONDecodeError) as exc:
         error = {"code": "node_validation", "message": str(exc)[:1_000]}
-        _fail_node(run_id, node_key, error)
+        await _fail_node(run_id, node_key, error)
         await event_bus.emit(
             run_id, "node_failed", node_key=node_key, payload={"error": error}
         )
         return NodeExecutionResult(node_key=node_key, status="failed", error=error)
     except Exception as exc:
         error = {"code": "node_internal", "message": str(exc)[:1_000]}
-        _fail_node(run_id, node_key, error)
+        await _fail_node(run_id, node_key, error)
         await event_bus.emit(
             run_id, "node_failed", node_key=node_key, payload={"error": error}
         )
         return NodeExecutionResult(node_key=node_key, status="failed", error=error)
 
 
+async def _execute_node_with_lease(
+    lease: WorkflowNodeLease,
+    run_id: int,
+    project_id: int,
+    workflow_id: int,
+    node_key: str,
+    node: dict[str, Any],
+    run_input: dict[str, Any],
+    node_outputs: dict[str, Any],
+    upstream: dict[str, Any],
+) -> NodeExecutionResult:
+    try:
+        return await _execute_node(
+            run_id,
+            project_id,
+            workflow_id,
+            node_key,
+            node,
+            run_input,
+            node_outputs,
+            upstream,
+        )
+    finally:
+        await lease.release()
+
+
 async def _execute_local_node(
     run_id: int, node_key: str, node: dict[str, Any], context: dict[str, Any]
 ) -> Any:
-    attempt_id = _start_attempt(run_id, node_key, context["upstream"])
+    attempt_id = await _start_attempt(run_id, node_key, context["upstream"])
     try:
         node_type = str(node["type"])
         config = cast(dict[str, Any], node.get("config", {}))
@@ -395,11 +422,11 @@ async def _execute_local_node(
             output = resolve_path(context, str(path)) if path else context["value"]
         else:
             raise WorkflowNodeError("unsupported_node", f"节点类型未实现：{node_type}")
-        _finish_attempt(attempt_id, "completed", output=output)
+        await _finish_attempt(attempt_id, "completed", output=output)
         return output
     except asyncio.CancelledError:
         if attempt_id is not None:
-            _finish_attempt(
+            await _finish_attempt(
                 attempt_id,
                 "cancelled",
                 error={"code": "cancelled", "message": "用户取消"},
@@ -411,7 +438,7 @@ async def _execute_local_node(
             if isinstance(exc, WorkflowNodeError)
             else {"code": "local_node_error", "message": str(exc)[:1_000]}
         )
-        _finish_attempt(attempt_id, "failed", error=error)
+        await _finish_attempt(attempt_id, "failed", error=error)
         raise
 
 
@@ -453,7 +480,7 @@ async def _execute_agent_node(
     system_prompt = render_template(str(agent.get("system_prompt", "")), render_context)
     prompt = render_template(str(agent["prompt_template"]), render_context)
     if context_package is None and bool(config.get("automatic_context", False)):
-        context_package = _build_agent_context(
+        context_package = await _build_agent_context(
             run_id,
             project_id,
             agent_id,
@@ -501,7 +528,7 @@ async def _execute_agent_node(
                 "context_build_id": context_package.get("id"),
                 "context_build_hash": context_package.get("build_hash"),
             }
-        attempt_id = _start_attempt(run_id, node_key, attempt_input)
+        attempt_id = await _start_attempt(run_id, node_key, attempt_input)
         await event_bus.emit(
             run_id,
             "node_attempt_started",
@@ -523,7 +550,7 @@ async def _execute_agent_node(
                 ),
                 timeout=float(agent.get("timeout_seconds", 120)),
             )
-            _finish_attempt(attempt_id, "completed", output=output)
+            await _finish_attempt(attempt_id, "completed", output=output)
             return output
         except asyncio.TimeoutError:
             error = WorkflowNodeError(
@@ -532,13 +559,13 @@ async def _execute_agent_node(
         except WorkflowNodeError as exc:
             error = exc
         except asyncio.CancelledError:
-            _finish_attempt(
+            await _finish_attempt(
                 attempt_id,
                 "cancelled",
                 error={"code": "cancelled", "message": "用户取消"},
             )
             raise
-        _finish_attempt(attempt_id, "failed", error=error.value())
+        await _finish_attempt(attempt_id, "failed", error=error.value())
         last_error = error
         if attempt_number <= retries and error.retryable:
             if error.code == "output_schema_invalid":
@@ -567,7 +594,7 @@ async def _execute_context_node(
     context: dict[str, Any],
 ) -> dict[str, Any]:
     config = cast(dict[str, Any], node.get("config", {}))
-    attempt_id = _start_attempt(run_id, node_key, context["upstream"])
+    attempt_id = await _start_attempt(run_id, node_key, context["upstream"])
     try:
         chapter_id = _optional_path_int(
             context, config.get("chapter_id_path"), "chapter_id"
@@ -597,8 +624,11 @@ async def _execute_context_node(
             token_budget_override=cast(int | None, config.get("token_budget")),
             persist_snapshot=True,
         )
-        with SessionLocal() as db, db.begin():
-            result = context_builder.build_context(db, request)
+        result = await event_bus.write(
+            lambda db: context_builder.build_context(db, request),
+            priority=30,
+            correlation_id=f"workflow:{run_id}:context:{node_key}",
+        )
         output = result.model_dump(mode="json")
         await event_bus.emit(
             run_id,
@@ -617,10 +647,10 @@ async def _execute_context_node(
                 "context_blocked",
                 "；".join(result.conflicts) or "上下文构建被阻止",
             )
-        _finish_attempt(attempt_id, "completed", output=output)
+        await _finish_attempt(attempt_id, "completed", output=output)
         return output
     except asyncio.CancelledError:
-        _finish_attempt(
+        await _finish_attempt(
             attempt_id,
             "cancelled",
             error={"code": "cancelled", "message": "用户取消"},
@@ -632,7 +662,7 @@ async def _execute_context_node(
             if isinstance(exc, WorkflowNodeError)
             else {"code": "context_node_error", "message": str(exc)[:1_000]}
         )
-        _finish_attempt(attempt_id, "failed", error=error)
+        await _finish_attempt(attempt_id, "failed", error=error)
         raise
 
 
@@ -645,10 +675,10 @@ async def _execute_human_approval_node(
     context: dict[str, Any],
 ) -> dict[str, Any]:
     config = cast(dict[str, Any], node.get("config", {}))
-    approval = _create_node_approval(
+    approval = await _create_node_approval(
         run_id, project_id, node_key, node, context
     )
-    attempt_id: int | None = _start_attempt(
+    attempt_id: int | None = await _start_attempt(
         run_id,
         node_key,
         {"approval_id": approval.id, "snapshot_hash": approval.snapshot_hash},
@@ -668,7 +698,7 @@ async def _execute_human_approval_node(
     current_id = approval.id
     try:
         while True:
-            current = _read_runtime_approval(current_id)
+            current = await _read_runtime_approval(current_id)
             if _cancel_requested(run_id):
                 raise asyncio.CancelledError
             if current.status == "pending":
@@ -676,7 +706,7 @@ async def _execute_human_approval_node(
                 continue
             if current.superseded_by_id is not None:
                 if attempt_id is not None:
-                    _finish_attempt(
+                    await _finish_attempt(
                         attempt_id,
                         "completed",
                         output={
@@ -685,8 +715,8 @@ async def _execute_human_approval_node(
                         },
                     )
                 current_id = current.superseded_by_id
-                replacement = _read_runtime_approval(current_id)
-                attempt_id = _start_attempt(
+                replacement = await _read_runtime_approval(current_id)
+                attempt_id = await _start_attempt(
                     run_id,
                     node_key,
                     {
@@ -707,7 +737,7 @@ async def _execute_human_approval_node(
             if current.status == "approved":
                 output = _approval_output(current)
                 if attempt_id is not None:
-                    _finish_attempt(attempt_id, "completed", output=output)
+                    await _finish_attempt(attempt_id, "completed", output=output)
                 await _resume_after_approval(run_id, node_key)
                 await event_bus.emit(
                     run_id,
@@ -718,7 +748,7 @@ async def _execute_human_approval_node(
                 return output
             if current.status == "changes_requested":
                 if attempt_id is not None:
-                    _finish_attempt(
+                    await _finish_attempt(
                         attempt_id,
                         "completed",
                         output={
@@ -759,19 +789,26 @@ async def _execute_human_approval_node(
                     current,
                     context,
                 )
-                with SessionLocal() as db, db.begin():
+                def create_revision(db: Session) -> models.ApprovalRequest:
                     previous = cast(
                         models.ApprovalRequest,
                         db.get(models.ApprovalRequest, current.id),
                     )
-                    replacement = approvals.create_revision_approval(
+                    return approvals.create_revision_approval(
                         db,
                         previous,
                         revised_value,
                         note=current.decision_note,
                     )
+                replacement = await event_bus.write(
+                    create_revision,
+                    priority=20,
+                    correlation_id=(
+                        f"workflow:{run_id}:approval:{current.id}:revision"
+                    ),
+                )
                 current_id = replacement.id
-                attempt_id = _start_attempt(
+                attempt_id = await _start_attempt(
                     run_id,
                     node_key,
                     {
@@ -803,7 +840,7 @@ async def _execute_human_approval_node(
             )
     except asyncio.CancelledError:
         if attempt_id is not None:
-            _finish_attempt(
+            await _finish_attempt(
                 attempt_id,
                 "cancelled",
                 error={"code": "cancelled", "message": "审批等待已取消"},
@@ -816,11 +853,11 @@ async def _execute_human_approval_node(
                 if isinstance(exc, WorkflowNodeError)
                 else {"code": "approval_node_error", "message": str(exc)[:1_000]}
             )
-            _finish_attempt(attempt_id, "failed", error=error)
+            await _finish_attempt(attempt_id, "failed", error=error)
         raise
 
 
-def _create_node_approval(
+async def _create_node_approval(
     run_id: int,
     project_id: int,
     node_key: str,
@@ -843,7 +880,7 @@ def _create_node_approval(
         if isinstance(value_path, str)
         else context["value"]
     )
-    with SessionLocal() as db, db.begin():
+    def create(db: Session) -> models.ApprovalRequest:
         node_run = _node_run(db, run_id, node_key)
         if approval_type == "change_set":
             package = _find_package(value, "proposed_change_set") or _find_package(
@@ -908,6 +945,12 @@ def _create_node_approval(
                 expires_at=expires_at,
             ),
         )
+
+    return await event_bus.write(
+        create,
+        priority=20,
+        correlation_id=f"workflow:{run_id}:approval:{node_key}:create",
+    )
 
 
 async def _execute_revision_agent(
@@ -976,7 +1019,7 @@ async def _execute_state_extraction_node(
     )
     if not isinstance(prose, str):
         raise WorkflowNodeError("approved_prose_missing", "状态提取没有收到已批准正文")
-    source_approval_id = _verified_approved_prose(
+    source_approval_id = await _verified_approved_prose(
         run_id, project_id, approval_package, prose
     )
     raw = await _execute_agent_node(
@@ -1017,7 +1060,7 @@ async def _execute_proposed_changes_node(
     node: dict[str, Any],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    attempt_id = _start_attempt(run_id, node_key, context["upstream"])
+    attempt_id = await _start_attempt(run_id, node_key, context["upstream"])
     try:
         config = cast(dict[str, Any], node.get("config", {}))
         extraction_path = config.get("extraction_path")
@@ -1046,7 +1089,7 @@ async def _execute_proposed_changes_node(
             raise WorkflowNodeError(
                 "approved_prose_missing", "变更集缺少已批准正文快照"
             )
-        with SessionLocal() as db, db.begin():
+        def create_change_set(db: Session) -> Any:
             node_run = _node_run(db, run_id, node_key)
             row = change_sets.create_change_set(
                 db,
@@ -1062,7 +1105,12 @@ async def _execute_proposed_changes_node(
                     extraction=extraction,
                 ),
             )
-            read = change_sets.change_set_read(db, row)
+            return change_sets.change_set_read(db, row)
+        read = await event_bus.write(
+            create_change_set,
+            priority=25,
+            correlation_id=f"workflow:{run_id}:change-set:{node_key}:create",
+        )
         output = {
             "kind": "proposed_change_set",
             "change_set_id": read.id,
@@ -1073,7 +1121,7 @@ async def _execute_proposed_changes_node(
             "conflicts": read.conflicts,
             "live_conflicts": read.live_conflicts,
         }
-        _finish_attempt(attempt_id, "completed", output=output)
+        await _finish_attempt(attempt_id, "completed", output=output)
         await event_bus.emit(
             run_id,
             "change_set_created",
@@ -1087,7 +1135,7 @@ async def _execute_proposed_changes_node(
             if isinstance(exc, WorkflowNodeError)
             else {"code": "change_set_node_error", "message": str(exc)[:1_000]}
         )
-        _finish_attempt(attempt_id, "failed", error=error)
+        await _finish_attempt(attempt_id, "failed", error=error)
         raise
 
 
@@ -1098,7 +1146,7 @@ async def _execute_database_writeback_node(
     node: dict[str, Any],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    attempt_id = _start_attempt(run_id, node_key, context["upstream"])
+    attempt_id = await _start_attempt(run_id, node_key, context["upstream"])
     config = cast(dict[str, Any], node.get("config", {}))
     change_package = _find_package(context["upstream"], "proposed_change_set")
     approval_package = _find_package(context["upstream"], "approval_result")
@@ -1112,14 +1160,14 @@ async def _execute_database_writeback_node(
         )
     )
     if not _is_positive_int(change_set_value):
-        _finish_attempt(
+        await _finish_attempt(
             attempt_id,
             "failed",
             error={"code": "change_set_missing", "message": "写回节点缺少 ChangeSet"},
         )
         raise WorkflowNodeError("change_set_missing", "写回节点缺少 ChangeSet")
     if approval_package is None or approval_package.get("approval_type") != "change_set":
-        _finish_attempt(
+        await _finish_attempt(
             attempt_id,
             "failed",
             error={"code": "approval_missing", "message": "写回节点缺少元数据审批"},
@@ -1130,10 +1178,12 @@ async def _execute_database_writeback_node(
     if approval_id is None:
         raise WorkflowNodeError("approval_missing", "元数据审批 ID 无效")
     poll_seconds = float(config.get("poll_seconds", 0.5))
-    original_approval = _read_runtime_approval(approval_id)
+    original_approval = await _read_runtime_approval(approval_id)
     try:
         while True:
-            with SessionLocal() as db, db.begin():
+            current_approval_id = approval_id
+
+            def apply(db: Session) -> Any:
                 row = cast(
                     models.ProposedChangeSet,
                     get_or_none(db, models.ProposedChangeSet, change_set_id),
@@ -1142,14 +1192,19 @@ async def _execute_database_writeback_node(
                     raise WorkflowNodeError(
                         "change_set_missing", "写回变更集不存在或越过项目边界"
                     )
-                result = writeback.apply_change_set(
+                return writeback.apply_change_set(
                     db,
                     row.id,
                     WritebackRequest(
-                        approval_request_id=approval_id,
+                        approval_request_id=current_approval_id,
                         expected_change_set_revision=row.revision,
                     ),
                 )
+            result = await event_bus.write(
+                apply,
+                priority=10,
+                correlation_id=f"workflow:{run_id}:change-set:{change_set_id}:apply",
+            )
             if result.status == "applied":
                 output = {
                     "kind": "writeback_result",
@@ -1158,7 +1213,7 @@ async def _execute_database_writeback_node(
                     "audit_id": result.audit.id if result.audit is not None else None,
                     "applied_item_ids": result.applied_item_ids,
                 }
-                _finish_attempt(attempt_id, "completed", output=output)
+                await _finish_attempt(attempt_id, "completed", output=output)
                 await _resume_after_approval(run_id, node_key)
                 await event_bus.emit(
                     run_id,
@@ -1186,7 +1241,7 @@ async def _execute_database_writeback_node(
             )
             await _resume_after_approval(run_id, node_key)
     except asyncio.CancelledError:
-        _finish_attempt(
+        await _finish_attempt(
             attempt_id,
             "cancelled",
             error={"code": "cancelled", "message": "写回等待已取消"},
@@ -1198,7 +1253,7 @@ async def _execute_database_writeback_node(
             if isinstance(exc, WorkflowNodeError)
             else {"code": "writeback_node_error", "message": str(exc)[:1_000]}
         )
-        _finish_attempt(attempt_id, "failed", error=error)
+        await _finish_attempt(attempt_id, "failed", error=error)
         raise
 
 
@@ -1213,8 +1268,7 @@ async def _wait_for_rebased_change_set_approval(
     while True:
         if _cancel_requested(run_id):
             raise asyncio.CancelledError
-        approved_id: int | None = None
-        with SessionLocal() as db, db.begin():
+        def inspect_or_create(db: Session) -> tuple[int | None, str | None]:
             row = cast(
                 models.ProposedChangeSet,
                 get_or_none(db, models.ProposedChangeSet, change_set_id),
@@ -1228,6 +1282,7 @@ async def _wait_for_rebased_change_set_approval(
                     "change_set_reextract_required", "变更集已要求重新提取"
                 )
             matching = _matching_change_set_approval(db, row)
+            next_requested_hash: str | None = requested_hash
             if matching is None and row.status == "pending" and requested_hash != row.changes_hash:
                 matching = change_sets.create_change_set_approval(
                     db,
@@ -1238,15 +1293,23 @@ async def _wait_for_rebased_change_set_approval(
                     instructions=original_approval.instructions,
                     expires_at=original_approval.expires_at,
                 )
-                requested_hash = row.changes_hash
+                next_requested_hash = row.changes_hash
             if matching is not None:
                 if matching.status == "approved":
-                    approved_id = matching.id
+                    return matching.id, next_requested_hash
                 if matching.status in {"rejected", "expired", "cancelled"}:
                     raise WorkflowNodeError(
                         "writeback_reapproval_stopped",
                         f"冲突重审批状态为 {matching.status}",
                     )
+            return None, next_requested_hash
+        approved_id, requested_hash = await event_bus.write(
+            inspect_or_create,
+            priority=20,
+            correlation_id=(
+                f"workflow:{run_id}:change-set:{change_set_id}:reapproval"
+            ),
+        )
         if approved_id is not None:
             await event_bus.emit(
                 run_id,
@@ -1282,7 +1345,7 @@ def _matching_change_set_approval(
     return None
 
 
-def _verified_approved_prose(
+async def _verified_approved_prose(
     run_id: int,
     project_id: int,
     package: dict[str, Any] | None,
@@ -1293,7 +1356,7 @@ def _verified_approved_prose(
     approval_id = _positive_int_or_none(package.get("approval_id"))
     if approval_id is None:
         raise WorkflowNodeError("prose_approval_missing", "正文审批 ID 无效")
-    row = _read_runtime_approval(approval_id)
+    row = await _read_runtime_approval(approval_id)
     if (
         row.workflow_run_id != run_id
         or row.project_id != project_id
@@ -1306,8 +1369,8 @@ def _verified_approved_prose(
     return row.id
 
 
-def _read_runtime_approval(approval_id: int) -> models.ApprovalRequest:
-    with SessionLocal() as db, db.begin():
+async def _read_runtime_approval(approval_id: int) -> models.ApprovalRequest:
+    def read(db: Session) -> models.ApprovalRequest:
         row = cast(
             models.ApprovalRequest,
             get_or_none(db, models.ApprovalRequest, approval_id),
@@ -1317,6 +1380,12 @@ def _read_runtime_approval(approval_id: int) -> models.ApprovalRequest:
         approvals.read_approval(db, row.id)
         db.expunge(row)
         return row
+
+    return await event_bus.write(
+        read,
+        priority=20,
+        correlation_id=f"approval:{approval_id}:read",
+    )
 
 
 def _approval_output(row: models.ApprovalRequest) -> dict[str, Any]:
@@ -1339,7 +1408,7 @@ def _approval_output(row: models.ApprovalRequest) -> dict[str, Any]:
 
 
 async def _mark_approval_waiting(run_id: int, node_key: str) -> None:
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> None:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         node = _node_run(db, run_id, node_key)
         if run.status not in {"cancelled", "failed", "completed"}:
@@ -1347,11 +1416,16 @@ async def _mark_approval_waiting(run_id: int, node_key: str) -> None:
             run.revision += 1
         node.status = "waiting_approval"
         node.revision += 1
+    await event_bus.write(
+        write,
+        priority=10,
+        correlation_id=f"workflow:{run_id}:approval-waiting:{node_key}",
+    )
     await event_bus.emit(run_id, "run_waiting_approval", node_key=node_key)
 
 
 async def _resume_after_approval(run_id: int, node_key: str) -> None:
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> None:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         node = _node_run(db, run_id, node_key)
         node.status = "running"
@@ -1366,6 +1440,11 @@ async def _resume_after_approval(run_id: int, node_key: str) -> None:
         if other_waiting is None and run.status == "waiting_approval":
             run.status = "running"
             run.revision += 1
+    await event_bus.write(
+        write,
+        priority=10,
+        correlation_id=f"workflow:{run_id}:approval-resume:{node_key}",
+    )
     await event_bus.emit(run_id, "run_resumed", node_key=node_key)
 
 
@@ -1412,7 +1491,7 @@ def get_or_none(db: Session, model: type[Any], item_id: int) -> Any:
     return row
 
 
-def _build_agent_context(
+async def _build_agent_context(
     run_id: int,
     project_id: int,
     agent_id: int,
@@ -1447,8 +1526,11 @@ def _build_agent_context(
         token_budget_override=cast(int | None, config.get("context_token_budget")),
         persist_snapshot=True,
     )
-    with SessionLocal() as db, db.begin():
-        result = context_builder.build_context(db, request)
+    result = await event_bus.write(
+        lambda db: context_builder.build_context(db, request),
+        priority=30,
+        correlation_id=f"workflow:{run_id}:context:agent:{agent_id}",
+    )
     return result.model_dump(mode="json")
 
 
@@ -1534,117 +1616,53 @@ async def _execute_agent_attempt(
     system_prompt: str,
     prompt: str,
 ) -> Any:
-    profile_id = cast(int | None, agent.get("model_profile_id"))
-    route_id = cast(int | None, agent.get("route_id"))
-    model_name = "route-selected"
-    provider_id: int | None = None
-    if profile_id is not None:
-        profile = _snapshot_item(run_id, "models", profile_id)
-        model_name = str(profile["name"])
-        provider_id = int(profile["provider_account_id"])
-    config = cast(dict[str, Any], _plan_node(run_id, node_key).get("config", {}))
-    messages = []
-    if system_prompt:
-        messages.append(
-            NormalizedMessage(
-                role="system", content=[NormalizedContentPart(type="text", text=system_prompt)]
-            )
-        )
-    messages.append(
-        NormalizedMessage(
-            role="user", content=[NormalizedContentPart(type="text", text=prompt)]
-        )
+    return await execute_agent_attempt(
+        run_id,
+        project_id,
+        workflow_id,
+        node_key,
+        attempt_id,
+        attempt_number,
+        agent,
+        system_prompt,
+        prompt,
+        hooks=_model_execution_hooks(),
     )
-    parameters = cast(dict[str, Any], agent.get("parameters", {}))
-    output_mode = str(agent.get("output_mode", "text"))
-    output_schema = cast(dict[str, Any], agent.get("output_schema", {}))
-    correlation_id = f"workflow-{run_id}-node-{node_key}-attempt-{attempt_number}"
-    payload = ModelDebugRequest(
-        provider_account_id=provider_id,
-        model_profile_id=profile_id,
-        route_id=route_id,
-        manual_model_profile_id=cast(int | None, config.get("manual_model_profile_id")),
-        project_id=project_id,
-        workflow_id=str(workflow_id),
-        route_run_id=correlation_id,
-        required_capabilities=cast(list[str], agent.get("required_capabilities", [])),
-        allow_degradation=bool(agent.get("allow_degradation", True)),
-        max_retries=0,
-        model=model_name,
-        messages=messages,
-        stream=True,
-        temperature=float(parameters.get("temperature", 0.7)),
-        top_p=cast(float | None, parameters.get("top_p")),
-        max_tokens=int(parameters.get("max_tokens", 1024)),
-        response_format="json" if output_mode == "json" else "text",
-        json_schema=output_schema if output_mode == "json" and output_schema else None,
-        scenario=cast(Any, parameters.get("scenario", "normal")),
-    )
-    with SessionLocal() as db:
-        preflight = model_execution.preflight_execution(db, payload)
-        _check_agent_budget(run_id, node_key, agent, preflight)
-        db.commit()
-        text = ""
-        warnings: list[str] = []
-        usage: dict[str, Any] = {}
-        provider_error: dict[str, Any] | None = None
-        async for event in model_execution.stream_model(db, payload):
-            if event.event == "delta" and event.text_delta:
-                text += event.text_delta
-                _update_partial_attempt(attempt_id, text)
-                await event_bus.emit(
-                    run_id,
-                    "node_output_delta",
-                    node_key=node_key,
-                    payload={"attempt": attempt_number, "delta": event.text_delta},
-                )
-            elif event.event == "warning" and event.warning:
-                warnings.append(event.warning)
-                await event_bus.emit(
-                    run_id,
-                    "node_warning",
-                    node_key=node_key,
-                    payload={"attempt": attempt_number, "warning": event.warning},
-                )
-            elif event.event == "usage" and event.usage is not None:
-                usage = event.usage.model_dump(mode="json")
-            elif event.event == "error" and event.error is not None:
-                provider_error = event.error.model_dump(mode="json")
-        invocation_values = _invocation_totals(correlation_id)
-        _update_attempt_accounting(attempt_id, invocation_values)
-        _update_node_warnings(run_id, node_key, warnings)
-        if provider_error is not None:
-            raise WorkflowNodeError(
-                str(provider_error.get("code", "provider_error")),
-                str(provider_error.get("message", "模型调用失败")),
-                retryable=bool(provider_error.get("retryable", False)),
-            )
-        if output_mode == "json":
-            try:
-                value = json.loads(text)
-                Draft202012Validator(output_schema).validate(value)
-            except (json.JSONDecodeError, ValidationError) as exc:
-                raise WorkflowNodeError(
-                    "output_schema_invalid",
-                    str(exc),
-                    retryable=True,
-                ) from exc
-            output: Any = value
-        else:
-            output = text
-        await event_bus.emit(
-            run_id,
-            "node_usage",
-            node_key=node_key,
-            payload={"attempt": attempt_number, "usage": usage, "accounting": invocation_values},
-        )
-        return output
 
 
-def _start_run(
+def _model_execution_hooks() -> WorkflowModelExecutionHooks:
+    return WorkflowModelExecutionHooks(
+        session_factory=lambda: SessionLocal(),
+        event_bus=event_bus,
+        snapshot_item=_snapshot_item,
+        plan_node=_plan_node,
+        check_budget=_check_agent_budget,
+        invocation_totals=_invocation_totals,
+        update_attempt_accounting=_update_attempt_accounting,
+        update_node_warnings=_update_node_warnings,
+    )
+
+
+async def _start_run(
     run_id: int,
-) -> tuple[dict[str, Any], dict[str, Any], int, int, dict[str, str], dict[str, Any]]:
-    with SessionLocal() as db, db.begin():
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    int,
+    int,
+    dict[str, str],
+    dict[str, Any],
+]:
+    def write(db: Session) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        int,
+        int,
+        dict[str, str],
+        dict[str, Any],
+    ]:
         run = db.get(models.WorkflowRun, run_id)
         if run is None:
             raise RuntimeError("WorkflowRun not found")
@@ -1664,12 +1682,62 @@ def _start_run(
         }
         return (
             _json_object(run.plan_json),
+            _json_object(run.snapshot_json),
             _json_object(run.input_json),
             run.project_id,
             run.workflow_id,
             statuses,
             outputs,
         )
+
+    return await event_bus.write(
+        write,
+        priority=10,
+        correlation_id=f"workflow:{run_id}:start",
+    )
+
+
+def _node_resource_class(node_type: str) -> NodeResourceClass:
+    if node_type == "human_approval":
+        return "waiting"
+    if node_type == "context_retrieval":
+        return "context"
+    if node_type in {"proposed_changes", "database_writeback"}:
+        return "database"
+    return "general"
+
+
+def _node_provider_id(
+    node: dict[str, Any], snapshot: dict[str, Any]
+) -> int | None:
+    if node.get("type") not in {"agent", "state_extraction"}:
+        return None
+    config = node.get("config")
+    if not isinstance(config, dict):
+        return None
+    agent_id = config.get("agent_id")
+    if not isinstance(agent_id, int) or isinstance(agent_id, bool):
+        return None
+    agents = snapshot.get("agents")
+    models_snapshot = snapshot.get("models")
+    if not isinstance(agents, list) or not isinstance(models_snapshot, list):
+        return None
+    profile_id: int | None = None
+    for agent in agents:
+        if isinstance(agent, dict) and agent.get("id") == agent_id:
+            value = agent.get("model_profile_id")
+            if isinstance(value, int) and not isinstance(value, bool):
+                profile_id = value
+            break
+    if profile_id is None:
+        return None
+    for profile in models_snapshot:
+        if isinstance(profile, dict) and profile.get("id") == profile_id:
+            provider_id = profile.get("provider_account_id")
+            if isinstance(provider_id, int) and not isinstance(provider_id, bool):
+                return provider_id
+            return None
+    return None
 
 
 def _resolve_outgoing(
@@ -1710,34 +1778,46 @@ def _cancel_requested(run_id: int) -> bool:
 
 
 async def _finish_completed(run_id: int, output: Any) -> None:
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> None:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         run.status = "completed"
         run.output_json = _dump(output)
         run.error_json = "null"
         run.completed_at = models.utcnow()
         run.revision += 1
+    await event_bus.write(
+        write,
+        priority=10,
+        correlation_id=f"workflow:{run_id}:complete",
+    )
     await event_bus.emit(run_id, "run_completed", payload={"output": output})
 
 
 async def _finish_failed(run_id: int, error: dict[str, Any]) -> None:
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> bool:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         if run.status in {"completed", "cancelled"}:
-            return
+            return False
         run.status = "failed"
         run.error_json = _dump(error)
         run.completed_at = models.utcnow()
         run.revision += 1
+        return True
+    changed = await event_bus.write(
+        write,
+        priority=10,
+        correlation_id=f"workflow:{run_id}:failed",
+    )
+    if not changed:
+        return
     await event_bus.emit(run_id, "run_failed", payload={"error": error})
 
 
 async def _finish_cancelled(run_id: int) -> None:
-    cancelled_approval_ids: list[int] = []
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> tuple[bool, list[int]]:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         if run.status in {"completed", "failed", "cancelled"}:
-            return
+            return False, []
         run.status = "cancelled"
         run.cancel_requested = True
         run.error_json = _dump({"code": "cancelled", "message": "用户取消了运行"})
@@ -1754,29 +1834,36 @@ async def _finish_cancelled(run_id: int) -> None:
         for node in nodes:
             node.status = "cancelled"
             node.completed_at = models.utcnow()
-        cancelled_approval_ids = approvals.cancel_pending_for_run(db, run_id)
+        return True, approvals.cancel_pending_for_run(db, run_id)
+    changed, cancelled_approval_ids = await event_bus.write(
+        write,
+        priority=5,
+        correlation_id=f"workflow:{run_id}:cancel",
+    )
+    if not changed:
+        return
     approval_signals.notify(*cancelled_approval_ids)
     await event_bus.emit(run_id, "run_cancelled")
 
 
-def _mark_ready(run_id: int, node_key: str) -> None:
-    _update_node(run_id, node_key, status="ready", activated=True)
+async def _mark_ready(run_id: int, node_key: str) -> None:
+    await _update_node(run_id, node_key, status="ready", activated=True)
 
 
-def _mark_running(run_id: int, node_key: str) -> None:
-    _update_node(
+async def _mark_running(run_id: int, node_key: str) -> None:
+    await _update_node(
         run_id, node_key, status="running", activated=True, started_at=models.utcnow()
     )
 
 
-def _mark_skipped(run_id: int, node_key: str) -> None:
-    _update_node(
+async def _mark_skipped(run_id: int, node_key: str) -> None:
+    await _update_node(
         run_id, node_key, status="skipped", completed_at=models.utcnow()
     )
 
 
-def _complete_node(run_id: int, node_key: str, output: Any) -> None:
-    _update_node(
+async def _complete_node(run_id: int, node_key: str, output: Any) -> None:
+    await _update_node(
         run_id,
         node_key,
         status="completed",
@@ -1786,8 +1873,8 @@ def _complete_node(run_id: int, node_key: str, output: Any) -> None:
     )
 
 
-def _fail_node(run_id: int, node_key: str, error: dict[str, Any]) -> None:
-    _update_node(
+async def _fail_node(run_id: int, node_key: str, error: dict[str, Any]) -> None:
+    await _update_node(
         run_id,
         node_key,
         status="failed",
@@ -1796,8 +1883,8 @@ def _fail_node(run_id: int, node_key: str, error: dict[str, Any]) -> None:
     )
 
 
-def _cancel_node(run_id: int, node_key: str) -> None:
-    _update_node(
+async def _cancel_node(run_id: int, node_key: str) -> None:
+    await _update_node(
         run_id,
         node_key,
         status="cancelled",
@@ -1806,8 +1893,8 @@ def _cancel_node(run_id: int, node_key: str) -> None:
     )
 
 
-def _update_node(run_id: int, node_key: str, **values: Any) -> None:
-    with SessionLocal() as db, db.begin():
+async def _update_node(run_id: int, node_key: str, **values: Any) -> None:
+    def write(db: Session) -> None:
         row = db.scalar(
             select(models.NodeRun).where(
                 models.NodeRun.workflow_run_id == run_id,
@@ -1819,10 +1906,15 @@ def _update_node(run_id: int, node_key: str, **values: Any) -> None:
         for key, value in values.items():
             setattr(row, key, value)
         row.revision += 1
+    await event_bus.write(
+        write,
+        priority=20,
+        correlation_id=f"workflow:{run_id}:node:{node_key}",
+    )
 
 
-def _start_attempt(run_id: int, node_key: str, input_value: Any) -> int:
-    with SessionLocal() as db, db.begin():
+async def _start_attempt(run_id: int, node_key: str, input_value: Any) -> int:
+    def write(db: Session) -> int:
         node = db.scalar(
             select(models.NodeRun).where(
                 models.NodeRun.workflow_run_id == run_id,
@@ -1842,16 +1934,21 @@ def _start_attempt(run_id: int, node_key: str, input_value: Any) -> int:
         db.add(attempt)
         db.flush()
         return attempt.id
+    return await event_bus.write(
+        write,
+        priority=20,
+        correlation_id=f"workflow:{run_id}:attempt-start:{node_key}",
+    )
 
 
-def _finish_attempt(
+async def _finish_attempt(
     attempt_id: int,
     status: str,
     *,
     output: Any = None,
     error: dict[str, Any] | None = None,
 ) -> None:
-    with SessionLocal() as db, db.begin():
+    def write(db: Session) -> None:
         attempt = db.get(models.NodeRunAttempt, attempt_id)
         if attempt is None:
             return
@@ -1859,17 +1956,15 @@ def _finish_attempt(
         attempt.output_json = _dump(output)
         attempt.error_json = _dump(error)
         attempt.completed_at = models.utcnow()
+    await event_bus.write(
+        write,
+        priority=20,
+        correlation_id=f"attempt:{attempt_id}:finish:{status}",
+    )
 
 
-def _update_partial_attempt(attempt_id: int, text: str) -> None:
-    with SessionLocal() as db, db.begin():
-        attempt = db.get(models.NodeRunAttempt, attempt_id)
-        if attempt is not None:
-            attempt.partial_output = text
-
-
-def _update_attempt_accounting(attempt_id: int, values: dict[str, Any]) -> None:
-    with SessionLocal() as db, db.begin():
+async def _update_attempt_accounting(attempt_id: int, values: dict[str, Any]) -> None:
+    def write(db: Session) -> None:
         attempt = db.get(models.NodeRunAttempt, attempt_id)
         if attempt is None:
             return
@@ -1880,12 +1975,21 @@ def _update_attempt_accounting(attempt_id: int, values: dict[str, Any]) -> None:
         attempt.cost = cast(float | None, values["cost"])
         attempt.cost_known = bool(values["cost_known"])
         attempt.currency = str(values["currency"])
+    await event_bus.write(
+        write,
+        priority=20,
+        correlation_id=f"attempt:{attempt_id}:accounting",
+    )
 
 
-def _update_node_warnings(run_id: int, node_key: str, warnings: list[str]) -> None:
+async def _update_node_warnings(run_id: int, node_key: str, warnings: list[str]) -> None:
     if not warnings:
         return
-    _update_node(run_id, node_key, warnings_json=_dump(list(dict.fromkeys(warnings))))
+    await _update_node(
+        run_id,
+        node_key,
+        warnings_json=_dump(list(dict.fromkeys(warnings))),
+    )
 
 
 def _invocation_totals(correlation_id: str) -> dict[str, Any]:

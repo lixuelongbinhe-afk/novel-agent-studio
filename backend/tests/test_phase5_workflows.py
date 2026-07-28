@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Generator
 from pathlib import Path
+import time
 from typing import Any, cast
 
 import pytest
@@ -31,7 +32,14 @@ from app.schemas import (
     WorkflowRunCreate,
     WorkflowRunDerive,
 )
-from app.services import agents, model_gateway, workflow_runtime, workflow_validation, workflows
+from app.services import (
+    agents,
+    model_gateway,
+    workflow_events,
+    workflow_runtime,
+    workflow_validation,
+    workflows,
+)
 
 
 @pytest.fixture
@@ -47,6 +55,7 @@ def session_factory(
         bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
     )
     monkeypatch.setattr(workflow_runtime, "SessionLocal", factory)
+    monkeypatch.setattr(workflow_events, "SessionLocal", factory)
     monkeypatch.setattr(workflow_api, "SessionLocal", factory)
     workflow_runtime.event_bus._locks.clear()
     yield factory
@@ -415,6 +424,107 @@ async def test_independent_agent_nodes_really_overlap(
 
 
 @pytest.mark.asyncio
+async def test_eight_streaming_agents_complete_without_sqlite_lock(
+    session_factory: sessionmaker[Session],
+) -> None:
+    agent_keys = [f"agent_{index}" for index in range(8)]
+    with session_factory() as db, db.begin():
+        project, _provider, profile = add_project_model(db)
+        agent = agents.create_agent(
+            db,
+            agent_payload(
+                project.id,
+                profile.id,
+                name="八路流式 Agent",
+                scenario="delay",
+            ),
+        )
+        nodes = [WorkflowNodeWrite(key="start", type="start", label="Start")]
+        nodes.extend(
+            WorkflowNodeWrite(
+                key=key,
+                type="agent",
+                label=key,
+                config={"agent_id": agent.id},
+            )
+            for key in agent_keys
+        )
+        nodes.extend(
+            [
+                WorkflowNodeWrite(
+                    key="merge",
+                    type="merge",
+                    label="Merge",
+                    config={"mode": "object"},
+                ),
+                WorkflowNodeWrite(key="output", type="output", label="Output"),
+            ]
+        )
+        edges = [
+            WorkflowEdgeWrite(key=f"start_{key}", source="start", target=key)
+            for key in agent_keys
+        ]
+        edges.extend(
+            WorkflowEdgeWrite(key=f"merge_{key}", source=key, target="merge")
+            for key in agent_keys
+        )
+        edges.append(
+            WorkflowEdgeWrite(key="merge_output", source="merge", target="output")
+        )
+        workflow = workflows.create_workflow(
+            db,
+            WorkflowCreate(
+                project_id=project.id,
+                name="八 Agent 并发压力测试",
+                nodes=nodes,
+                edges=edges,
+            ),
+        )
+        run = workflows.create_run(
+            db, workflow.id, WorkflowRunCreate(input={"topic": "并发长篇"})
+        )
+        run_id = run.id
+
+    class ConnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    workflow_runtime.workflow_concurrency.reset_metrics()
+    run_task = asyncio.create_task(workflow_runtime.execute_run(run_id))
+    with session_factory() as db:
+        response = await workflow_api.stream_workflow_events(
+            run_id,
+            cast(Any, ConnectedRequest()),
+            after=0,
+            snapshot=False,
+            last_event_id=None,
+            db=db,
+        )
+        streamed_chunks: list[str] = []
+        observed_while_running = False
+        async for chunk in response.body_iterator:
+            value = chunk if isinstance(chunk, str) else bytes(chunk).decode()
+            streamed_chunks.append(value)
+            observed_while_running = observed_while_running or not run_task.done()
+    await run_task
+    with session_factory() as db:
+        result = workflows.read_run(db, run_id)
+        persisted_events = workflows.list_events(db, run_id)
+    metrics = workflow_runtime.workflow_concurrency.metrics()
+    assert result.status == "completed", result.error
+    assert set(cast(dict[str, Any], result.output)) == set(agent_keys)
+    assert metrics.max_active_nodes <= 4
+    assert [item.sequence for item in persisted_events] == list(
+        range(1, len(persisted_events) + 1)
+    )
+    assert all("database is locked" not in str(item.payload).lower() for item in persisted_events)
+    streamed = "".join(streamed_chunks)
+    assert observed_while_running is True
+    assert "event: node_output_delta" in streamed
+    assert "event: run_completed" in streamed
+
+
+@pytest.mark.asyncio
 async def test_cancellation_keeps_partial_output_and_releases_call(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -438,14 +548,19 @@ async def test_cancellation_keeps_partial_output_and_releases_call(
     task = asyncio.create_task(
         workflow_runtime.execute_run(run_id, cancel_event=cancellation)
     )
+    observed_delta = False
     for _ in range(200):
         with session_factory() as db:
             events = workflows.list_events(db, run_id)
         if any(item.event == "node_output_delta" for item in events):
+            observed_delta = True
             cancellation.set()
             break
         await asyncio.sleep(0.01)
-    await task
+    assert observed_delta is True
+    cancel_started = time.perf_counter()
+    await asyncio.wait_for(task, timeout=1)
+    assert time.perf_counter() - cancel_started < 1
     with session_factory() as db:
         result = workflows.read_run(db, run_id)
         assert result.status == "cancelled"

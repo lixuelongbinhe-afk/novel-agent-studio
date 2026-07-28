@@ -1,3 +1,5 @@
+import { withLocalApiToken } from "./localAuth";
+
 export type DashboardProject = {
   id: number;
   title: string;
@@ -184,7 +186,7 @@ export type StudioProvider = {
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  const response = await fetch(path, withLocalApiToken(init));
   if (!response.ok) {
     let message = `请求失败 (${response.status})`;
     try {

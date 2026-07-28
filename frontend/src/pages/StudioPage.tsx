@@ -1,15 +1,12 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   AlertTriangle,
   ArchiveRestore,
   BookOpenText,
-  Bot,
   Check,
   CheckCircle2,
   ChevronDown,
-  CircleDollarSign,
   Clock3,
   Download,
   FileCheck2,
@@ -18,9 +15,7 @@ import {
   FileText,
   History,
   GitCompareArrows,
-  LibraryBig,
   LoaderCircle,
-  MessageSquareText,
   MoreHorizontal,
   Pause,
   Pencil,
@@ -29,7 +24,6 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
-  Send,
   Settings2,
   Sparkles,
   SplitSquareVertical,
@@ -46,9 +40,12 @@ import {
   StudioOverview,
   studioApi
 } from "../api/studio";
+import { api, saveDownloadedFile } from "../api/client";
 import { useUiStore } from "../stores/ui";
-
-type RightTab = "chat" | "reviews" | "progress" | "library" | "cost";
+import {
+  StudioRightRail,
+  type StudioRightTab
+} from "../features/studio/components/StudioRightRail";
 
 const phaseDescriptions: Record<string, string> = {
   idea: "创意简报",
@@ -73,7 +70,7 @@ export function StudioPage() {
   const projectId = Number(params.projectId);
   const setProject = useUiStore((state) => state.setProject);
   const [selectedPhase, setSelectedPhase] = useState<string>("");
-  const [rightTab, setRightTab] = useState<RightTab>("chat");
+  const [rightTab, setRightTab] = useState<StudioRightTab>("chat");
   const [instruction, setInstruction] = useState("");
   const [chatText, setChatText] = useState("");
   const [editing, setEditing] = useState<Artifact | null>(null);
@@ -497,18 +494,24 @@ export function StudioPage() {
         </main>
 
         <aside className="context-rail">
-          <div className="rail-tabs">
-            <RailTab icon={MessageSquareText} label="对话" active={rightTab === "chat"} onClick={() => setRightTab("chat")} />
-            <RailTab icon={FileCheck2} label="审核" count={pending.length} active={rightTab === "reviews"} onClick={() => setRightTab("reviews")} />
-            <RailTab icon={Activity} label="进度" active={rightTab === "progress"} onClick={() => setRightTab("progress")} />
-            <RailTab icon={LibraryBig} label="资料" active={rightTab === "library"} onClick={() => setRightTab("library")} />
-            <RailTab icon={CircleDollarSign} label="费用" active={rightTab === "cost"} onClick={() => setRightTab("cost")} />
-          </div>
-          {rightTab === "chat" ? <ChatPanel overview={overview} value={chatText} onChange={setChatText} onSend={() => sendChat.mutate()} sending={sendChat.isPending} onProposal={(messageId, action) => proposal.mutate({ messageId, action })} /> : null}
-          {rightTab === "reviews" ? <ReviewPanel items={pending} approving={decide.isPending} onOpen={(artifact) => { setSelectedPhase(["revision_proposal", "scene_draft"].includes(artifact.kind) ? "drafting" : artifact.kind); openEdit(artifact); }} onApprove={approveArtifact} /> : null}
-          {rightTab === "progress" ? <ProgressPanel overview={overview} /> : null}
-          {rightTab === "library" ? <LibraryPanel overview={overview} /> : null}
-          {rightTab === "cost" ? <CostPanel overview={overview} onUpdate={(value) => updateState.mutate(value)} /> : null}
+          <StudioRightRail
+            overview={overview}
+            activeTab={rightTab}
+            onTabChange={setRightTab}
+            chatValue={chatText}
+            onChatChange={setChatText}
+            onChatSend={() => sendChat.mutate()}
+            chatSending={sendChat.isPending}
+            onProposal={(messageId, action) => proposal.mutate({ messageId, action })}
+            pending={pending}
+            approving={decide.isPending}
+            onReviewOpen={(artifact) => {
+              setSelectedPhase(["revision_proposal", "scene_draft"].includes(artifact.kind) ? "drafting" : artifact.kind);
+              openEdit(artifact);
+            }}
+            onReviewApprove={approveArtifact}
+            onBudgetUpdate={(value) => updateState.mutate(value)}
+          />
         </aside>
       </div>
 
@@ -537,63 +540,12 @@ export function StudioPage() {
   );
 }
 
-function RailTab({ icon: Icon, label, count, active, onClick }: { icon: typeof Bot; label: string; count?: number; active: boolean; onClick: () => void }) {
-  return <button type="button" className={active ? "active" : ""} onClick={onClick} title={label}><Icon size={15} /><span>{label}</span>{count ? <b>{count}</b> : null}</button>;
-}
-
-function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: { overview: StudioOverview; value: string; onChange: (value: string) => void; onSend: () => void; sending: boolean; onProposal: (messageId: number, action: "apply" | "reject") => void }) {
-  const streamRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const stream = streamRef.current;
-    if (stream) stream.scrollTop = stream.scrollHeight;
-  }, [overview.messages.length]);
-  return <div className="rail-panel chat-panel">
-    <header><div><Bot size={16} /><strong>总编对话</strong></div><span>自动上下文</span></header>
-    <div ref={streamRef} className="chat-stream" role="log" aria-label="对话消息" aria-live="polite">
-      {overview.messages.length === 0 ? <div className="chat-empty"><MessageSquareText size={22} /><span>开始对话</span></div> : null}
-      {overview.messages.map((message) => <div key={message.id} className={`chat-message ${message.role}`}>
-        <div>{message.content}</div>
-        {message.role === "assistant" ? <small>{message.model_name} · {message.context_scope}</small> : null}
-        {message.proposal_status === "pending" ? <div className="proposal-actions"><span>{message.proposal?.target_type === "workflow" ? `工作流操作待确认：${message.proposal.label ?? "推进下一步"}` : "修改提案待确认"}</span><button onClick={() => onProposal(message.id, "reject")}>拒绝</button><button className="approve" onClick={() => onProposal(message.id, "apply")}>{message.proposal?.target_type === "workflow" ? "执行" : "应用"}</button></div> : null}
-      </div>)}
-    </div>
-    <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSend(); }}>
-      <textarea rows={3} value={value} onChange={(event) => onChange(event.target.value)} placeholder="询问、分析或提出修改要求" />
-      <div><span>项目 · 阶段 · 章节 · 选区</span><button type="submit" className="send-button" disabled={sending || !value.trim()} title="发送">{sending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div>
-    </form>
-  </div>;
-}
-
-function ReviewPanel({ items, approving, onOpen, onApprove }: { items: Artifact[]; approving: boolean; onOpen: (item: Artifact) => void; onApprove: (item: Artifact) => void }) {
-  return <div className="rail-panel"><header><div><FileCheck2 size={16} /><strong>待审核</strong></div><span>{items.length} 项</span></header><div className="rail-list">
-    {items.length === 0 ? <div className="rail-empty"><CheckCircle2 size={22} /><span>没有待审核内容</span></div> : null}
-    {items.map((item) => { const writesManuscript = ["drafting", "revision_proposal", "scene_draft"].includes(item.kind); const approveLabel = writesManuscript ? "通过并写入正文" : "通过"; return <article key={item.id} className="review-item"><button type="button" onClick={() => onOpen(item)}><span>{artifactKindLabel(item.kind)}</span><strong>{item.title}</strong><small>版本 {item.version_number} · 点击查看和编辑</small></button><button className="approve-button review-approve" title={approveLabel} aria-label={approveLabel} disabled={approving} onClick={() => onApprove(item)}><Check size={14} /><span>{approveLabel}</span></button></article>; })}
-  </div></div>;
-}
-
-function ProgressPanel({ overview }: { overview: StudioOverview }) {
-  return <div className="rail-panel"><header><div><Activity size={16} /><strong>执行进度</strong></div><span>{overview.jobs.length} 条</span></header><div className="rail-list">
-    {overview.jobs.length === 0 ? <div className="rail-empty"><Activity size={22} /><span>暂无任务</span></div> : null}
-    {overview.jobs.map((job) => <article key={job.id} className="job-item"><div><span className={`job-dot ${job.status}`} /><strong>{job.label}</strong><small>{job.model_name}</small></div><div className="progress-track"><i style={{ width: `${job.progress}%` }} /></div><footer><span>{job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : `${job.progress}%`}</span><small title={job.model_reason}>{job.model_reason}</small></footer></article>)}
-  </div></div>;
-}
-
-function LibraryPanel({ overview }: { overview: StudioOverview }) {
-  const rows = [["人物与实体", overview.library_counts.entities], ["时间线事件", overview.library_counts.timeline], ["伏笔", overview.library_counts.foreshadows], ["文风规则", overview.library_counts.style_guides]];
-  return <div className="rail-panel"><header><div><LibraryBig size={16} /><strong>资料库</strong></div><span>自动更新</span></header><div className="library-metrics">{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div><div className="memory-state"><CheckCircle2 size={15} /><span>记忆模式：{overview.state.memory_mode === "automatic" ? "自动更新" : "确认后更新"}</span></div></div>;
-}
-
 function ChapterPlanValidationBadge({ artifact }: { artifact: Artifact }) {
   const value = artifact.metadata.chapter_plan_validation;
   if (!value || typeof value !== "object") return null;
   const validation = value as Record<string, unknown>;
   const complete = validation.complete === true;
   return <div className={complete ? "conflict-badge minor" : "conflict-badge major"}><FileCheck2 size={14} />章节覆盖率 {String(validation.coverage_percent ?? 0)}%{complete ? "，预览可审核" : "，缺失章节必须补齐"}</div>;
-}
-
-function CostPanel({ overview, onUpdate }: { overview: StudioOverview; onUpdate: (value: Record<string, unknown>) => void }) {
-  const [budget, setBudget] = useState(overview.state.budget_limit?.toString() ?? "");
-  return <div className="rail-panel"><header><div><CircleDollarSign size={16} /><strong>费用</strong></div><span>{overview.usage.currency}</span></header><div className="cost-summary"><strong>{overview.usage.spent.toFixed(4)}</strong><span>/ {overview.usage.limit?.toFixed(2) ?? "未设置"}</span><div className={overview.usage.warning ? "budget-bar warning" : "budget-bar"}><i style={{ width: `${Math.min(100, overview.usage.percent)}%` }} /></div><small>{overview.usage.tokens.toLocaleString()} tokens · {overview.usage.invocations} 次调用</small></div><label className="budget-input"><span>项目预算</span><div><input type="number" min="0.01" step="0.01" value={budget} onChange={(event) => setBudget(event.target.value)} /><button onClick={() => onUpdate({ budget_limit: budget ? Number(budget) : null, budget_paused: false })}>保存</button></div></label><div className="budget-rules"><span>70% 提醒</span><span>110% 任务结束后暂停</span></div>{overview.usage.paused ? <button className="primary-button full" onClick={() => onUpdate({ budget_paused: false })}>确认继续生成</button> : null}</div>;
 }
 
 function WritingStage({ overview, selectedChapterId, onSelectChapter, onSelection, onGenerate, onOpenArtifact, generating, onRefresh, onNotice }: { overview: StudioOverview; selectedChapterId: number | null; onSelectChapter: (id: number) => void; onSelection: (text: string) => void; onGenerate: (mode: string, chapterId: number, selection?: string) => void; onOpenArtifact: (artifact: Artifact) => void; generating: boolean; onRefresh: () => Promise<unknown>; onNotice: (value: string) => void }) {
@@ -698,11 +650,11 @@ function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: 
   const [label, setLabel] = useState("");
   const create = useMutation({ mutationFn: () => studioApi.createSnapshot(overview.project.id, label || "手动快照", "作者手动创建", true), onSuccess: async () => { setLabel(""); await onRefresh(); }, onError: (reason: Error) => onNotice(reason.message) });
   const restore = useMutation({ mutationFn: (id: number) => studioApi.restoreSnapshot(overview.project.id, id), onSuccess: onRefresh, onError: (reason: Error) => onNotice(reason.message) });
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><a href={studioApi.exportUrl(overview.project.id, "book_text")} download><FileText size={16} />TXT</a><a href={studioApi.exportUrl(overview.project.id, "book_markdown")} download><Download size={16} />Markdown</a><a href={studioApi.exportUrl(overview.project.id, "book_pdf")} download><FileCheck2 size={16} />PDF</a></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></section></div>;
+  const exportFile = useMutation({ mutationFn: (kind: "book_text" | "book_markdown" | "book_pdf") => api.downloadReleaseExport(kind, overview.project.id), onSuccess: saveDownloadedFile, onError: (reason: Error) => onNotice(reason.message) });
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_text")}><FileText size={16} />TXT</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_markdown")}><Download size={16} />Markdown</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_pdf")}><FileCheck2 size={16} />PDF</button></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></section></div>;
 }
 
 function statusLabel(status: Artifact["status"]) { return ({ pending: "待审核", approved: "已通过", changes_requested: "需修改", rejected: "已拒绝", superseded: "旧版本" })[status]; }
-function artifactKindLabel(kind: string) { return ({ drafting: "章节正文", revision_proposal: "正文修改方案", scene_draft: "场景正文", world: "世界观", characters: "人物关系", plot: "剧情伏笔", volumes: "分卷大纲", chapters: "章节大纲", continuation_original: "原始只读副本", continuation_analysis: "原文资料分析", continuation_outline: "反向补建大纲", continuation_plan: "续写规划", continuation_direction: "作者续写方向", review: "全文审阅" } as Record<string, string>)[kind] ?? kind; }
 function sourceLabel(source: string) { return ({ ai: "AI 生成", user: "人工修改", import: "导入", ai_chat: "对话提案" } as Record<string, string>)[source] ?? source; }
 function formatMissingChapters(numbers: number[]) {
   if (numbers.length === 0) return "缺失章节";

@@ -198,6 +198,96 @@ class ScriptedAdapter:
         return []
 
 
+class TransactionInspectingAdapter:
+    name = "phase4_transaction_inspecting"
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.observations: list[bool] = []
+
+    def observe(self) -> None:
+        self.observations.append(self.db.in_transaction())
+
+    async def complete(
+        self, request: NormalizedModelRequest, runtime: Any = None
+    ) -> NormalizedModelResponse:
+        del runtime
+        self.observe()
+        await asyncio.sleep(0)
+        self.observe()
+        return response_for(request, text="transaction-free")
+
+    async def stream(
+        self, request: NormalizedModelRequest, runtime: Any = None
+    ) -> AsyncIterator[NormalizedStreamEvent]:
+        del runtime
+        self.observe()
+        await asyncio.sleep(0)
+        self.observe()
+        yield NormalizedStreamEvent(sequence=1, event="start")
+        yield NormalizedStreamEvent(
+            sequence=2, event="delta", text_delta="transaction-free"
+        )
+        yield NormalizedStreamEvent(
+            sequence=3,
+            event="usage",
+            usage=NormalizedUsage(
+                input_tokens=2,
+                output_tokens=2,
+                total_tokens=4,
+                estimated=False,
+                source="provider_actual",
+            ),
+        )
+        yield NormalizedStreamEvent(sequence=4, event="done", finish_reason="stop")
+
+    async def list_models(self, runtime: Any) -> list[dict[str, Any]]:
+        del runtime
+        return []
+
+
+@pytest.mark.asyncio
+async def test_provider_waits_never_hold_a_database_transaction() -> None:
+    with TestingSessionLocal() as db, db.begin():
+        provider, profile = add_model(
+            db,
+            protocol=TransactionInspectingAdapter.name,
+            provider_name="Transaction Boundary Provider",
+            model_name="transaction-boundary-model",
+        )
+        db.add(
+            models.ModelCapability(
+                model_profile_id=profile.id,
+                capability="streaming",
+                status="supported",
+                source="manual_override",
+            )
+        )
+
+    with TestingSessionLocal() as db:
+        adapter = TransactionInspectingAdapter(db)
+        model_gateway.registry.register(adapter)
+        payload = ModelDebugRequest(
+            provider_account_id=provider.id,
+            model_profile_id=profile.id,
+            model=profile.name,
+            messages=request_for(profile.name).messages,
+            stream=False,
+            max_retries=0,
+        )
+        response = await model_execution.execute_model(db, payload)
+        assert response.error is None
+        events = [
+            event
+            async for event in model_execution.stream_model(
+                db, payload.model_copy(update={"stream": True})
+            )
+        ]
+
+    assert any(event.event == "delta" for event in events)
+    assert adapter.observations == [False, False, False, False]
+
+
 def test_effective_capability_priority_and_current_configuration() -> None:
     with TestingSessionLocal() as db, db.begin():
         provider, profile = add_model(db, protocol="mock")

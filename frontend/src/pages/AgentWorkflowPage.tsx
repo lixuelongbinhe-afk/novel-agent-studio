@@ -46,7 +46,6 @@ import {
   type WorkflowManifest,
   type WorkflowNode,
   type WorkflowRun,
-  type WorkflowRunEvent,
   type WorkflowRunSummary,
   type WorkflowRunStatus,
   type WorkflowSummary,
@@ -56,6 +55,7 @@ import { Dialog } from "../components/Dialog";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { FormField } from "../components/FormField";
+import { useWorkflowSSE } from "../features/workflow/hooks/useWorkflowSSE";
 import { useUiStore } from "../stores/ui";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 
@@ -665,8 +665,6 @@ function RunView({
   const queryClient = useQueryClient();
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
-  const [liveEvents, setLiveEvents] = useState<WorkflowRunEvent[]>([]);
-  const lastEventId = useRef(0);
 
   useEffect(() => {
     if (!runs.length) {
@@ -709,70 +707,8 @@ function RunView({
   }, [run?.id, run?.status, run?.event_sequence, run?.started_at, run?.completed_at, projectId, queryClient]);
 
   useEffect(() => {
-    setLiveEvents([]);
     setSelectedNodeKey(null);
-    lastEventId.current = 0;
   }, [selectedRunId]);
-
-  useEffect(() => {
-    const max = Math.max(0, ...(snapshot?.events.map((event) => event.sequence) ?? []));
-    lastEventId.current = Math.max(lastEventId.current, max);
-  }, [snapshot?.events.length]);
-
-  useEffect(() => {
-    if (!selectedRunId || !isActiveStatus(run?.status)) return;
-    const controller = new AbortController();
-    let stopped = false;
-    let frameId: number | null = null;
-    let bufferedEvents: WorkflowRunEvent[] = [];
-    const enqueueEvents = (values: WorkflowRunEvent[]) => {
-      if (!values.length) return;
-      bufferedEvents.push(...values);
-      lastEventId.current = Math.max(
-        lastEventId.current,
-        ...values.map((event) => event.sequence)
-      );
-      if (frameId !== null) return;
-      frameId = window.requestAnimationFrame(() => {
-        frameId = null;
-        const next = bufferedEvents;
-        bufferedEvents = [];
-        setLiveEvents((current) => mergeEvents(current, next));
-      });
-    };
-    const listen = async () => {
-      while (!stopped && !controller.signal.aborted) {
-        try {
-          await api.streamWorkflowEvents(selectedRunId, (message) => {
-            if ("events" in message.data && "run" in message.data) {
-              const values = message.data.events;
-              enqueueEvents(values);
-            } else if ("sequence" in message.data) {
-              const event = message.data;
-              enqueueEvents([event]);
-              if (event.event !== "node_output_delta") {
-                void queryClient.invalidateQueries({ queryKey: ["workflow-run", selectedRunId] });
-              }
-            }
-          }, { signal: controller.signal, lastEventId: lastEventId.current });
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: ["workflow-run", selectedRunId] }),
-            queryClient.invalidateQueries({ queryKey: ["workflow-runs", projectId] })
-          ]);
-          break;
-        } catch (error) {
-          if (controller.signal.aborted || stopped) break;
-          await delay(500);
-        }
-      }
-    };
-    void listen();
-    return () => {
-      stopped = true;
-      controller.abort();
-      if (frameId !== null) window.cancelAnimationFrame(frameId);
-    };
-  }, [selectedRunId, run?.status, projectId, queryClient]);
 
   useEffect(() => {
     if (!run?.nodes.length) return;
@@ -797,7 +733,12 @@ function RunView({
     onError: (error) => onError(errorMessage(error, "派生运行失败"))
   });
 
-  const events = useMemo(() => mergeEvents(snapshot?.events ?? [], liveEvents), [snapshot?.events, liveEvents]);
+  const events = useWorkflowSSE({
+    runId: selectedRunId,
+    projectId,
+    active: isActiveStatus(run?.status),
+    snapshotEvents: snapshot?.events ?? []
+  });
   const selectedNode = run?.nodes.find((node) => node.node_key === selectedNodeKey) ?? null;
   const statuses = useMemo(() => Object.fromEntries((run?.nodes ?? []).map((node) => [node.node_key, node.status])) as Record<string, NodeRunStatus>, [run?.nodes]);
   const frozenWorkflow = workflowFromSnapshot(snapshot?.snapshot);
@@ -989,12 +930,6 @@ function RunStatusIcon({ status }: { status: WorkflowRunStatus }) {
   return <Activity size={16} />;
 }
 
-function mergeEvents(first: WorkflowRunEvent[], second: WorkflowRunEvent[]): WorkflowRunEvent[] {
-  const values = new Map<number, WorkflowRunEvent>();
-  for (const event of [...first, ...second]) values.set(event.sequence, event);
-  return [...values.values()].sort((left, right) => left.sequence - right.sequence);
-}
-
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
     const message = error.message.replace(/^"|"$/g, "");
@@ -1102,8 +1037,4 @@ function downloadJson(filename: string, value: unknown) {
 
 function safeFilename(value: string): string {
   return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "workflow";
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }

@@ -4,6 +4,7 @@ const runtimeProcess = (globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process;
 const reuseExistingServer = runtimeProcess?.env?.PLAYWRIGHT_REUSE_SERVERS === "1";
+const e2ePython = runtimeProcess?.env?.NAS_E2E_PYTHON ?? "..\\backend\\.venv\\Scripts\\python.exe";
 
 export default defineConfig({
   testDir: "./src/test/e2e",
@@ -15,13 +16,13 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "..\\backend\\.venv\\Scripts\\python.exe ..\\scripts\\fake_provider_server.py",
+      command: `${e2ePython} ..\\scripts\\fake_provider_server.py`,
       url: "http://127.0.0.1:8020/health",
       reuseExistingServer,
       timeout: 120000
     },
     {
-      command: "..\\backend\\.venv\\Scripts\\python.exe ..\\scripts\\e2e_server.py",
+      command: `${e2ePython} ..\\scripts\\e2e_server.py`,
       url: "http://127.0.0.1:8010/health",
       reuseExistingServer,
       timeout: 120000

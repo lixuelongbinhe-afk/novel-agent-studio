@@ -89,3 +89,43 @@ class LogCleanupRead(BaseModel):
     deleted_files: int = Field(ge=0)
     retained_files: int = Field(ge=0)
     completed_at: datetime
+
+
+class StorageCategoryRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    bytes: int = Field(ge=0)
+    records: int = Field(ge=0)
+
+
+class StorageCleanupItemRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    records: int = Field(ge=0)
+    estimated_bytes: int = Field(ge=0)
+
+
+class StorageReportRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    database_bytes: int = Field(ge=0)
+    wal_bytes: int = Field(ge=0)
+    reusable_bytes: int = Field(ge=0)
+    categories: list[StorageCategoryRead]
+    cleanup: list[StorageCleanupItemRead]
+    generated_at: datetime
+
+
+class StorageCleanupRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dry_run: bool
+    project_id: int | None
+    items: list[StorageCleanupItemRead]
+    deleted_records: int = Field(ge=0)
+    integrity: Literal["ok"]
+    completed_at: datetime

@@ -20,11 +20,17 @@ from app.api.studio import router as studio_router
 from app.api.workflows import router as workflows_router
 from app.core.config import get_settings
 from app.core.logging_config import cleanup_log_files, configure_logging
-from app.core.security import LocalOriginMiddleware, SecurityHeadersMiddleware
-from app.database import SessionLocal
+from app.core.security import (
+    LocalApiTokenMiddleware,
+    LocalOriginMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.database import SessionLocal, checkpoint_sqlite
 from app.migrations import upgrade_database
 from app.services.gateway_http import shared_http_client
 from app.services.studio import mark_interrupted_generation_jobs
+from app.services.storage_management import cleanup_storage
+from app.services.workflow_runtime import event_bus, workflow_run_manager
 from app.services.workflows import mark_interrupted_runs
 
 settings = get_settings()
@@ -56,9 +62,14 @@ async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
     with SessionLocal() as db, db.begin():
         mark_interrupted_runs(db)
         mark_interrupted_generation_jobs(db)
+        if settings.storage_auto_gc:
+            cleanup_storage(db, dry_run=False)
     try:
         yield
     finally:
+        await workflow_run_manager.shutdown()
+        await event_bus.shutdown()
+        checkpoint_sqlite(truncate=True)
         await shared_http_client.aclose()
 
 
@@ -73,6 +84,7 @@ app = FastAPI(
 app.state.frontend_bundled = frontend_dist is not None
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(LocalOriginMiddleware, allowed_origins=settings.cors_origin_list)
+app.add_middleware(LocalApiTokenMiddleware, token=settings.local_api_token)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_host_list)
 app.add_middleware(
     CORSMiddleware,

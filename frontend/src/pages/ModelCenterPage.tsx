@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
@@ -34,6 +34,7 @@ import { Dialog } from "../components/Dialog";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { FormField } from "../components/FormField";
+import { useModelDebugStream } from "../features/model-center/hooks/useModelDebugStream";
 import { useUiStore } from "../stores/ui";
 import { ModelControlPanel } from "./ModelControlPanel";
 
@@ -625,14 +626,22 @@ function DebuggerView({ providers, models }: { providers: Provider[]; models: Mo
   const [manualModelId, setManualModelId] = useState<number | null>(null);
   const [prompt, setPrompt] = useState("请为悬疑小说设计一个有明确冲突的开场场景。");
   const [responseFormat, setResponseFormat] = useState<"text" | "json">("text");
-  const [output, setOutput] = useState("");
-  const [streamError, setStreamError] = useState("");
-  const [meta, setMeta] = useState<{ tokens: number; requestId: string; finishReason: string; tokenSource: string } | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [control, setControl] = useState<Record<string, unknown> | null>(null);
   const [preflight, setPreflight] = useState<ExecutionPreflight | null>(null);
-  const [streaming, setStreaming] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const {
+    output,
+    setOutput,
+    streamError,
+    setStreamError,
+    meta,
+    setMeta,
+    warnings,
+    setWarnings,
+    control,
+    setControl,
+    streaming,
+    run: runModelStream,
+    stop: stopModelStream
+  } = useModelDebugStream();
 
   const providerModels = useMemo(
     () => models.filter((model) => model.enabled && model.provider_account_id === providerId),
@@ -668,8 +677,6 @@ function DebuggerView({ providers, models }: { providers: Provider[]; models: Mo
     setManualModelId(routeModels[0]?.id ?? null);
   }, [manualModelId, routeModels, selectedRoute]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
-
   const debug = useMutation({
     mutationFn: () => api.debugModel(currentDebugPayload()),
     onSuccess: (response) => {
@@ -699,49 +706,11 @@ function DebuggerView({ providers, models }: { providers: Provider[]; models: Mo
   const outputLabel = responseFormat === "json" ? "结构化 JSON" : "文本输出";
 
   async function runStream() {
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setOutput("");
-    setMeta(null);
-    setStreamError("");
-    setWarnings([]);
-    setControl(null);
-    setStreaming(true);
-    let requestId = "";
-    let tokens = 0;
-    try {
-      await api.streamModel(
-        currentDebugPayload(),
-        (event) => {
-          requestId = event.request_id ?? requestId;
-          if (event.event === "delta") setOutput((value) => value + event.text_delta);
-          if (event.event === "tool_call_delta" && event.tool_call) {
-            setOutput((value) => `${value}\n[tool] ${event.tool_call?.name}: ${JSON.stringify(event.tool_call?.arguments)}`.trim());
-          }
-          if (event.event === "usage" && event.usage) {
-            tokens = event.usage.total_tokens;
-            setMeta({ tokens, requestId, finishReason: "streaming", tokenSource: event.usage.source ?? (event.usage.estimated ? "local_approximation" : "provider_actual") });
-          }
-          if (event.event === "warning" && event.warning) setWarnings((current) => [...current, event.warning as string]);
-          if (event.event === "error" && event.error) setStreamError(`${event.error.code}: ${event.error.message}`);
-          if (event.event === "done") setMeta((current) => ({ tokens, requestId, finishReason: event.finish_reason ?? "stop", tokenSource: current?.tokenSource ?? "local_approximation" }));
-        },
-        controller.signal
-      );
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        setStreamError(error instanceof Error ? error.message : "流式请求失败");
-      }
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      setStreaming(false);
-    }
+    await runModelStream(currentDebugPayload());
   }
 
   function stopStream() {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(false);
+    stopModelStream();
   }
 
   function currentDebugPayload(): ModelDebugRequest {

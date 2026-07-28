@@ -309,10 +309,10 @@ class BudgetManager:
         tokens: int,
         cost: CostEstimateRead,
     ) -> BudgetReservation:
-        policies = _matching_budget_policies(db, context)
         reservation_id = uuid.uuid4().hex
         policy_keys: list[tuple[int, str]] = []
         async with self._lock:
+            policies = _matching_budget_policies(db, context)
             for policy, window_key in policies:
                 key = (policy.id, window_key)
                 pending = self._pending.get(key, {})

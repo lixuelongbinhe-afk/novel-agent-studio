@@ -11,7 +11,9 @@ const mocks = vi.hoisted(() => ({
   restoreBackup: vi.fn(),
   downloadReleaseExport: vi.fn(),
   cleanupLogs: vi.fn(),
-  deleteLogs: vi.fn()
+  deleteLogs: vi.fn(),
+  storageReport: vi.fn(),
+  cleanupStorage: vi.fn()
 }));
 
 const timestamp = "2026-07-18T12:00:00Z";
@@ -61,7 +63,9 @@ vi.mock("../api/client", () => ({
     restoreBackup: mocks.restoreBackup,
     downloadReleaseExport: mocks.downloadReleaseExport,
     cleanupLogs: mocks.cleanupLogs,
-    deleteLogs: mocks.deleteLogs
+    deleteLogs: mocks.deleteLogs,
+    storageReport: mocks.storageReport,
+    cleanupStorage: mocks.cleanupStorage
   }
 }));
 
@@ -89,6 +93,22 @@ describe("ReleasePage", () => {
     mocks.downloadReleaseExport.mockResolvedValue({ blob: new Blob(["export"]), filename: "雾港回声.md" });
     mocks.cleanupLogs.mockResolvedValue({ deleted_files: 1, retained_files: 1, completed_at: timestamp });
     mocks.deleteLogs.mockResolvedValue({ deleted_files: 2, retained_files: 0, completed_at: timestamp });
+    mocks.storageReport.mockResolvedValue({
+      database_bytes: 1024 * 1024,
+      wal_bytes: 4096,
+      reusable_bytes: 8192,
+      categories: [{ key: "workflow", label: "工作流历史", bytes: 4096, records: 12 }],
+      cleanup: [{ key: "workflow_deltas", label: "过期流式增量", records: 3, estimated_bytes: 1024 }],
+      generated_at: timestamp
+    });
+    mocks.cleanupStorage.mockResolvedValue({
+      dry_run: false,
+      project_id: null,
+      items: [{ key: "workflow_deltas", label: "过期流式增量", records: 3, estimated_bytes: 1024 }],
+      deleted_records: 3,
+      integrity: "ok",
+      completed_at: timestamp
+    });
   });
 
   it("downloads, validates and restores the exact previewed backup", async () => {
@@ -103,14 +123,40 @@ describe("ReleasePage", () => {
     fireEvent.change(screen.getByLabelText("选择备份文件"), { target: { files: [file] } });
     fireEvent.click(screen.getByRole("button", { name: "校验并预览" }));
     expect(await screen.findByText("备份完整且未发现凭据")).toBeInTheDocument();
-    expect(mocks.previewBackup).toHaveBeenCalledWith(file);
+    expect(mocks.previewBackup).toHaveBeenCalledWith(file, undefined);
 
     fireEvent.click(screen.getByLabelText("我确认用此备份替换当前数据库"));
     fireEvent.click(screen.getByRole("button", { name: "开始恢复" }));
     expect(await screen.findByRole("dialog", { name: "确认恢复备份" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认恢复" }));
-    await waitFor(() => expect(mocks.restoreBackup).toHaveBeenCalledWith(file, "replace_all", "a".repeat(64)));
+    await waitFor(() => expect(mocks.restoreBackup).toHaveBeenCalledWith(file, "replace_all", "a".repeat(64), undefined));
     expect(await screen.findByText(/恢复完成：3 条记录/)).toBeInTheDocument();
+  });
+
+  it("passes the optional password only to backup operations", async () => {
+    renderPage();
+    await screen.findByRole("heading", { level: 1 });
+    const passwordInput = screen.getByLabelText("备份密码");
+    const backupPanel = passwordInput.closest(".backup-panel");
+    if (!(backupPanel instanceof HTMLElement)) throw new Error("backup panel missing");
+    fireEvent.change(passwordInput, {
+      target: { value: "correct horse battery" }
+    });
+    fireEvent.click(within(backupPanel).getAllByRole("button")[0]);
+    await waitFor(() =>
+      expect(mocks.downloadBackup).toHaveBeenCalledWith("correct horse battery")
+    );
+
+    const file = new File(["encrypted"], "project.nasbackup.enc", {
+      type: "application/octet-stream"
+    });
+    const fileInput = backupPanel.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) throw new Error("backup file input missing");
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(within(backupPanel).getAllByRole("button")[1]);
+    await waitFor(() =>
+      expect(mocks.previewBackup).toHaveBeenCalledWith(file, "correct horse battery")
+    );
   });
 
   it("exports the selected chapter and requires confirmation before deleting logs", async () => {
@@ -128,5 +174,16 @@ describe("ReleasePage", () => {
     expect(mocks.deleteLogs).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
     await waitFor(() => expect(mocks.deleteLogs).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows a dry-run storage estimate and confirms destructive cleanup", async () => {
+    renderPage();
+    expect(await screen.findByText("工作流历史")).toBeInTheDocument();
+    expect(screen.getByText(/可安全清理/, { selector: ".storage-cleanup-summary span" })).toHaveTextContent("3");
+    fireEvent.click(screen.getByRole("button", { name: "清理历史数据" }));
+    expect(await screen.findByRole("dialog", { name: "确认清理历史数据" })).toBeInTheDocument();
+    expect(mocks.cleanupStorage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认清理" }));
+    await waitFor(() => expect(mocks.cleanupStorage).toHaveBeenCalledWith(undefined));
   });
 });

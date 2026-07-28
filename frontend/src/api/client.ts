@@ -1,3 +1,5 @@
+import { withLocalApiToken } from "./localAuth";
+
 export type RecordBase = {
   id: number;
   revision: number;
@@ -1042,7 +1044,7 @@ export type BackupTableCount = { table: string; records: number };
 
 export type BackupManifest = {
   format: "novel-agent-studio-backup";
-  schema_version: 1;
+  schema_version: 1 | 2;
   app_version: string;
   migration_revision: string;
   created_at: string;
@@ -1092,8 +1094,35 @@ export type LogCleanupResult = {
   completed_at: string;
 };
 
+export type StorageCleanupItem = {
+  key: string;
+  label: string;
+  records: number;
+  estimated_bytes: number;
+};
+
+export type StorageReport = {
+  database_bytes: number;
+  wal_bytes: number;
+  reusable_bytes: number;
+  categories: Array<{ key: string; label: string; bytes: number; records: number }>;
+  cleanup: StorageCleanupItem[];
+  generated_at: string;
+};
+
+export type StorageCleanupResult = {
+  dry_run: boolean;
+  project_id: number | null;
+  items: StorageCleanupItem[];
+  deleted_records: number;
+  integrity: "ok";
+  completed_at: string;
+};
+
 export type ReleaseExportKind =
+  | "book_text"
   | "book_markdown"
+  | "book_pdf"
   | "chapter_markdown"
   | "library_json"
   | "timeline_csv"
@@ -1120,7 +1149,7 @@ export class ApiError extends Error {
 const jsonHeaders = { "Content-Type": "application/json" };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withLocalApiToken(init));
   if (!response.ok) {
     throw await responseError(response);
   }
@@ -1129,7 +1158,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function downloadRequest(url: string, init?: RequestInit): Promise<DownloadedFile> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withLocalApiToken(init));
   if (!response.ok) throw await responseError(response);
   const disposition = response.headers.get("content-disposition") ?? "";
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -1178,7 +1207,10 @@ async function streamRequest(
   onEvent: (event: NormalizedStreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(url, { ...json("POST", payload), signal });
+  const response = await fetch(
+    url,
+    withLocalApiToken({ ...json("POST", payload), signal })
+  );
   if (!response.ok) throw await responseError(response);
   if (!response.body) throw new ApiError(502, "流式响应没有正文", null);
 
@@ -1221,7 +1253,10 @@ async function streamWorkflowRequest(
   lastEventId?: number
 ): Promise<void> {
   const headers = lastEventId === undefined ? undefined : { "Last-Event-ID": String(lastEventId) };
-  const response = await fetch(url, { method: "GET", headers, signal });
+  const response = await fetch(
+    url,
+    withLocalApiToken({ method: "GET", headers, signal })
+  );
   if (!response.ok) throw await responseError(response);
   if (!response.body) throw new ApiError(502, "工作流事件流没有正文", null);
   const reader = response.body.getReader();
@@ -1876,23 +1911,32 @@ export const api = {
       json("POST", manifest)
     ),
   releaseStatus: () => request<ReleaseStatus>("/api/release/status"),
-  downloadBackup: () => downloadRequest("/api/release/backup"),
-  previewBackup: (file: File) =>
+  downloadBackup: (password?: string) => downloadRequest("/api/release/backup", {
+    headers: password ? { "X-NAS-Backup-Password": password } : undefined
+  }),
+  previewBackup: (file: File, password?: string) =>
     request<BackupPreview>("/api/release/backup/preview", {
       method: "POST",
-      headers: { "Content-Type": "application/zip" },
+      headers: {
+        "Content-Type": "application/octet-stream",
+        ...(password ? { "X-NAS-Backup-Password": password } : {})
+      },
       body: file
     }),
   restoreBackup: (
     file: File,
     strategy: "empty_only" | "replace_all",
-    expectedSha256: string
+    expectedSha256: string,
+    password?: string
   ) =>
     request<BackupRestoreResult>(
       `/api/release/backup/restore?strategy=${strategy}&expected_sha256=${encodeURIComponent(expectedSha256)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/zip" },
+        headers: {
+          "Content-Type": "application/octet-stream",
+          ...(password ? { "X-NAS-Backup-Password": password } : {})
+        },
         body: file
       }
     ),
@@ -1907,5 +1951,12 @@ export const api = {
     return downloadRequest(`/api/release/exports/${kind}${query.size ? `?${query}` : ""}`);
   },
   cleanupLogs: () => request<LogCleanupResult>("/api/release/logs/cleanup", { method: "POST" }),
-  deleteLogs: () => request<LogCleanupResult>("/api/release/logs", { method: "DELETE" })
+  deleteLogs: () => request<LogCleanupResult>("/api/release/logs", { method: "DELETE" }),
+  storageReport: (projectId?: number) =>
+    request<StorageReport>(`/api/release/storage${projectId ? `?project_id=${projectId}` : ""}`),
+  cleanupStorage: (projectId?: number) =>
+    request<StorageCleanupResult>(
+      `/api/release/storage/cleanup?dry_run=false${projectId ? `&project_id=${projectId}` : ""}`,
+      { method: "POST" }
+    )
 };

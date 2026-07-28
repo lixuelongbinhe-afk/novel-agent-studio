@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import secrets
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -8,6 +9,31 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class LocalApiTokenMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: object, token: str) -> None:
+        super().__init__(app)  # type: ignore[arg-type]
+        self.token = token
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.url.path.startswith("/api/") and self.token:
+            authorization = request.headers.get("authorization", "")
+            supplied = (
+                authorization.removeprefix("Bearer ")
+                if authorization.startswith("Bearer ")
+                else request.headers.get("x-nas-token", "")
+            )
+            if not secrets.compare_digest(supplied, self.token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "本地 API 会话令牌无效或已过期"},
+                )
+        return await call_next(request)
 
 
 class LocalOriginMiddleware(BaseHTTPMiddleware):

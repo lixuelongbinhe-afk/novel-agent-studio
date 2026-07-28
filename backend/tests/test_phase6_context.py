@@ -25,7 +25,14 @@ from app.schemas import (
     WorkflowRunCreate,
 )
 from app.schemas.context import ALL_CLASSIFICATIONS
-from app.services import agents, context_builder, context_memory, workflow_runtime, workflows
+from app.services import (
+    agents,
+    context_builder,
+    context_memory,
+    workflow_events,
+    workflow_runtime,
+    workflows,
+)
 from app.services.context_retrieval import CompositeRetriever, RetrievalCandidate, RetrievalQuery
 
 
@@ -42,6 +49,7 @@ def session_factory(
         bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
     )
     monkeypatch.setattr(workflow_runtime, "SessionLocal", factory)
+    monkeypatch.setattr(workflow_events, "SessionLocal", factory)
     workflow_runtime.event_bus._locks.clear()
     yield factory
     engine.dispose()

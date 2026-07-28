@@ -27,6 +27,7 @@ from app.schemas import (
     WorkflowValidationRead,
 )
 from app.services import agents, workflows
+from app.services.runtime_metrics import sse_metrics
 from app.services.workflow_runtime import workflow_run_manager
 
 
@@ -248,27 +249,36 @@ async def stream_workflow_events(
 
     async def generate() -> AsyncIterator[str]:
         current = cursor
-        if snapshot:
-            with SessionLocal() as snapshot_db:
-                value = workflows.read_run_snapshot(snapshot_db, run_id)
-            current = value.run.event_sequence
-            yield _sse(
-                current,
-                "snapshot",
-                value.model_dump(mode="json"),
-            )
-        while True:
-            if await request.is_disconnected():
-                return
-            with SessionLocal() as event_db:
-                events = workflows.list_events(event_db, run_id, after=current)
-                run = workflows.read_run(event_db, run_id)
-            for event in events:
-                current = event.sequence
-                yield _sse(current, event.event, event.model_dump(mode="json"))
-            if run.status in {"completed", "failed", "cancelled", "interrupted"} and current >= run.event_sequence:
-                return
-            await asyncio.sleep(0.15)
+        sse_metrics.connected(reconnect=bool(last_event_id or after))
+        try:
+            if snapshot:
+                with SessionLocal() as snapshot_db:
+                    value = workflows.read_run_snapshot(snapshot_db, run_id)
+                current = value.run.event_sequence
+                sse_metrics.event_sent(None)
+                yield _sse(
+                    current,
+                    "snapshot",
+                    value.model_dump(mode="json"),
+                )
+            while True:
+                if await request.is_disconnected():
+                    return
+                with SessionLocal() as event_db:
+                    events = workflows.list_events(event_db, run_id, after=current)
+                    run = workflows.read_run(event_db, run_id)
+                for event in events:
+                    current = event.sequence
+                    sse_metrics.event_sent(event.created_at)
+                    yield _sse(current, event.event, event.model_dump(mode="json"))
+                if (
+                    run.status in {"completed", "failed", "cancelled", "interrupted"}
+                    and current >= run.event_sequence
+                ):
+                    return
+                await asyncio.sleep(0.15)
+        finally:
+            sse_metrics.disconnected()
 
     return StreamingResponse(
         generate(),

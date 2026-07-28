@@ -16,11 +16,19 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import models
 from app.api.release import router as release_router
-from app.core.security import LocalOriginMiddleware, SecurityHeadersMiddleware
+from app.core.security import (
+    LocalApiTokenMiddleware,
+    LocalOriginMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.database import Base, get_db
 from app.services import release_backup
 from app.services.release_backup import (
     create_backup_archive,
+    create_backup_archive_file,
+    decrypt_backup_archive_file,
+    encrypt_backup_archive_file,
+    is_encrypted_backup,
     load_backup_archive,
     preview_backup_archive,
     restore_backup_archive,
@@ -202,6 +210,36 @@ def test_complete_backup_round_trip_and_fts_rebuild(
     assert db.scalar(text("SELECT count(*) FROM context_fts")) == result.fts_records
 
 
+def test_password_encrypted_backup_streams_and_rejects_wrong_password(db: Session) -> None:
+    seed_release_data(db)
+    archive_path = create_backup_archive_file(db)
+    encrypted_path: Path | None = None
+    decrypted_path: Path | None = None
+    try:
+        encrypted_path = encrypt_backup_archive_file(archive_path, "correct horse battery")
+        assert is_encrypted_backup(encrypted_path)
+        assert b"projects" not in encrypted_path.read_bytes()
+
+        with pytest.raises(ValueError, match="密码错误"):
+            decrypt_backup_archive_file(encrypted_path, "incorrect password")
+        with pytest.raises(ValueError, match="输入备份密码"):
+            decrypt_backup_archive_file(encrypted_path, None)
+
+        decrypted_path, temporary = decrypt_backup_archive_file(
+            encrypted_path, "correct horse battery"
+        )
+        assert temporary is True
+        loaded = load_backup_archive(decrypted_path)
+        assert loaded.manifest.format == "novel-agent-studio-backup"
+        assert loaded.tables["projects"]
+    finally:
+        archive_path.unlink(missing_ok=True)
+        if encrypted_path is not None:
+            encrypted_path.unlink(missing_ok=True)
+        if decrypted_path is not None:
+            decrypted_path.unlink(missing_ok=True)
+
+
 def test_schema_v1_backup_is_migrated_without_revision_lockout(db: Session) -> None:
     seeded = seed_release_data(db)
     current_archive = create_backup_archive(db)
@@ -340,6 +378,10 @@ def test_all_release_exports_are_real_and_redacted(db: Session) -> None:
         payload = json.loads(diagnostics.read("diagnostics.json"))
     assert payload["privacy"]["credentials_included"] is False
     assert payload["privacy"]["manuscript_content_included"] is False
+    assert payload["performance"]["workflow"]["active_node_count"] >= 0
+    assert payload["performance"]["sqlite"]["database_write_queue_length"] >= 0
+    assert payload["performance"]["sqlite"]["wal_file_size"] >= 0
+    assert payload["performance"]["sse"]["active_connections"] >= 0
     assert "雾从防波堤" not in json.dumps(payload, ensure_ascii=False)
 
 
@@ -388,6 +430,29 @@ def test_release_api_stream_limits_mime_and_security_headers(tmp_path: Path) -> 
     )
     assert preview.status_code == 200
     assert preview.json()["can_restore"] is True
+    encrypted = client.get(
+        "/api/release/backup",
+        headers={"X-NAS-Backup-Password": "correct horse battery"},
+    )
+    assert encrypted.status_code == 200
+    assert encrypted.content.startswith(release_backup.ENCRYPTED_BACKUP_MAGIC)
+    assert encrypted.headers["content-type"].startswith("application/octet-stream")
+    missing_password = client.post(
+        "/api/release/backup/preview",
+        content=encrypted.content,
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    assert missing_password.status_code == 422
+    encrypted_preview = client.post(
+        "/api/release/backup/preview",
+        content=encrypted.content,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-NAS-Backup-Password": "correct horse battery",
+        },
+    )
+    assert encrypted_preview.status_code == 200
+    assert encrypted_preview.json()["can_restore"] is True
     same_origin = client.post(
         "/same-origin", headers={"Origin": "http://testserver"}
     )
@@ -397,6 +462,33 @@ def test_release_api_stream_limits_mime_and_security_headers(tmp_path: Path) -> 
     )
     assert blocked.status_code == 403
     engine.dispose()
+
+
+def test_local_api_token_protects_api_without_exposing_health() -> None:
+    api_app = FastAPI()
+    api_app.add_middleware(LocalApiTokenMiddleware, token="local-secret")
+
+    @api_app.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    @api_app.get("/api/protected")
+    def protected() -> dict[str, bool]:
+        return {"ok": True}
+
+    client = TestClient(api_app)
+    assert client.get("/health").status_code == 200
+    assert client.get("/api/protected").status_code == 401
+    assert (
+        client.get(
+            "/api/protected", headers={"Authorization": "Bearer wrong-secret"}
+        ).status_code
+        == 401
+    )
+    accepted = client.get(
+        "/api/protected", headers={"Authorization": "Bearer local-secret"}
+    )
+    assert accepted.status_code == 200
 
 
 def _repack(manifest: dict[str, Any], data: dict[str, Any]) -> bytes:

@@ -36,7 +36,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { useUiStore } from "../stores/ui";
 
 type RestoreStrategy = "empty_only" | "replace_all";
-type ConfirmAction = "restore" | "delete_logs" | null;
+type ConfirmAction = "restore" | "delete_logs" | "cleanup_storage" | null;
 
 type ExportSpec = {
   kind: ReleaseExportKind;
@@ -63,10 +63,12 @@ export function ReleasePage() {
   const queryClient = useQueryClient();
   const selectedProjectId = useUiStore((state) => state.selectedProjectId);
   const [backupFile, setBackupFile] = useState<File | null>(null);
+  const [backupPassword, setBackupPassword] = useState("");
   const [restoreStrategy, setRestoreStrategy] = useState<RestoreStrategy>("empty_only");
   const [replaceConfirmed, setReplaceConfirmed] = useState(false);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [cleanupProjectOnly, setCleanupProjectOnly] = useState(false);
   const [notice, setNotice] = useState("");
 
   const statusQuery = useQuery({ queryKey: ["release-status"], queryFn: () => api.releaseStatus() });
@@ -80,6 +82,12 @@ export function ReleasePage() {
     queryFn: () => api.tree(projectId!),
     enabled: Boolean(projectId)
   });
+  const storageProjectId = cleanupProjectOnly ? projectId : undefined;
+  const storageQuery = useQuery({
+    queryKey: ["storage-report", storageProjectId ?? "all"],
+    queryFn: () => api.storageReport(storageProjectId),
+    enabled: !cleanupProjectOnly || Boolean(projectId)
+  });
 
   useEffect(() => {
     const chapters = treeQuery.data?.chapters ?? [];
@@ -89,14 +97,14 @@ export function ReleasePage() {
   }, [selectedChapterId, treeQuery.data]);
 
   const backupDownload = useMutation({
-    mutationFn: () => api.downloadBackup(),
+    mutationFn: () => api.downloadBackup(backupPassword || undefined),
     onSuccess: (file) => {
       saveDownloadedFile(file);
       setNotice("完整备份已生成。文件未包含凭据值、日志或未脱敏调试响应。");
     }
   });
   const preview = useMutation({
-    mutationFn: (file: File) => api.previewBackup(file),
+    mutationFn: (file: File) => api.previewBackup(file, backupPassword || undefined),
     onSuccess: (value) => {
       setRestoreStrategy(value.conflicts.length ? "replace_all" : "empty_only");
       setReplaceConfirmed(false);
@@ -106,7 +114,12 @@ export function ReleasePage() {
   const restore = useMutation({
     mutationFn: () => {
       if (!backupFile || !preview.data) throw new Error("请先校验备份文件");
-      return api.restoreBackup(backupFile, restoreStrategy, preview.data.archive_sha256);
+      return api.restoreBackup(
+        backupFile,
+        restoreStrategy,
+        preview.data.archive_sha256,
+        backupPassword || undefined
+      );
     },
     onSuccess: async (result) => {
       setConfirmAction(null);
@@ -131,9 +144,17 @@ export function ReleasePage() {
       await statusQuery.refetch();
     }
   });
+  const storageCleanup = useMutation({
+    mutationFn: () => api.cleanupStorage(storageProjectId),
+    onSuccess: async (result) => {
+      setConfirmAction(null);
+      setNotice(`历史数据清理完成：删除 ${result.deleted_records} 条记录，完整性检查正常。`);
+      await Promise.all([storageQuery.refetch(), statusQuery.refetch()]);
+    }
+  });
 
-  const operationError = statusQuery.error ?? projectsQuery.error ?? treeQuery.error ??
-    backupDownload.error ?? preview.error ?? restore.error ?? exportFile.error ?? logCleanup.error;
+  const operationError = statusQuery.error ?? projectsQuery.error ?? treeQuery.error ?? storageQuery.error ??
+    backupDownload.error ?? preview.error ?? restore.error ?? exportFile.error ?? logCleanup.error ?? storageCleanup.error;
   const previewRecords = useMemo(
     () => preview.data?.manifest.tables.reduce((sum, item) => sum + item.records, 0) ?? 0,
     [preview.data]
@@ -142,6 +163,14 @@ export function ReleasePage() {
     backupFile && preview.data?.can_restore &&
     (restoreStrategy !== "replace_all" || replaceConfirmed)
   );
+  const cleanupRecords = storageQuery.data?.cleanup.reduce((sum, item) => sum + item.records, 0) ?? 0;
+  const cleanupBytes = storageQuery.data?.cleanup.reduce((sum, item) => sum + item.estimated_bytes, 0) ?? 0;
+  const confirmTitle = confirmAction === "restore" ? "确认恢复备份" : confirmAction === "cleanup_storage" ? "确认清理历史数据" : "确认删除全部日志";
+  const confirmDescription = confirmAction === "restore"
+    ? (restoreStrategy === "replace_all" ? "当前数据库将在同一事务中被完整替换。" : "仅当当前数据库为空时才会导入。")
+    : confirmAction === "cleanup_storage"
+      ? "清理结果不可恢复；运行中的工作流、待审核数据和关键状态事件会被保留。"
+      : "当前日志文件内容将被立即删除。";
 
   return (
     <section className="page-stack release-page">
@@ -166,11 +195,29 @@ export function ReleasePage() {
       <div className="release-primary-grid">
         <section className="release-panel backup-panel">
           <header>
-            <div className="release-panel-title"><DatabaseBackup size={19} /><div><h2>完整备份与恢复</h2><span>格式 v1 · SHA-256 · 事务导入</span></div></div>
+            <div className="release-panel-title"><DatabaseBackup size={19} /><div><h2>完整备份与恢复</h2><span>格式 v2 · SHA-256 · 事务导入</span></div></div>
             <button className="primary-button" type="button" onClick={() => backupDownload.mutate()} disabled={backupDownload.isPending}>
               <Download size={16} />{backupDownload.isPending ? "正在生成" : "生成完整备份"}
             </button>
           </header>
+
+          <label className="backup-password-field">
+            <span><LockKeyhole size={16} />备份密码（可选）</span>
+            <input
+              aria-label="备份密码"
+              type="password"
+              autoComplete="new-password"
+              value={backupPassword}
+              minLength={8}
+              placeholder="留空生成普通 ZIP；填写后使用 AES-256-GCM 加密"
+              onChange={(event) => {
+                setBackupPassword(event.target.value);
+                preview.reset();
+                restore.reset();
+                setReplaceConfirmed(false);
+              }}
+            />
+          </label>
 
           <div className="backup-input-row">
             <label className="secondary-button file-picker">
@@ -178,7 +225,7 @@ export function ReleasePage() {
               <input
                 aria-label="选择备份文件"
                 type="file"
-                accept=".zip,.nasbackup.zip,application/zip"
+                accept=".zip,.nasbackup.zip,.nasbackup.enc,application/zip,application/octet-stream"
                 onChange={(event) => {
                   const file = event.target.files?.[0] ?? null;
                   setBackupFile(file);
@@ -245,6 +292,23 @@ export function ReleasePage() {
               <div><dt><LockKeyhole size={15} />Schema</dt><dd>{statusQuery.data?.migration_revision ?? "—"}</dd></div>
             </dl>
           </section>
+          <section className="release-panel storage-panel">
+            <header><div className="release-panel-title"><HardDrive size={19} /><div><h2>存储管理</h2><span>保留策略与安全清理预估</span></div></div></header>
+            <div className="storage-scope" role="group" aria-label="清理范围">
+              <button type="button" className={!cleanupProjectOnly ? "active" : ""} onClick={() => setCleanupProjectOnly(false)}>全部项目</button>
+              <button type="button" className={cleanupProjectOnly ? "active" : ""} disabled={!projectId} onClick={() => setCleanupProjectOnly(true)}>当前项目</button>
+            </div>
+            <dl className="storage-summary">
+              <div><dt>数据库</dt><dd>{formatBytes(storageQuery.data?.database_bytes ?? 0)}</dd></div>
+              <div><dt>WAL</dt><dd>{formatBytes(storageQuery.data?.wal_bytes ?? 0)}</dd></div>
+              <div><dt>可复用</dt><dd>{formatBytes(storageQuery.data?.reusable_bytes ?? 0)}</dd></div>
+            </dl>
+            <div className="storage-categories">
+              {storageQuery.data?.categories.map((item) => <div key={item.key}><span>{item.label}<small>{item.records.toLocaleString()} 条</small></span><strong>{formatBytes(item.bytes)}</strong></div>)}
+            </div>
+            <div className="storage-cleanup-summary"><span>可安全清理 <strong>{cleanupRecords.toLocaleString()}</strong> 条</span><small>预计 {formatBytes(cleanupBytes)}</small></div>
+            <button className="secondary-button" type="button" disabled={!cleanupRecords || storageCleanup.isPending} onClick={() => setConfirmAction("cleanup_storage")}><Trash2 size={16} />清理历史数据</button>
+          </section>
           <section className="release-panel log-panel">
             <header><div className="release-panel-title"><FileText size={19} /><div><h2>本地日志</h2><span>正文与凭据不写入日志</span></div></div></header>
             <div className="log-actions">
@@ -283,13 +347,13 @@ export function ReleasePage() {
 
       <Dialog
         open={confirmAction !== null}
-        title={confirmAction === "restore" ? "确认恢复备份" : "确认删除全部日志"}
-        description={confirmAction === "restore" ? (restoreStrategy === "replace_all" ? "当前数据库将在同一事务中被完整替换。" : "仅当当前数据库为空时才会导入。") : "当前日志文件内容将被立即删除。"}
+        title={confirmTitle}
+        description={confirmDescription}
         width="small"
         onClose={() => setConfirmAction(null)}
-        footer={<><button className="secondary-button" type="button" onClick={() => setConfirmAction(null)}>取消</button><button className={confirmAction === "restore" && restoreStrategy !== "replace_all" ? "primary-button" : "danger-button"} type="button" disabled={restore.isPending || logCleanup.isPending} onClick={() => confirmAction === "restore" ? restore.mutate() : logCleanup.mutate(true)}>{confirmAction === "restore" ? "确认恢复" : "确认删除"}</button></>}
+        footer={<><button className="secondary-button" type="button" onClick={() => setConfirmAction(null)}>取消</button><button className={confirmAction === "restore" && restoreStrategy !== "replace_all" ? "primary-button" : "danger-button"} type="button" disabled={restore.isPending || logCleanup.isPending || storageCleanup.isPending} onClick={() => confirmAction === "restore" ? restore.mutate() : confirmAction === "cleanup_storage" ? storageCleanup.mutate() : logCleanup.mutate(true)}>{confirmAction === "restore" ? "确认恢复" : confirmAction === "cleanup_storage" ? "确认清理" : "确认删除"}</button></>}
       >
-        {confirmAction === "restore" ? <div className="confirmation-summary"><FileArchive size={22} /><span><strong>{backupFile?.name}</strong><small>SHA-256 {preview.data?.archive_sha256.slice(0, 24)}…</small></span></div> : <div className="confirmation-summary"><Trash2 size={22} /><span><strong>{statusQuery.data?.log_files ?? 0} 个日志文件</strong><small>此操作不删除数据库、备份或导出文件。</small></span></div>}
+        {confirmAction === "restore" ? <div className="confirmation-summary"><FileArchive size={22} /><span><strong>{backupFile?.name}</strong><small>SHA-256 {preview.data?.archive_sha256.slice(0, 24)}…</small></span></div> : confirmAction === "cleanup_storage" ? <div className="confirmation-summary"><HardDrive size={22} /><span><strong>{cleanupRecords.toLocaleString()} 条历史记录</strong><small>预计释放 {formatBytes(cleanupBytes)}，清理后空间由 SQLite 复用。</small></span></div> : <div className="confirmation-summary"><Trash2 size={22} /><span><strong>{statusQuery.data?.log_files ?? 0} 个日志文件</strong><small>此操作不删除数据库、备份或导出文件。</small></span></div>}
       </Dialog>
     </section>
   );

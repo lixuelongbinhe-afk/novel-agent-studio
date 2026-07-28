@@ -15,6 +15,7 @@ htmlcov/
 .coverage
 playwright-report/
 test-results/
+artifacts/
 backend/data/
 backend/data-v2/
 backend/.env

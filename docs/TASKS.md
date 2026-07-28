@@ -25,7 +25,7 @@
 - [x] Merge same-number volumes before outline/manuscript import and generated tree writeback.
 - [x] Keep the approved volume outline authoritative when chapter batches omit volume headers.
 - [x] Increase detailed chapter-planning output capacity and replay the existing 80-chapter result.
-- [x] Pass 190 backend tests, Ruff, mypy, packaged-console smoke test, and packaged-GUI lifecycle test.
+- [x] Pass backend tests, Ruff, mypy, packaged-console smoke test, and packaged-GUI lifecycle test; current counts are CI-generated in `docs/generated/test-summary.md`.
 
 ## V2.2.4 - GitHub Issues #1 And #2
 
@@ -54,8 +54,8 @@
 - [x] Implement normalized gateway contracts, AdapterRegistry, and MockAdapter normal/JSON/usage/delay/timeout/rate-limit/error/stream modes.
 - [x] Build the Chinese React UI for project home, three-pane TipTap writing workspace, library, model center, and recovery.
 - [x] Add light/dark themes, desktop-first responsive layout, route-level code splitting, and stable narrow-screen behavior.
-- [x] Backend tests: 5 passed; Ruff and mypy passed.
-- [x] Frontend tests: 5 passed; TypeScript strict check passed.
+- [x] Backend tests, Ruff and mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
 - [x] Production build passed with route-level chunks and no size warning.
 - [x] Playwright E2E passed against an isolated database: migrate, create, write, reload, soft delete, restore, desktop layout, and 390px layout.
 
@@ -74,8 +74,8 @@
 - [x] Complete the model center UI: Provider/preset/model create and edit, delete, connection test, model sync/manual add, and selected-provider normal/stream debugging.
 - [x] Add deterministic local Fake Provider coverage for success, stream, structured output, tools, usage, 401/403/404/429/500/timeout, invalid JSON, HTML errors, interruption, and cancellation across all five protocols.
 - [x] Verify the Phase 2 migration against the existing Phase 1 database and a new empty database; both reached `9f43d2a6c1b8` with nine presets.
-- [x] Backend: 71 tests passed; Ruff and mypy passed.
-- [x] Frontend: 7 tests passed; TypeScript strict check passed; production build passed.
+- [x] Backend tests, Ruff and mypy passed; current counts are CI-generated.
+- [x] Frontend tests, TypeScript strict check and production build passed; current counts are CI-generated.
 - [x] Playwright E2E passed: create Mock Provider, test connection, sync model list, run normal/stream debug, plus the complete Phase 1 workflow and compact layout check.
 
 ## Phase 2 Limits
@@ -95,10 +95,10 @@
 - [x] Add secret-free disabled manifest import/export and transactional Provider+adapter setup with rollback on failure.
 - [x] Verify empty-database migration and safely upgrade unversioned Phase 1 legacy databases without data loss; incomplete legacy schemas fail explicitly instead of being stamped as current.
 - [x] Build the Chinese custom API workbench with adapter editing, credential-reference create/edit/delete, exact-Origin approval, normal and cancellable stream debugging, redacted request/result views, enable gating, and manifest import/export.
-- [x] Backend: 96 tests passed; Ruff and mypy passed. The current database is at `c31e6d7b924f`, contains all expected Phase 3 tables and nine presets, and produced zero common secret-pattern findings.
+- [x] Backend tests, Ruff and mypy passed. The database reached `c31e6d7b924f`, contained all expected Phase 3 tables and nine presets, and produced zero common secret-pattern findings.
 - [x] Frontend: TypeScript strict check passed.
-- [x] Frontend: 7 Vitest files and 11 tests passed; TypeScript strict check passed.
-- [x] Production Vite build passed: 1,753 modules transformed, route-level chunks emitted, and no size warning.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
+- [x] Production Vite build passed with route-level chunks and no size warning; current build metrics are CI-generated.
 - [x] Playwright E2E passed from an empty database: Phase 1/2 flow plus credential reference, transactional custom adapter setup, exact-Origin approval, redacted ordinary response, enablement, custom SSE stream, manifest download, desktop controls without overflow, and 390px layout.
 
 ## Phase 3 Limits
@@ -122,9 +122,9 @@
 - [x] Prevent fallback after partial streaming output and expose fallback, queue, warning, usage-source, and cost metadata to the UI and invocation ledger.
 - [x] Enforce per-request, project-daily, and Route-per-run token/cost budgets in the central backend execution path before Provider calls.
 - [x] Build the Chinese capability/price, Route, limit/budget, health/ledger, direct-model/Route debug, and preflight interfaces with working mutations and compact responsive layouts.
-- [x] Backend: 117 tests passed; Ruff and strict mypy passed across 41 source files.
-- [x] Frontend: 8 Vitest files and 13 tests passed; TypeScript strict check passed.
-- [x] Production Vite build passed: 1,754 modules transformed, route-level chunks emitted, and no size warning.
+- [x] Backend tests, Ruff and strict mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
+- [x] Production Vite build passed with route-level chunks and no size warning; current build metrics are CI-generated.
 - [x] Playwright E2E passed from an empty database through migration `e47a1d8f2c60`: real capability override/clear, standard probe, pricing, Route, limits, budget, preflight, ordinary/stream calls, health, ledger, desktop visual capture, and 390px no-overflow capture.
 
 ## Phase 4 Limits
@@ -154,9 +154,9 @@
 - [x] Build the React Flow workbench with palette drag/click, handles, connect, delete, copy, multi-select, zoom, controls, minimap, undo/redo, inspector, save, import/export, validation, run input, and responsive layout.
 - [x] Build run history and live monitoring with immutable graph/status overlays, node/Attempt inspection, partial/final output, usage/cost, event log, cancel, and three derived-run actions.
 - [x] Mark startup-orphaned pending/running work interrupted and retain enough snapshots, attempts, partial output, and events for a derived recovery run.
-- [x] Backend: 127 tests passed; Ruff passed; strict mypy passed across all 56 `app` and `tests` source files.
-- [x] Frontend: 9 Vitest files and 15 tests passed; TypeScript strict check passed.
-- [x] Production Vite build passed: 1,918 modules transformed, route-level chunks emitted, and no size warning.
+- [x] Backend tests, Ruff and strict mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
+- [x] Production Vite build passed with route-level chunks and no size warning; current build metrics are CI-generated.
 - [x] Playwright E2E passed from an empty database through migration `f8b2c4d6e810`: create Mock Provider/model, create Agent, create and validate Start-Agent-Output DAG, execute to real Mock completion, inspect output/run graph, and capture 1440x900 and 390x844 no-overflow views with the mobile Start and Output nodes visible.
 
 ## Phase 5 Limits
@@ -185,9 +185,9 @@
 - [x] Build complete editors for chapter summaries, scene state, manual links, Pins, classifications, Context policies, and per-Provider data policies.
 - [x] Add Context Retrieval to the React Flow palette and inspector with real Agent/model/policy/budget configuration and server-side validation.
 - [x] Verify retrieval correctness/explanation, budgets/truncation/blocking, Route boundary intersection, immutable snapshots, project isolation, revision conflicts, workflow injection, automatic injection, and no story writes.
-- [x] Backend: 133 tests passed; Ruff passed; strict mypy passed across all 63 `app` and `tests` source files.
-- [x] Frontend: 10 Vitest files and 17 tests passed; TypeScript strict check passed.
-- [x] Production Vite build passed: 1,922 modules transformed, route-level Context chunk emitted, and no size warning.
+- [x] Backend tests, Ruff and strict mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
+- [x] Production Vite build passed with a route-level Context chunk and no size warning; current build metrics are CI-generated.
 - [x] Playwright E2E passed from an empty database through `a6c8e0f2b419`: real FTS source explanation, exclusion/restore, priority, lock, Pin, secret boundary block, HTML-free actual context, unchanged manuscript, and 1440x900/390x844 no-overflow screenshots.
 
 ## Phase 6 Limits
@@ -214,8 +214,8 @@
 - [x] Add the Chinese Approval and Writeback workbench with a pending/history queue, frozen prose Diff, decision notes, edit/request/reject actions, per-item Change Set controls, conflict console, and append-only audit inspection.
 - [x] Add Human Approval, State Extraction, Proposed Changes, and Database Writeback nodes to the React Flow palette, inspector, validation, saved graph, run overlay, and waiting-state labels.
 - [x] Verify cancellation, expiration, stale revisions, superseded snapshots, idempotent decisions, maximum rounds, project boundaries, entity ambiguity, SQL-field rejection, no-write-before-approval, live conflicts, reapproval, rollback, versions, audits, and same-run resume.
-- [x] Backend: 146 tests passed; Ruff passed; strict mypy passed across all 74 `app` and `tests` source files.
-- [x] Frontend: 11 Vitest files and 19 tests passed; TypeScript strict check passed.
+- [x] Backend tests, Ruff and strict mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
 - [x] Production Vite build passed with a route-level Approval chunk and no size warning.
 - [x] Playwright E2E passed from an empty database through `d7e9f1a3c520`: real two-pause workflow, unchanged chapter before both approvals, frozen prose Diff, Change Set edit and replacement approval, same-run transaction writeback, chapter version, audit, and 1440x900/390x844 no-overflow screenshots.
 
@@ -240,17 +240,17 @@
 - [x] Fix the Edge bootstrap handoff lifecycle regression by tracking the actual Windows app window instead of waiting on the initial Edge process.
 - [x] Add a C# installer/uninstaller, Start Menu registration, uninstall registry metadata, data preservation choice, portable mode, ZIP, installer payload hash validation, and SHA-256 release manifest.
 - [x] Run packaged console and real GUI lifecycle smoke tests; verify installation, portable extraction, 15-second health retention, window-close shutdown, uninstall/data preservation, reinstall, and retained-data startup.
-- [x] Backend: 157 tests passed; Ruff passed; strict mypy passed across 83 source and test files.
-- [x] Frontend: 12 Vitest files and 22 tests passed; TypeScript strict check passed.
-- [x] Production Vite build passed with 1,925 modules and no chunk-size warning; PyInstaller build passed.
+- [x] Backend tests, Ruff and strict mypy passed; current counts are CI-generated.
+- [x] Frontend tests and TypeScript strict checking passed; current counts are CI-generated.
+- [x] Production Vite and PyInstaller builds passed; current build metrics are CI-generated.
 - [x] Final Playwright E2E passed from an empty database through Seed, writing, model/Agent/Workflow execution, context, two approvals, transactional writeback, version restore, backup, deletion, restore, and consistency verification.
 - [x] Complete README, changelog, final audit, security audit, performance audit, release checklist, and known limitations.
 
 ## Phase 8 Limits
 
-- The supported release is a local single-user Windows x64 application. It is not an authenticated, TLS-enabled, multi-tenant, or public service.
-- The installer is not commercially code-signed and depends on Microsoft Edge or WebView2 Runtime.
-- SQLite, logs, and backups are not encrypted at rest. Complete backups contain manuscript data and must be protected by the user.
+- The supported release is a local single-user Windows x64 application. Its random startup token is a local session boundary, not TLS-enabled multi-user authentication or a public-service security model.
+- The installer depends on Microsoft Edge or WebView2 Runtime. Signing is supported and can be required by release policy, but local builds without a configured certificate remain unsigned.
+- SQLite and logs are not encrypted at rest. Complete backups contain manuscript data; users should enable the optional password encryption or protect plaintext ZIP files themselves.
 - Live Provider availability and policy remain external; automated tests never call paid APIs.
 - Closing the application stops active work. Startup marks unfinished runs interrupted and preserves snapshots and recovery paths instead of claiming background continuation.
 
@@ -264,7 +264,7 @@
 - [x] Add minor automatic conflict correction and explicit major-conflict author decisions.
 - [x] Add manual, automatic and pausable countdown continuation after approval.
 - [x] Mark orphaned studio generation jobs interrupted on startup and preserve tray execution.
-- [x] Verify 169 backend tests, 28 frontend tests, Ruff, strict mypy, TypeScript, production build and 2 Playwright E2E tests.
+- [x] Verify backend/frontend tests, Ruff, strict mypy, TypeScript, production build and Playwright E2E; current counts are CI-generated.
 - [x] Fix manuscript review writeback controls and refresh the open chapter editor after an approved Agent draft changes the server revision.
 - [x] Record the complete acceptance matrix in `docs/V2_REQUIREMENTS_ACCEPTANCE.md`.
 - [x] Fix long chapter plans by batching each planning Agent in groups of ten and enforcing the configured chapter count.
@@ -283,7 +283,7 @@
 - [x] Require an explicit current-chapter/next-chapter choice; append current-chapter continuation without replacing imported prose.
 - [x] Pause after a major continuity conflict until the author chooses a resolution; retain approval-only AI edits and protective snapshots.
 - [x] Add backend and frontend regressions for import, PDF extraction, immutable originals, approval gates, planning, append writeback, conflict pause, entry UI, and start choice.
-- [x] Verify 176 backend tests, 31 frontend tests, Ruff, strict mypy, TypeScript, production build and 3 Playwright E2E tests.
+- [x] Verify backend/frontend tests, Ruff, strict mypy, TypeScript, production build and Playwright E2E; current counts are CI-generated.
 
 ## V2.2.1 Context Window And Right Rail
 
@@ -292,13 +292,27 @@
 - [x] Chunk long manuscripts and style references, share Map results across continuation Agents, and synthesize bounded summaries.
 - [x] Recompress and retry when a Provider still reports `context_too_long`, without silently changing models.
 - [x] Keep long chat replies inside an independently scrolling message stream with the composer fixed at the rail bottom.
-- [x] Verify 179 backend tests, 32 frontend tests and the 18-message responsive Playwright regression.
+- [x] Verify backend/frontend tests and the long-message responsive Playwright regression; current counts are CI-generated.
 
 ## V2.2.2 Button And Project Deletion Audit
 
 - [x] Fix the nested SQLAlchemy transaction that prevented project deletion from reaching the database.
 - [x] Surface project deletion failures and keep the row visible when persistence fails.
-- [x] Audit all 104 button declarations reachable from the current desktop routes and reject missing or empty handlers in CI.
+- [x] Audit all visible application button declarations across the source tree and reject missing or empty handlers in CI.
 - [x] Exercise project deletion through component, backend-route, and persisted Playwright regressions.
 - [x] Exercise sidebar navigation, provider lifecycle, custom adapter lifecycle, manifest import/export, and credential deletion.
-- [x] Verify 180 backend tests, 41 frontend tests, Ruff, strict mypy, and TypeScript strict checking.
+- [x] Verify backend/frontend tests, Ruff, strict mypy and TypeScript strict checking; current counts are CI-generated.
+
+## Engineering Risk Remediation
+
+- [x] Batch streaming checkpoints by time and size, append only new deltas, and benchmark write reduction.
+- [x] Serialize SQLite writes through a bounded priority queue with safe drain, WAL checkpoint and cancellation resilience.
+- [x] Add global, per-run, per-provider, context and database-heavy workflow concurrency limits with fairness metrics.
+- [x] Split workflow event persistence, model attempt execution and scheduler controls into independently tested modules.
+- [x] Move workflow SSE and model debug streaming into feature hooks; split the Studio right rail into a feature component.
+- [x] Add configurable retention, dry-run cleanup, storage reporting and integrity checks.
+- [x] Stream backup creation/upload, offload restore work from the event loop and support optional AES-256-GCM encryption.
+- [x] Add random per-launch local API tokens and enforce loopback-only desktop binding.
+- [x] Use hash-locked Python dependencies in CI/Release, frozen frontend locks, pinned Actions, audits, SBOM and checksums.
+- [x] Add migration preflight/backup/journal/rollback and eliminate desktop port TOCTOU binding.
+- [x] Add generated test, build, security and benchmark reports plus a scheduled two-hour workflow soak.

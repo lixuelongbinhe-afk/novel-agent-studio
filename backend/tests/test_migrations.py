@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,81 @@ def test_empty_database_reaches_studio_v2_with_presets(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_failed_migration_restores_online_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "failed-upgrade.db"
+    url = database_url(database)
+    command.upgrade(alembic_config(url), PHASE_1_REVISION)
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO projects "
+                    "(id, title, summary, language, target_words, created_at, updated_at, revision) "
+                    "VALUES (1, 'must survive', '', 'zh-CN', 1000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    def fail_after_write(_config: Config, _revision: str) -> None:
+        damaged = create_engine(url)
+        try:
+            with damaged.begin() as connection:
+                connection.execute(text("DELETE FROM projects"))
+        finally:
+            damaged.dispose()
+        raise RuntimeError("simulated migration failure")
+
+    monkeypatch.setattr("app.migrations.command.upgrade", fail_after_write)
+    with pytest.raises(RuntimeError, match="simulated migration failure"):
+        upgrade_database(url)
+
+    restored = create_engine(url)
+    try:
+        with restored.connect() as connection:
+            assert connection.scalar(text("SELECT title FROM projects WHERE id = 1")) == (
+                "must survive"
+            )
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                PHASE_1_REVISION
+            )
+    finally:
+        restored.dispose()
+    journal = json.loads(
+        database.with_suffix(".db.migration.json").read_text(encoding="utf-8")
+    )
+    assert journal["status"] == "failed_restored"
+
+
+def test_migration_refuses_insufficient_backup_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "no-space.db"
+    url = database_url(database)
+    command.upgrade(alembic_config(url), PHASE_1_REVISION)
+
+    class DiskUsage:
+        total = 1
+        used = 1
+        free = 0
+
+    monkeypatch.setattr("app.migrations.shutil.disk_usage", lambda _path: DiskUsage())
+    with pytest.raises(RuntimeError, match="Insufficient disk space"):
+        upgrade_database(url)
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                PHASE_1_REVISION
+            )
+    finally:
+        engine.dispose()
+
+
 def test_unversioned_phase_1_database_is_upgraded_without_data_loss(
     tmp_path: Path,
 ) -> None:
@@ -98,6 +174,12 @@ def test_unversioned_phase_1_database_is_upgraded_without_data_loss(
         engine.dispose()
 
     upgrade_database(url)
+    journal = json.loads(
+        (tmp_path / "legacy-phase-1.db.migration.json").read_text(encoding="utf-8")
+    )
+    assert journal["status"] == "completed"
+    assert journal["from_revision"] == "legacy-unversioned"
+    assert Path(journal["backup"]).is_file()
     engine = create_engine(url)
     try:
         tables = set(inspect(engine).get_table_names())

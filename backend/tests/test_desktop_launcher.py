@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -31,6 +32,34 @@ class FakeWindow:
 
     def destroy(self) -> None:
         self.destroyed = True
+
+
+def test_random_port_remains_reserved_until_server_uses_socket() -> None:
+    listener = launcher.reserve_listener(0)
+    port = int(listener.getsockname()[1])
+    competitor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(OSError):
+            competitor.bind((launcher.HOST, port))
+    finally:
+        competitor.close()
+        listener.close()
+
+    reusable = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        reusable.bind((launcher.HOST, port))
+    finally:
+        reusable.close()
+
+
+def test_requested_port_is_validated_before_binding() -> None:
+    with pytest.raises(ValueError):
+        launcher.reserve_listener(65_536)
+
+
+def test_non_loopback_listener_is_rejected() -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        launcher.reserve_listener(0, "0.0.0.0")
 
 
 def test_portable_data_stays_beside_executable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

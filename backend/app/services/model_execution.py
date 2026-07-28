@@ -609,6 +609,7 @@ async def _call_once(
         warnings_json=json.dumps(warnings, ensure_ascii=False),
     )
     try:
+        db.commit()
         budget_reservation = await current_budget_manager().reserve(
             db,
             BudgetContext(
@@ -619,31 +620,36 @@ async def _call_once(
             tokens=preflight.context.total_tokens,
             cost=preflight.estimated_cost,
         )
+        db.commit()
         db.add(invocation)
         db.commit()
-        lease = await current_rate_limiter().acquire(
-            matching_rate_limits(
-                db,
-                LimitContext(
-                    project_id=payload.project_id,
-                    provider_id=candidate.provider.id,
-                    model_id=candidate.profile.id,
-                    route_id=resolution.route.id if resolution.route is not None else None,
-                    workflow_id=payload.workflow_id,
-                ),
+        descriptors = matching_rate_limits(
+            db,
+            LimitContext(
+                project_id=payload.project_id,
+                provider_id=candidate.provider.id,
+                model_id=candidate.profile.id,
+                route_id=resolution.route.id if resolution.route is not None else None,
+                workflow_id=payload.workflow_id,
             ),
+        )
+        db.commit()
+        lease = await current_rate_limiter().acquire(
+            descriptors,
             preflight.context.total_tokens,
         )
         invocation.status = "running"
         invocation.queue_ms = lease.queue_ms
         health = claim_provider(db, candidate.provider.id)
         db.commit()
+        runtime = model_service.provider_runtime(db, candidate.provider.id)
+        pricing = active_pricing(db, candidate.profile.id)
+        adapter = model_gateway.registry.get(runtime.protocol)
+        db.commit()
 
         started = time.perf_counter()
         response: NormalizedModelResponse
         try:
-            runtime = model_service.provider_runtime(db, candidate.provider.id)
-            adapter = model_gateway.registry.get(runtime.protocol)
             response = await adapter.complete(request, runtime)
         except ProviderRequestError as exc:
             response = _control_error_response(request, exc.error)
@@ -666,7 +672,6 @@ async def _call_once(
         )
         response.usage = usage
         response.warnings = list(dict.fromkeys([*warnings, *response.warnings]))
-        pricing = active_pricing(db, candidate.profile.id)
         actual_cost = estimate_cost(pricing, usage, tool_calls=len(response.tool_calls))
         if health is not None:
             record_provider_result(health, error=response.error, latency_ms=latency_ms)
@@ -766,6 +771,7 @@ async def _stream_candidate(
     buffered = prepared.structured_mode != "none"
     saw_delta = False
     try:
+        db.commit()
         budget = await current_budget_manager().reserve(
             db,
             BudgetContext(
@@ -776,19 +782,22 @@ async def _stream_candidate(
             tokens=preflight.context.total_tokens,
             cost=preflight.estimated_cost,
         )
+        db.commit()
         db.add(invocation)
         db.commit()
-        lease = await current_rate_limiter().acquire(
-            matching_rate_limits(
-                db,
-                LimitContext(
-                    payload.project_id,
-                    candidate.provider.id,
-                    candidate.profile.id,
-                    resolution.route.id if resolution.route is not None else None,
-                    payload.workflow_id,
-                ),
+        descriptors = matching_rate_limits(
+            db,
+            LimitContext(
+                payload.project_id,
+                candidate.provider.id,
+                candidate.profile.id,
+                resolution.route.id if resolution.route is not None else None,
+                payload.workflow_id,
             ),
+        )
+        db.commit()
+        lease = await current_rate_limiter().acquire(
+            descriptors,
             preflight.context.total_tokens,
         )
         invocation.status = "running"
@@ -796,7 +805,9 @@ async def _stream_candidate(
         health = claim_provider(db, candidate.provider.id)
         db.commit()
         runtime = model_service.provider_runtime(db, candidate.provider.id)
+        pricing = active_pricing(db, candidate.profile.id)
         adapter = model_gateway.registry.get(runtime.protocol)
+        db.commit()
         started = time.perf_counter()
         yield NormalizedStreamEvent(sequence=0, event="start")
         for warning in preflight.warnings:
@@ -865,7 +876,7 @@ async def _stream_candidate(
                     request_id=response.request_id,
                 )
         actual_cost = estimate_cost(
-            active_pricing(db, candidate.profile.id),
+            pricing,
             usage,
             tool_calls=len(response.tool_calls),
         )
