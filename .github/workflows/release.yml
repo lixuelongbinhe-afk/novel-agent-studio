@@ -47,11 +47,19 @@ jobs:
       - run: pnpm audit --audit-level high --ignore GHSA-qwww-vcr4-c8h2
         working-directory: frontend
       - run: ./scripts/package-desktop.ps1
+      - name: Stage release artifacts inside the workspace
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/release | Out-Null
+          Copy-Item ../outputs/NovelAgentStudio-Setup-*.exe artifacts/release/
+          Copy-Item ../outputs/NovelAgentStudio-Portable-*.zip artifacts/release/
+          Copy-Item ../outputs/SHA256SUMS.txt artifacts/release/
+          Copy-Item ../outputs/backend-sbom.cdx.json artifacts/release/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: NovelAgentStudio-${{ github.ref_name }}
           path: |
-            ../outputs/NovelAgentStudio-Setup-*.exe
-            ../outputs/NovelAgentStudio-Portable-*.zip
-            ../outputs/SHA256SUMS.txt
-            ../outputs/backend-sbom.cdx.json
+            artifacts/release/NovelAgentStudio-Setup-*.exe
+            artifacts/release/NovelAgentStudio-Portable-*.zip
+            artifacts/release/SHA256SUMS.txt
+            artifacts/release/backend-sbom.cdx.json
