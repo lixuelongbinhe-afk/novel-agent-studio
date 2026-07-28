@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.2.8] - 2026-07-28
+
+### Fixed
+
+- GitHub CI 与 Release 统一使用 Node 24，兼容锁定的 pnpm 11.9 工具链。
+- 修复数据导出页面在较慢环境中可能使用首次渲染的空章节 ID，导致单章 Markdown 导出请求缺少章节参数的问题。
+
+### Verification
+
+- GitHub CI 完整通过后端测试、并发专项、Ruff、严格 mypy、前端测试、TypeScript、生产构建和 Playwright E2E。
+
 ## [2.2.7] - 2026-07-26
 
 ### Fixed

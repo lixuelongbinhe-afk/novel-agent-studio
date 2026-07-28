@@ -1,8 +1,8 @@
 # Benchmark summary
 
-Generated: `2026-07-27T20:02:39.168622+00:00`  
-Version: `2.2.7`  
-Commit: `33107baedc31a9c25a4d4e6e90d7db853f1bdf40`
+Generated: `2026-07-28T06:00:52.536432+00:00`  
+Version: `2.2.8`  
+Commit: `ad5661fd0f443039f90815ef452b5c7154cdb2cd`
 
 | Benchmark | Input chunks | Input bytes | Persisted batches | Write reduction | Time (s) | Peak traced bytes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

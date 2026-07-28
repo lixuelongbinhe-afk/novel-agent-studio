@@ -1,6 +1,6 @@
 {
   "name": "novel-agent-studio-frontend",
-  "version": "2.2.7",
+  "version": "2.2.8",
   "private": true,
   "packageManager": "pnpm@11.9.0",
   "type": "module",
