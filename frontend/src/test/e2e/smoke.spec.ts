@@ -2,13 +2,13 @@ import { expect, test } from "@playwright/test";
 
 test("all implemented workspaces are reachable from real routes", async ({ page }) => {
   const routes: Array<[string, RegExp]> = [
-    ["/approvals", /审批与写回|先选择项目/],
-    ["/workspace", /卷 \/ 章 \/ 场景|先选择项目/],
+    ["/approvals", /还没有项目/],
+    ["/workspace", /先创建一个小说项目/],
     ["/release", /数据与发布/],
-    ["/context", /上下文记忆|先选择项目/],
-    ["/library", /资料库|先选择项目/],
+    ["/context", /还没有项目/],
+    ["/library", /资料库需要一个项目/],
     ["/recovery", /回收站|先选择项目/],
-    ["/workflows", /智能体工作流|先选择项目/],
+    ["/workflows", /还没有项目/],
     ["/model-center", /模型中心/]
   ];
 
@@ -60,7 +60,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
   await expect(page.getByText("创作阶段")).toBeVisible();
   await expect(page.getByText("完成字数")).toBeVisible();
-  await expect(page.getByText("待审核")).toBeVisible();
+  await expect(page.getByRole("main").getByText("待审核", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /新建第一本小说/ })).toBeVisible();
   await page.screenshot({ path: "test-results/v2-home-desktop.png" });
 
@@ -102,7 +102,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await page.screenshot({ path: "test-results/v2-version-compare.png" });
   await page.getByRole("button", { name: "关闭审核编辑器" }).click();
 
-  await page.getByTitle("审核").click();
+  await page.locator(".rail-tabs").getByTitle("审核", { exact: true }).click();
   for (const title of ["定位与主题策划", "世界观架构师", "规则审校员", "文风与边界编辑", "参考文风分析 · author-style.md"]) {
     const item = page.locator(".review-item").filter({ hasText: title });
     if (await item.count()) {
@@ -173,7 +173,7 @@ test("approved Agent draft is written into the chapter editor", async ({ page })
   expect(generateResponse.ok()).toBe(true);
 
   await page.goto(`/studio/${projectId}`);
-  await page.getByTitle("审核").click();
+  await page.locator(".rail-tabs").getByTitle("审核", { exact: true }).click();
   const reviewItem = page.locator(".review-item").first();
   await expect(reviewItem.getByRole("button", { name: "通过并写入正文" })).toBeVisible();
   await reviewItem.getByRole("button", { name: "通过并写入正文" }).click();
