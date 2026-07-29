@@ -18,6 +18,7 @@ from app import models
 from app.api import studio as studio_api
 from app.database import Base
 from app.repositories import word_count
+from app.schemas import NormalizedProviderError
 from app.services.usage_control import estimate_text_tokens
 from app.schemas.studio import (
     ArtifactDecision,
@@ -92,6 +93,37 @@ def test_deepseek_setup_uses_current_v4_model_metadata(db: Session) -> None:
     )
     assert profile is not None
     assert profile.context_window == 1_000_000
+
+
+def test_provider_secret_failure_keeps_original_error_and_compensates(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deleted: list[int] = []
+
+    def fail_secret(_provider_id: int, _secret: str) -> None:
+        raise RuntimeError("Windows Credential Manager unavailable")
+
+    monkeypatch.setattr(studio, "set_provider_secret", fail_secret)
+    monkeypatch.setattr(
+        studio, "delete_provider_secret", lambda provider_id: deleted.append(provider_id)
+    )
+    payload = ProviderSetup(
+        preset="deepseek",
+        name="Secret failure",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-v4-pro",
+        api_key="test-only-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="Credential Manager unavailable"):
+        studio_api.setup_provider(payload, db)
+
+    assert len(deleted) == 1
+    assert db.scalar(
+        select(func.count(models.ProviderAccount.id)).where(
+            models.ProviderAccount.name == "Secret failure"
+        )
+    ) == 0
 
 
 def test_deepseek_setup_rejects_retired_model_aliases() -> None:
@@ -893,6 +925,62 @@ async def test_multi_agent_generation_requires_review_before_advancing(db: Sessi
     )
     db.commit()
     assert studio.project_overview(db, project_id)["state"]["stage"] == "characters"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_failure_keeps_audit_but_no_business_output(
+    db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    original_model_call = studio._model_call
+    calls = 0
+
+    async def fail_second_call(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        response = await original_model_call(*args, **kwargs)  # type: ignore[arg-type]
+        if calls == 2:
+            response.error = NormalizedProviderError(
+                code="timeout",
+                message="second Agent timed out",
+                retryable=True,
+            )
+        return response
+
+    monkeypatch.setattr(studio, "_model_call", fail_second_call)
+    with pytest.raises(HTTPException, match="业务产出和阶段推进未提交"):
+        await studio.generate(
+            db,
+            project_id,
+            "world",
+            GenerateRequest(
+                idempotency_key="world-partial-failure", use_demo_model=True
+            ),
+        )
+
+    assert db.scalar(
+        select(func.count(models.ModelInvocation.id)).where(
+            models.ModelInvocation.project_id == project_id
+        )
+    ) == 2
+    assert db.scalar(
+        select(func.count(models.CreativeArtifact.id)).where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.kind == "world",
+        )
+    ) == 0
+    state = studio._state(db, project_id)
+    assert state.stage == "idea"
+    job = db.scalar(
+        select(models.GenerationJob).where(
+            models.GenerationJob.project_id == project_id
+        )
+    )
+    assert job is not None
+    assert job.status == "failed"
+    assert "模型调用与已产生的费用记录已保留" in job.error_message
+    assert f"1/{len(studio.PHASE_AGENTS['world'])}" in job.error_message
 
 
 @pytest.mark.asyncio

@@ -331,3 +331,4 @@
 - [x] Apply SSRF validation, DNS pinning, original Host headers, and TLS SNI preservation to every built-in Provider adapter.
 - [x] Replace weak workflow locks with explicit run lifecycle cleanup and derive migration backup decisions from the dynamic Alembic head.
 - [x] Bind SQLite PRAGMAs to actual SQLite connections and align active generation lease uniqueness with soft-delete business state.
+- [x] Preserve model-cost audit records while keeping failed multi-Agent business output atomic, and retain credential-store compensation without nested rollback.

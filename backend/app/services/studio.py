@@ -743,6 +743,8 @@ async def generate(
     if state.budget_paused:
         raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, payload.use_demo_model)
+    completed_calls = 0
+    total_calls = 0
     try:
         lease = generation_jobs.acquire(
             db,
@@ -814,7 +816,6 @@ async def generate(
             else [(1, 1)]
         )
         total_calls = len(phase_agents) * len(chapter_ranges)
-        completed_calls = 0
         for index, (agent_name, responsibility) in enumerate(phase_agents):
             agent_parts: list[str] = []
             for range_start, range_end in chapter_ranges:
@@ -958,7 +959,6 @@ async def generate(
             for scene_index, scene in enumerate(scenes):
                 scene_metadata = dict(metadata)
                 scene_metadata.update({"scene_id": scene.id, "scene_index": scene_index, "series_key": f"scene:{scene.id}"})
-                _supersede_series(db, project_id, str(scene_metadata["series_key"]))
                 scene_prompt = (
                     f"请只写小说《{project.title}》中“{chapter.title}”的场景正文。\n"
                     f"场景：{scene.title}\n场景要求：{scene.synopsis or '按章节大纲完成本场景。'}\n"
@@ -982,6 +982,12 @@ async def generate(
                 content = scene_response.text.strip()
                 previous_scene = content
                 artifacts.append(_new_artifact(project_id, "scene_draft", scene.title, content, scene_metadata, scene_index))
+            for artifact in artifacts:
+                _supersede_series(
+                    db,
+                    project_id,
+                    str(_json_object(artifact.metadata_json)["series_key"]),
+                )
         else:
             metadata["series_key"] = f"{artifact_kind}:{payload.chapter_id or 0}:{payload.mode}"
             _supersede_series(db, project_id, str(metadata["series_key"]))
@@ -1018,14 +1024,30 @@ async def generate(
             "idempotent_replay": False,
         }
     except asyncio.CancelledError:
-        generation_jobs.fail(db, job.id, "生成任务已取消", cancelled=True)
+        generation_jobs.fail(
+            db,
+            job.id,
+            _generation_failure_message(
+                "生成任务已取消", completed_calls, total_calls
+            ),
+            cancelled=True,
+        )
         raise
     except HTTPException as exc:
-        generation_jobs.fail(db, job.id, str(exc.detail))
+        generation_jobs.fail(
+            db,
+            job.id,
+            _generation_failure_message(
+                str(exc.detail), completed_calls, total_calls
+            ),
+        )
         raise
     except Exception as exc:
-        generation_jobs.fail(db, job.id, str(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        message = _generation_failure_message(
+            str(exc), completed_calls, total_calls
+        )
+        generation_jobs.fail(db, job.id, message)
+        raise HTTPException(status_code=502, detail=message) from exc
 
 
 def _generation_job_artifacts(
@@ -1049,6 +1071,10 @@ def _generation_job_artifacts(
         return matches
     fallback = db.get(models.CreativeArtifact, job.result_artifact_id or 0)
     return [fallback] if fallback is not None else []
+
+
+def _generation_failure_message(reason: str, completed: int, total: int) -> str:
+    return generation_jobs.failure_message(reason, completed, total)
 
 
 async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, Any]:
@@ -1445,7 +1471,6 @@ def setup_provider(db: Session, payload: ProviderSetup) -> dict[str, Any]:
         try:
             set_provider_secret(provider.id, payload.api_key)
         except Exception:
-            db.rollback()
             delete_provider_secret(provider.id)
             raise
     return _provider_record(db, provider, profile)

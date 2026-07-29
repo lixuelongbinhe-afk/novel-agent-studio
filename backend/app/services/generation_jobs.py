@@ -103,6 +103,14 @@ def fail(db: Session, job_id: int, message: str, *, cancelled: bool = False) -> 
     db.commit()
 
 
+def failure_message(reason: str, completed: int, total: int) -> str:
+    progress = f"{completed}/{total}" if total > 0 else "准备阶段"
+    return (
+        f"生成失败（已完成模型调用 {progress}）。模型调用与已产生的费用记录已保留；"
+        f"业务产出和阶段推进未提交，可以安全重试。原因：{reason}"
+    )[:2000]
+
+
 def _by_idempotency_key(
     db: Session, project_id: int, idempotency_key: str
 ) -> models.GenerationJob | None:

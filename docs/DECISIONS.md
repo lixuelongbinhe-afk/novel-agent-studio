@@ -66,3 +66,9 @@
 - Proposed Change Sets are the only bridge from model output to story mutation. Their operation and field allowlists deliberately exclude arbitrary table/column selection and SQL.
 - Conflict resolution changes the proposal, so rebase and manual merge require a replacement approval. A previously approved hash cannot authorize a different set of writes.
 - Version creation, accepted writes, audit append, revisions, and FTS refresh are one transaction. Audit completeness takes precedence over partial progress.
+
+## Studio Generation Transactions
+
+- Provider calls never run inside one long SQLite transaction. Model invocations, usage, and real costs are audit facts and remain committed even when a later Agent fails.
+- Creative artifacts, superseding prior versions, stage changes, and generation completion form the business-output boundary and commit only after every required call succeeds.
+- A failed generation rolls back pending business output, preserves invocation accounting, and stores an actionable progress summary on the failed job.
