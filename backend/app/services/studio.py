@@ -746,7 +746,7 @@ async def generate(
     completed_calls = 0
     total_calls = 0
     try:
-        lease = generation_jobs.acquire(
+        lease = await generation_jobs.acquire_async(
             db,
             project_id=project_id,
             phase=phase,

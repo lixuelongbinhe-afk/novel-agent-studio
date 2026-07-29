@@ -132,7 +132,7 @@ async def execute_run(run_id: int, *, cancel_event: asyncio.Event | None = None)
 
     try:
         while True:
-            if cancellation.is_set() or _cancel_requested(run_id):
+            if cancellation.is_set() or await _cancel_requested(run_id):
                 cancellation.set()
                 await _cancel_running(running)
                 await _finish_cancelled(run_id)
@@ -456,7 +456,7 @@ async def _execute_agent_node(
 ) -> Any:
     config = cast(dict[str, Any], node["config"])
     agent_id = int(config["agent_id"])
-    agent = dict(_agent_snapshot(run_id, agent_id))
+    agent = dict(await _agent_snapshot(run_id, agent_id))
     if forced_output_schema is not None:
         agent["output_mode"] = "json"
         agent["output_schema"] = forced_output_schema
@@ -700,7 +700,7 @@ async def _execute_human_approval_node(
     try:
         while True:
             current = await _read_runtime_approval(current_id)
-            if _cancel_requested(run_id):
+            if await _cancel_requested(run_id):
                 raise asyncio.CancelledError
             if current.status == "pending":
                 await approval_signals.wait(current.id, 0.5)
@@ -1267,7 +1267,7 @@ async def _wait_for_rebased_change_set_approval(
 ) -> int:
     requested_hash: str | None = None
     while True:
-        if _cancel_requested(run_id):
+        if await _cancel_requested(run_id):
             raise asyncio.CancelledError
         def inspect_or_create(db: Session) -> tuple[int | None, str | None]:
             row = cast(
@@ -1772,7 +1772,11 @@ async def _cancel_running(running: dict[str, asyncio.Task[NodeExecutionResult]])
     running.clear()
 
 
-def _cancel_requested(run_id: int) -> bool:
+async def _cancel_requested(run_id: int) -> bool:
+    return await asyncio.to_thread(_cancel_requested_sync, run_id)
+
+
+def _cancel_requested_sync(run_id: int) -> bool:
     with SessionLocal() as db:
         run = db.get(models.WorkflowRun, run_id)
         return bool(run and run.cancel_requested)
@@ -1993,7 +1997,11 @@ async def _update_node_warnings(run_id: int, node_key: str, warnings: list[str])
     )
 
 
-def _invocation_totals(correlation_id: str) -> dict[str, Any]:
+async def _invocation_totals(correlation_id: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_invocation_totals_sync, correlation_id)
+
+
+def _invocation_totals_sync(correlation_id: str) -> dict[str, Any]:
     with SessionLocal() as db:
         rows = db.scalars(
             select(models.ModelInvocation)
@@ -2013,7 +2021,15 @@ def _invocation_totals(correlation_id: str) -> dict[str, Any]:
         }
 
 
-def _check_agent_budget(
+async def _check_agent_budget(
+    run_id: int, node_key: str, agent: dict[str, Any], preflight: Any
+) -> None:
+    await asyncio.to_thread(
+        _check_agent_budget_sync, run_id, node_key, agent, preflight
+    )
+
+
+def _check_agent_budget_sync(
     run_id: int, node_key: str, agent: dict[str, Any], preflight: Any
 ) -> None:
     budget = cast(dict[str, Any], agent.get("budget", {}))
@@ -2050,7 +2066,11 @@ def _check_agent_budget(
             raise WorkflowNodeError("agent_budget_cost", "Agent 费用预算不足")
 
 
-def _agent_snapshot(run_id: int, agent_id: int) -> dict[str, Any]:
+async def _agent_snapshot(run_id: int, agent_id: int) -> dict[str, Any]:
+    return await asyncio.to_thread(_agent_snapshot_sync, run_id, agent_id)
+
+
+def _agent_snapshot_sync(run_id: int, agent_id: int) -> dict[str, Any]:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         snapshot = _json_object(run.snapshot_json)
@@ -2060,7 +2080,11 @@ def _agent_snapshot(run_id: int, agent_id: int) -> dict[str, Any]:
     raise WorkflowNodeError("agent_snapshot_missing", f"运行快照中没有 Agent #{agent_id}")
 
 
-def _snapshot_item(run_id: int, key: str, item_id: int) -> dict[str, Any]:
+async def _snapshot_item(run_id: int, key: str, item_id: int) -> dict[str, Any]:
+    return await asyncio.to_thread(_snapshot_item_sync, run_id, key, item_id)
+
+
+def _snapshot_item_sync(run_id: int, key: str, item_id: int) -> dict[str, Any]:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         snapshot = _json_object(run.snapshot_json)
@@ -2070,7 +2094,11 @@ def _snapshot_item(run_id: int, key: str, item_id: int) -> dict[str, Any]:
     raise WorkflowNodeError("snapshot_item_missing", f"运行快照中没有 {key} #{item_id}")
 
 
-def _plan_node(run_id: int, node_key: str) -> dict[str, Any]:
+async def _plan_node(run_id: int, node_key: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_plan_node_sync, run_id, node_key)
+
+
+def _plan_node_sync(run_id: int, node_key: str) -> dict[str, Any]:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         plan = _json_object(run.plan_json)

@@ -72,3 +72,8 @@
 - Provider calls never run inside one long SQLite transaction. Model invocations, usage, and real costs are audit facts and remain committed even when a later Agent fails.
 - Creative artifacts, superseding prior versions, stage changes, and generation completion form the business-output boundary and commit only after every required call succeeds.
 - A failed generation rolls back pending business output, preserves invocation accounting, and stores an actionable progress summary on the failed job.
+
+## Event Loop Isolation
+
+- Studio generation, chat, and proposal decisions run on one dedicated background event loop because they combine async Provider I/O with the existing synchronous SQLAlchemy session model. This keeps the FastAPI/SSE loop responsive without creating a new loop per request or sharing one HTTP client across transient loops.
+- Workflow scheduler hot-path reads and model-execution hooks offload synchronous SQLAlchemy work to worker threads. Async SQLAlchemy remains out of scope for the local single-process architecture.

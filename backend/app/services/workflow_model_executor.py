@@ -24,10 +24,10 @@ from app.services.workflow_types import WorkflowNodeError
 class WorkflowModelExecutionHooks:
     session_factory: Callable[[], Session]
     event_bus: WorkflowEventBus
-    snapshot_item: Callable[[int, str, int], dict[str, Any]]
-    plan_node: Callable[[int, str], dict[str, Any]]
-    check_budget: Callable[[int, str, dict[str, Any], Any], None]
-    invocation_totals: Callable[[str], dict[str, Any]]
+    snapshot_item: Callable[[int, str, int], Awaitable[dict[str, Any]]]
+    plan_node: Callable[[int, str], Awaitable[dict[str, Any]]]
+    check_budget: Callable[[int, str, dict[str, Any], Any], Awaitable[None]]
+    invocation_totals: Callable[[str], Awaitable[dict[str, Any]]]
     update_attempt_accounting: Callable[[int, dict[str, Any]], Awaitable[None]]
     update_node_warnings: Callable[[int, str, list[str]], Awaitable[None]]
 
@@ -51,10 +51,11 @@ async def execute_agent_attempt(
     model_name = "route-selected"
     provider_id: int | None = None
     if profile_id is not None:
-        profile = hooks.snapshot_item(run_id, "models", profile_id)
+        profile = await hooks.snapshot_item(run_id, "models", profile_id)
         model_name = str(profile["name"])
         provider_id = int(profile["provider_account_id"])
-    config = cast(dict[str, Any], hooks.plan_node(run_id, node_key).get("config", {}))
+    plan_node = await hooks.plan_node(run_id, node_key)
+    config = cast(dict[str, Any], plan_node.get("config", {}))
     messages = []
     if system_prompt:
         messages.append(
@@ -95,7 +96,7 @@ async def execute_agent_attempt(
     )
     with hooks.session_factory() as db:
         preflight = model_execution.preflight_execution(db, payload)
-        hooks.check_budget(run_id, node_key, agent, preflight)
+        await hooks.check_budget(run_id, node_key, agent, preflight)
         db.commit()
         text = ""
         warnings: list[str] = []
@@ -132,7 +133,7 @@ async def execute_agent_attempt(
                     provider_error = event.error.model_dump(mode="json")
         finally:
             await stream_buffer.close()
-        invocation_values = hooks.invocation_totals(correlation_id)
+        invocation_values = await hooks.invocation_totals(correlation_id)
         await hooks.update_attempt_accounting(attempt_id, invocation_values)
         await hooks.update_node_warnings(run_id, node_key, warnings)
         if provider_error is not None:

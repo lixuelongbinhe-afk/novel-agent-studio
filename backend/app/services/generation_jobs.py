@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from time import sleep
 
@@ -77,6 +78,32 @@ def acquire(
         ) from exc
     db.refresh(job)
     return GenerationLease(job, False)
+
+
+async def acquire_async(
+    db: Session,
+    *,
+    project_id: int,
+    phase: str,
+    chapter_id: int | None,
+    mode: str,
+    idempotency_key: str,
+    label: str,
+    model_name: str,
+    model_reason: str,
+) -> GenerationLease:
+    return await asyncio.to_thread(
+        acquire,
+        db,
+        project_id=project_id,
+        phase=phase,
+        chapter_id=chapter_id,
+        mode=mode,
+        idempotency_key=idempotency_key,
+        label=label,
+        model_name=model_name,
+        model_reason=model_reason,
+    )
 
 
 def complete(

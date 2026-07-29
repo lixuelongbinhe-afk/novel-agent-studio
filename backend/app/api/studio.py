@@ -24,6 +24,7 @@ from app.schemas.studio import (
     StudioStateUpdate,
 )
 from app.services import document_import, studio
+from app.services.studio_worker import studio_worker
 
 
 router = APIRouter(prefix="/studio", tags=["studio-v2"])
@@ -146,7 +147,9 @@ async def generate_phase(
     payload: GenerateRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return await studio.generate(db, project_id, phase, payload)
+    return await studio_worker.run(
+        lambda: studio.generate(db, project_id, phase, payload)
+    )
 
 
 @router.post("/projects/{project_id}/chat")
@@ -155,7 +158,7 @@ async def chat(
     payload: ChatRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return await studio.chat(db, project_id, payload)
+    return await studio_worker.run(lambda: studio.chat(db, project_id, payload))
 
 
 @router.post("/projects/{project_id}/messages/{message_id}/proposal")
@@ -165,7 +168,11 @@ async def decide_message_proposal(
     payload: MessageProposalDecision,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return await studio.decide_message_proposal(db, project_id, message_id, payload.action)
+    return await studio_worker.run(
+        lambda: studio.decide_message_proposal(
+            db, project_id, message_id, payload.action
+        )
+    )
 
 
 @router.post("/projects/{project_id}/outline/preview")

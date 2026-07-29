@@ -30,6 +30,7 @@ from app.database import SessionLocal, checkpoint_sqlite
 from app.migrations import upgrade_database
 from app.services.gateway_http import shared_http_client
 from app.services.studio import mark_interrupted_generation_jobs
+from app.services.studio_worker import studio_worker
 from app.services.storage_management import cleanup_storage
 from app.services.runtime_maintenance import runtime_maintenance
 from app.services.workflow_runtime import event_bus, workflow_run_manager
@@ -76,6 +77,7 @@ async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         await runtime_maintenance.shutdown()
         await workflow_run_manager.shutdown()
         await event_bus.shutdown()
+        await studio_worker.shutdown()
         checkpoint_sqlite(truncate=True)
         await shared_http_client.aclose()
 
