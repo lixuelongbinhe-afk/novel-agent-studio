@@ -1006,7 +1006,17 @@ class GenerationJob(TimestampMixin, Base):
         UniqueConstraint(
             "project_id", "idempotency_key", name="uq_generation_job_idempotency"
         ),
-        UniqueConstraint("active_scope_key", name="uq_generation_job_active_scope"),
+        Index(
+            "uq_generation_job_active_scope",
+            "active_scope_key",
+            unique=True,
+            sqlite_where=text(
+                "deleted_at IS NULL AND status IN ('queued','running')"
+            ),
+            postgresql_where=text(
+                "deleted_at IS NULL AND status IN ('queued','running')"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

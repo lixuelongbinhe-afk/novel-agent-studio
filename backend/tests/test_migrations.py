@@ -71,6 +71,14 @@ def test_empty_database_reaches_studio_v2_with_presets(tmp_path: Path) -> None:
         assert {"tokenizer_name", "tokenizer_source"} <= model_columns
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == current_schema_revision()
+            active_scope_index = connection.scalar(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'uq_generation_job_active_scope'"
+                )
+            )
+            assert "deleted_at IS NULL" in str(active_scope_index)
+            assert "status IN ('queued','running')" in str(active_scope_index)
             assert connection.scalar(text("SELECT COUNT(*) FROM provider_presets")) == 9
             assert connection.scalar(
                 text("SELECT default_model FROM provider_presets WHERE slug = 'deepseek'")

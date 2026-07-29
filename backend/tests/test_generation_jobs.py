@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Barrier
 
@@ -88,5 +89,92 @@ def test_failed_lease_releases_scope_for_next_request(tmp_path: Path) -> None:
             assert second.replayed is False
             assert second.job.id != first.job.id
             assert db.get(models.GenerationJob, first.job.id).status == "failed"  # type: ignore[union-attr]
+    finally:
+        engine.dispose()
+
+
+def test_soft_deleted_active_lease_does_not_block_new_job(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'generation-deleted.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as db:
+            project = models.Project(title="软删除租约")
+            db.add(project)
+            db.commit()
+            first = generation_jobs.acquire(
+                db,
+                project_id=project.id,
+                phase="world",
+                chapter_id=None,
+                mode="new",
+                idempotency_key="deleted-first",
+                label="世界观",
+                model_name="Mock",
+                model_reason="test",
+            )
+            first.job.deleted_at = datetime.now(timezone.utc)
+            db.commit()
+
+            second = generation_jobs.acquire(
+                db,
+                project_id=project.id,
+                phase="world",
+                chapter_id=None,
+                mode="new",
+                idempotency_key="deleted-second",
+                label="世界观",
+                model_name="Mock",
+                model_reason="retry",
+            )
+            assert second.replayed is False
+            assert second.job.id != first.job.id
+    finally:
+        engine.dispose()
+
+
+def test_completed_lease_releases_scope_for_new_job(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'generation-complete.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as db:
+            project = models.Project(title="完成租约")
+            db.add(project)
+            db.commit()
+            first = generation_jobs.acquire(
+                db,
+                project_id=project.id,
+                phase="world",
+                chapter_id=None,
+                mode="new",
+                idempotency_key="complete-first",
+                label="世界观",
+                model_name="Mock",
+                model_reason="test",
+            )
+            artifact = models.CreativeArtifact(
+                project_id=project.id,
+                kind="world",
+                title="结果",
+            )
+            db.add(artifact)
+            db.flush()
+            generation_jobs.complete(
+                db, first.job, result_artifact_id=artifact.id
+            )
+            db.commit()
+
+            second = generation_jobs.acquire(
+                db,
+                project_id=project.id,
+                phase="world",
+                chapter_id=None,
+                mode="new",
+                idempotency_key="complete-second",
+                label="世界观",
+                model_name="Mock",
+                model_reason="retry",
+            )
+            assert second.replayed is False
+            assert second.job.id != first.job.id
     finally:
         engine.dispose()

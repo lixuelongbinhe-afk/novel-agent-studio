@@ -743,17 +743,23 @@ async def generate(
     if state.budget_paused:
         raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, payload.use_demo_model)
-    lease = generation_jobs.acquire(
-        db,
-        project_id=project_id,
-        phase=phase,
-        chapter_id=payload.chapter_id,
-        mode=payload.mode,
-        idempotency_key=payload.idempotency_key,
-        label=f"{STAGE_LABELS.get(phase, phase)} · {len(phase_agents)} 个 Agent",
-        model_name=profile.display_name if profile is not None else "内置演示模型",
-        model_reason=reason,
-    )
+    try:
+        lease = generation_jobs.acquire(
+            db,
+            project_id=project_id,
+            phase=phase,
+            chapter_id=payload.chapter_id,
+            mode=payload.mode,
+            idempotency_key=payload.idempotency_key,
+            label=f"{STAGE_LABELS.get(phase, phase)} · {len(phase_agents)} 个 Agent",
+            model_name=profile.display_name if profile is not None else "内置演示模型",
+            model_reason=reason,
+        )
+    except generation_jobs.GenerationLeaseConflict as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="生成任务租约暂时不可用，请稍后重试",
+        ) from exc
     job = lease.job
     if lease.replayed:
         replay_artifacts = _generation_job_artifacts(db, job)

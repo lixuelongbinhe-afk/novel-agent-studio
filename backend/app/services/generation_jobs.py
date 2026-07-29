@@ -19,6 +19,10 @@ class GenerationLease:
     replayed: bool
 
 
+class GenerationLeaseConflict(RuntimeError):
+    pass
+
+
 def scope_key(project_id: int, phase: str, chapter_id: int | None, mode: str) -> str:
     return f"project:{project_id}:phase:{phase}:chapter:{chapter_id or 0}:mode:{mode}"
 
@@ -61,14 +65,16 @@ def acquire(
     except (IntegrityError, OperationalError) as exc:
         db.rollback()
         for _ in range(20):
+            db.rollback()
             winner = _by_idempotency_key(
                 db, project_id, idempotency_key
             ) or _active_in_scope(db, scope)
             if winner is not None:
                 return GenerationLease(winner, True)
-            db.rollback()
             sleep(0.05)
-        raise exc
+        raise GenerationLeaseConflict(
+            "Another generation request holds this scope but its lease is not visible"
+        ) from exc
     db.refresh(job)
     return GenerationLease(job, False)
 

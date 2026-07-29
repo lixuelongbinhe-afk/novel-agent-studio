@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import models
+from app import database, models
 from app.database import Base
 from app.services.database_writer import DatabaseWriter
 
@@ -217,3 +217,23 @@ def test_sqlite_connections_enable_concurrency_pragmas(tmp_path: Path) -> None:
     assert int(foreign_keys) == 1
     assert int(synchronous) == 1
     engine.dispose()
+
+
+def test_sqlite_pragmas_follow_actual_engine_not_global_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        database.settings,
+        "database_url",
+        "postgresql://example.invalid/application",
+    )
+    engine = create_engine(f"sqlite:///{(tmp_path / 'actual-sqlite.db').as_posix()}")
+    try:
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() >= 5_000
+            assert str(
+                connection.exec_driver_sql("PRAGMA journal_mode").scalar_one()
+            ).lower() == "wal"
+    finally:
+        engine.dispose()

@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from pathlib import Path
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -37,16 +38,18 @@ _checkpoint_last_result: tuple[int, int, int] | None = None
 
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection: Any, connection_record: object) -> None:
-    if settings.database_url.startswith("sqlite"):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute(
-            f"PRAGMA wal_autocheckpoint={settings.sqlite_wal_autocheckpoint_pages}"
-        )
-        cursor.close()
+    del connection_record
+    if not isinstance(dbapi_connection, sqlite3.Connection):
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute(
+        f"PRAGMA wal_autocheckpoint={settings.sqlite_wal_autocheckpoint_pages}"
+    )
+    cursor.close()
 
 
 def checkpoint_sqlite(*, truncate: bool = False) -> tuple[int, int, int] | None:
