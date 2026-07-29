@@ -22,7 +22,7 @@ PHASE_4_REVISION = "e47a1d8f2c60"
 PHASE_5_REVISION = "f8b2c4d6e810"
 PHASE_6_REVISION = "a6c8e0f2b419"
 PHASE_7_REVISION = "d7e9f1a3c520"
-STUDIO_V2_REVISION = "f1a2b3c4d5e6"
+STUDIO_V2_REVISION = "a2b4c6d8e010"
 PHASE_1_TABLES = {
     "projects",
     "provider_accounts",

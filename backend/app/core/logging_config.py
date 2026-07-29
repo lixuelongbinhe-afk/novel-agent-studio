@@ -80,6 +80,9 @@ def cleanup_log_files(*, delete_all: bool = False) -> LogCleanupRead:
     deleted = 0
     retained = 0
     for path in list_log_files():
+        if not delete_all and path.name == "studio.log":
+            retained += 1
+            continue
         modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         should_delete = delete_all or modified < cutoff
         if not should_delete:

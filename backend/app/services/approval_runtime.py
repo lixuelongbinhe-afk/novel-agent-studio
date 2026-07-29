@@ -9,7 +9,9 @@ class ApprovalSignalBus:
 
     def notify(self, *approval_ids: int) -> None:
         for approval_id in approval_ids:
-            self._events.setdefault(approval_id, asyncio.Event()).set()
+            event = self._events.get(approval_id)
+            if event is not None:
+                event.set()
 
     async def wait(self, approval_id: int, timeout: float) -> bool:
         event = self._events.setdefault(approval_id, asyncio.Event())
@@ -17,8 +19,11 @@ class ApprovalSignalBus:
             await asyncio.wait_for(event.wait(), timeout=max(0.05, timeout))
         except asyncio.TimeoutError:
             return False
-        event.clear()
-        return True
+        else:
+            return True
+        finally:
+            if self._events.get(approval_id) is event:
+                self._events.pop(approval_id, None)
 
     def discard(self, approval_id: int) -> None:
         self._events.pop(approval_id, None)

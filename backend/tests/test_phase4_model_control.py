@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Callable, Generator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -660,6 +661,38 @@ async def test_layered_limiter_queues_times_out_and_cancels() -> None:
     with pytest.raises(ModelControlError) as rpm_timeout:
         await limiter.acquire([rpm_descriptor], 1)
     assert rpm_timeout.value.error.code == "queue_timeout"
+
+
+@pytest.mark.asyncio
+async def test_layered_limiter_evicts_expired_policy_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = LayeredRateLimiter()
+    started = time.monotonic()
+    for policy_id in range(1_000, 1_200):
+        descriptor = LimitDescriptor(
+            id=policy_id,
+            max_concurrency=None,
+            requests_per_minute=10,
+            tokens_per_minute=1_000,
+            queue_timeout_seconds=1,
+        )
+        lease = await limiter.acquire([descriptor], 1)
+        await lease.release(1)
+    assert limiter.state_count() == 200
+
+    monkeypatch.setattr("app.services.rate_limits.time.monotonic", lambda: started + 61)
+    current = LimitDescriptor(
+        id=2_000,
+        max_concurrency=1,
+        requests_per_minute=None,
+        tokens_per_minute=None,
+        queue_timeout_seconds=1,
+    )
+    lease = await limiter.acquire([current], 1)
+    assert limiter.state_count() == 1
+    await lease.release(1)
+    assert limiter.state_count() == 0
 
 
 def test_all_six_rate_limit_scopes_match_one_request() -> None:

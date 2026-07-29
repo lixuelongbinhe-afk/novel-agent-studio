@@ -32,6 +32,8 @@ from app.services.workflow_runtime import workflow_run_manager
 
 
 router = APIRouter(tags=["agents-workflows"])
+_SSE_MIN_POLL_SECONDS = 0.15
+_SSE_MAX_POLL_SECONDS = 1.5
 
 
 @router.get("/agents", response_model=list[AgentDefinitionRead])
@@ -249,6 +251,7 @@ async def stream_workflow_events(
 
     async def generate() -> AsyncIterator[str]:
         current = cursor
+        poll_seconds = _SSE_MIN_POLL_SECONDS
         sse_metrics.connected(reconnect=bool(last_event_id or after))
         try:
             if snapshot:
@@ -271,12 +274,17 @@ async def stream_workflow_events(
                     current = event.sequence
                     sse_metrics.event_sent(event.created_at)
                     yield _sse(current, event.event, event.model_dump(mode="json"))
+                poll_seconds = (
+                    _SSE_MIN_POLL_SECONDS
+                    if events
+                    else min(_SSE_MAX_POLL_SECONDS, poll_seconds * 1.5)
+                )
                 if (
                     run.status in {"completed", "failed", "cancelled", "interrupted"}
                     and current >= run.event_sequence
                 ):
                     return
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(poll_seconds)
         finally:
             sse_metrics.disconnected()
 

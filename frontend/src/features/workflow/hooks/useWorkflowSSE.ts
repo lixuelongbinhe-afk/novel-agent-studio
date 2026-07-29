@@ -10,6 +10,9 @@ type WorkflowSSEOptions = {
   snapshotEvents: WorkflowRunEvent[];
 };
 
+export const MAX_RETAINED_WORKFLOW_EVENTS = 500;
+const MAX_RECONNECT_DELAY_MS = 8_000;
+
 export function useWorkflowSSE({
   runId,
   projectId,
@@ -49,16 +52,20 @@ export function useWorkflowSSE({
         frameId = null;
         const next = bufferedEvents;
         bufferedEvents = [];
-        setLiveEvents((current) => mergeWorkflowEvents(current, next));
+        setLiveEvents((current) =>
+          mergeWorkflowEvents(current, next, MAX_RETAINED_WORKFLOW_EVENTS)
+        );
       });
     };
 
     const listen = async () => {
+      let reconnectDelay = 500;
       while (!stopped && !controller.signal.aborted) {
         try {
           await api.streamWorkflowEvents(
             runId,
             (message) => {
+              reconnectDelay = 500;
               if ("events" in message.data && "run" in message.data) {
                 enqueueEvents(message.data.events);
               } else if ("sequence" in message.data) {
@@ -80,7 +87,8 @@ export function useWorkflowSSE({
           break;
         } catch {
           if (controller.signal.aborted || stopped) break;
-          await delay(500);
+          await delay(reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
         }
       }
     };
@@ -94,18 +102,27 @@ export function useWorkflowSSE({
   }, [active, projectId, queryClient, runId]);
 
   return useMemo(
-    () => mergeWorkflowEvents(snapshotEvents, liveEvents),
+    () =>
+      mergeWorkflowEvents(
+        snapshotEvents,
+        liveEvents,
+        MAX_RETAINED_WORKFLOW_EVENTS
+      ),
     [liveEvents, snapshotEvents]
   );
 }
 
 export function mergeWorkflowEvents(
   first: WorkflowRunEvent[],
-  second: WorkflowRunEvent[]
+  second: WorkflowRunEvent[],
+  limit = Number.POSITIVE_INFINITY
 ): WorkflowRunEvent[] {
   const values = new Map<number, WorkflowRunEvent>();
   for (const event of [...first, ...second]) values.set(event.sequence, event);
-  return [...values.values()].sort((left, right) => left.sequence - right.sequence);
+  const merged = [...values.values()].sort(
+    (left, right) => left.sequence - right.sequence
+  );
+  return merged.length > limit ? merged.slice(-limit) : merged;
 }
 
 function delay(milliseconds: number): Promise<void> {

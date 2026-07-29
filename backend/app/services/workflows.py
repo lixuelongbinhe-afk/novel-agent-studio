@@ -320,7 +320,7 @@ def read_run_snapshot(db: Session, run_id: int) -> WorkflowRunSnapshotRead:
         run=run_read(db, row),
         snapshot=_json_object(row.snapshot_json),
         plan=_json_object(row.plan_json),
-        events=list_events(db, run_id),
+        events=list_recent_events(db, run_id),
     )
 
 
@@ -337,6 +337,22 @@ def list_events(
         .order_by(models.WorkflowRunEvent.sequence)
         .limit(limit)
     ).all()
+    return [event_read(row) for row in rows]
+
+
+def list_recent_events(
+    db: Session, run_id: int, *, limit: int = 500
+) -> list[WorkflowRunEventRead]:
+    get_or_404(db, models.WorkflowRun, run_id)
+    rows = list(
+        db.scalars(
+            select(models.WorkflowRunEvent)
+            .where(models.WorkflowRunEvent.workflow_run_id == run_id)
+            .order_by(models.WorkflowRunEvent.sequence.desc())
+            .limit(limit)
+        ).all()
+    )
+    rows.reverse()
     return [event_read(row) for row in rows]
 
 

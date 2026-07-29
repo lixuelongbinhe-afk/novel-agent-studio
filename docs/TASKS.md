@@ -316,3 +316,14 @@
 - [x] Use hash-locked Python dependencies in CI/Release, frozen frontend locks, pinned Actions, audits, SBOM and checksums.
 - [x] Add migration preflight/backup/journal/rollback and eliminate desktop port TOCTOU binding.
 - [x] Add generated test, build, security and benchmark reports plus a scheduled two-hour workflow soak.
+
+## Six-Month Runtime Hardening
+
+- [x] Run storage retention, log cleanup and passive WAL checkpoints periodically during continuous uptime.
+- [x] Reclaim per-run workflow locks, approval wake signals and expired rate-limit policy state.
+- [x] Bound browser workflow-event memory and use capped reconnect backoff plus adaptive idle polling.
+- [x] Return the latest bounded workflow event window instead of the oldest unbounded history slice.
+- [x] Exclude superseded artifact bodies from project overview and query version series on demand.
+- [x] Defer permanent snapshot payloads when only snapshot metadata is displayed.
+- [x] Add retention-oriented event and context indexes through a forward/backward Alembic migration.
+- [x] Record the extreme-case findings and residual operational limits in `docs/LONG_RUNNING_RELIABILITY_AUDIT.md`.

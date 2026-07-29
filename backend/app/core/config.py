@@ -39,6 +39,12 @@ class Settings(BaseSettings):
         30, ge=5, le=500, alias="NAS_CONTEXT_BUILDS_PER_PROJECT"
     )
     storage_auto_gc: bool = Field(True, alias="NAS_STORAGE_AUTO_GC")
+    runtime_maintenance_interval_seconds: float = Field(
+        6 * 60 * 60,
+        ge=60,
+        le=7 * 24 * 60 * 60,
+        alias="NAS_RUNTIME_MAINTENANCE_INTERVAL_SECONDS",
+    )
     max_backup_bytes: int = Field(
         256 * 1024 * 1024, ge=1024, alias="NAS_MAX_BACKUP_BYTES"
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from collections.abc import Generator
 from pathlib import Path
 
@@ -116,6 +117,19 @@ async def test_ten_thousand_deltas_use_bounded_checkpoint_transactions(
             workflow_runtime._json_object(item.payload_json)["delta"]
             for item in events
         ) == delta * 10_000
+
+
+@pytest.mark.asyncio
+async def test_event_bus_does_not_retain_per_run_locks(
+    stream_database: tuple[sessionmaker[Session], Engine, int, int],
+) -> None:
+    _factory, _engine, run_id, _attempt_id = stream_database
+
+    for _ in range(100):
+        await workflow_runtime.event_bus.emit(run_id, "heartbeat")
+    gc.collect()
+
+    assert workflow_runtime.event_bus.active_lock_count() == 0
 
 
 @pytest.mark.asyncio

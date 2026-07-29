@@ -108,6 +108,44 @@ def add_project_model(
     return project, provider, profile
 
 
+def test_run_snapshot_returns_the_latest_bounded_event_window(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with session_factory() as db, db.begin():
+        project, _provider, _profile = add_project_model(db)
+        workflow = models.Workflow(project_id=project.id, name="Long-running workflow")
+        db.add(workflow)
+        db.flush()
+        run = models.WorkflowRun(
+            workflow_id=workflow.id,
+            project_id=project.id,
+            workflow_revision=1,
+            status="completed",
+            plan_json="{}",
+            snapshot_json="{}",
+            event_sequence=650,
+        )
+        db.add(run)
+        db.flush()
+        db.add_all(
+            models.WorkflowRunEvent(
+                workflow_run_id=run.id,
+                sequence=sequence,
+                event_type="heartbeat",
+                payload_json="{}",
+            )
+            for sequence in range(1, 651)
+        )
+        run_id = run.id
+
+    with session_factory() as db:
+        snapshot = workflows.read_run_snapshot(db, run_id)
+
+    assert len(snapshot.events) == 500
+    assert snapshot.events[0].sequence == 151
+    assert snapshot.events[-1].sequence == 650
+
+
 def agent_payload(
     project_id: int,
     model_id: int,

@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.orm import Session, load_only
 
 from app import models
 from app.repositories import word_count
@@ -534,6 +534,7 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
         select(models.CreativeArtifact)
         .where(
             models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.status != "superseded",
             models.CreativeArtifact.deleted_at.is_(None),
         )
         .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id.desc())
@@ -555,6 +556,17 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
     ).all()
     snapshots = db.scalars(
         select(models.ProjectSnapshot)
+        .options(
+            load_only(
+                models.ProjectSnapshot.id,
+                models.ProjectSnapshot.project_id,
+                models.ProjectSnapshot.kind,
+                models.ProjectSnapshot.label,
+                models.ProjectSnapshot.reason,
+                models.ProjectSnapshot.permanent,
+                models.ProjectSnapshot.created_at,
+            )
+        )
         .where(models.ProjectSnapshot.project_id == project_id)
         .order_by(models.ProjectSnapshot.created_at.desc(), models.ProjectSnapshot.id.desc())
     ).all()
@@ -651,21 +663,28 @@ def update_artifact(
 def artifact_versions(db: Session, artifact_id: int) -> list[dict[str, Any]]:
     current = _artifact(db, artifact_id)
     metadata = _json_object(current.metadata_json)
-    series_key = str(metadata.get("series_key") or f"legacy:{current.kind}:{current.title}")
-    candidates = db.scalars(
-        select(models.CreativeArtifact)
-        .where(
-            models.CreativeArtifact.project_id == current.project_id,
-            models.CreativeArtifact.kind == current.kind,
+    stored_series_key = str(metadata.get("series_key") or "")
+    series_expression = func.json_extract(
+        models.CreativeArtifact.metadata_json, "$.series_key"
+    )
+    statement = select(models.CreativeArtifact).where(
+        models.CreativeArtifact.project_id == current.project_id,
+        models.CreativeArtifact.kind == current.kind,
+    )
+    if stored_series_key:
+        statement = statement.where(series_expression == stored_series_key)
+    else:
+        statement = statement.where(
+            models.CreativeArtifact.title == current.title,
+            or_(series_expression.is_(None), series_expression == ""),
         )
-        .order_by(models.CreativeArtifact.version_number.desc(), models.CreativeArtifact.id.desc())
+    candidates = db.scalars(
+        statement.order_by(
+            models.CreativeArtifact.version_number.desc(),
+            models.CreativeArtifact.id.desc(),
+        )
     ).all()
-    return [
-        _artifact_record(item)
-        for item in candidates
-        if str(_json_object(item.metadata_json).get("series_key") or f"legacy:{item.kind}:{item.title}")
-        == series_key
-    ]
+    return [_artifact_record(item) for item in candidates]
 
 
 def decide_artifact(
@@ -1755,12 +1774,15 @@ def _supersede_series(db: Session, project_id: int, series_key: str) -> None:
             models.CreativeArtifact.project_id == project_id,
             models.CreativeArtifact.status != "superseded",
             models.CreativeArtifact.deleted_at.is_(None),
+            func.json_extract(
+                models.CreativeArtifact.metadata_json, "$.series_key"
+            )
+            == series_key,
         )
     ).all()
     for item in artifacts:
-        if str(_json_object(item.metadata_json).get("series_key") or "") == series_key:
-            item.status = "superseded"
-            item.revision += 1
+        item.status = "superseded"
+        item.revision += 1
 
 
 def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:

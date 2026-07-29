@@ -85,6 +85,7 @@ class LayeredRateLimiter:
         async with self._condition:
             while True:
                 now = time.monotonic()
+                self._prune_states(now)
                 for descriptor in descriptors:
                     self._prune(self._states.setdefault(descriptor.id, _LimitState()), now)
                 if all(
@@ -94,8 +95,10 @@ class LayeredRateLimiter:
                     for descriptor in descriptors:
                         state = self._states.setdefault(descriptor.id, _LimitState())
                         state.active += 1
-                        state.requests.append((lease_id, now))
-                        state.tokens[lease_id] = (now, estimated_tokens)
+                        if descriptor.requests_per_minute is not None:
+                            state.requests.append((lease_id, now))
+                        if descriptor.tokens_per_minute is not None:
+                            state.tokens[lease_id] = (now, estimated_tokens)
                     return RateLimitLease(
                         self,
                         lease_id,
@@ -128,7 +131,11 @@ class LayeredRateLimiter:
                     started_at, _ = state.tokens[lease.lease_id]
                     state.tokens[lease.lease_id] = (started_at, max(0, consumed_tokens))
                 self._prune(state, now)
+            self._prune_states(now)
             self._condition.notify_all()
+
+    def state_count(self) -> int:
+        return len(self._states)
 
     def _available(self, descriptor: LimitDescriptor, estimated_tokens: int) -> bool:
         state = self._states.setdefault(descriptor.id, _LimitState())
@@ -168,6 +175,12 @@ class LayeredRateLimiter:
                     max(0.01, min(created for created, _ in state.tokens.values()) + 60 - now)
                 )
         return min(waits)
+
+    def _prune_states(self, now: float) -> None:
+        for descriptor_id, state in list(self._states.items()):
+            self._prune(state, now)
+            if state.active == 0 and not state.requests and not state.tokens:
+                self._states.pop(descriptor_id, None)
 
 
 _limiters: weakref.WeakKeyDictionary[

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import weakref
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -21,7 +22,9 @@ class WorkflowEventBus:
     """Serialize workflow persistence and publish monotonically ordered events."""
 
     def __init__(self) -> None:
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         settings = get_settings()
         self._writer = DatabaseWriter(
             lambda: SessionLocal(),
@@ -133,6 +136,9 @@ class WorkflowEventBus:
 
     def writer_metrics(self) -> DatabaseWriterMetrics:
         return self._writer.metrics()
+
+    def active_lock_count(self) -> int:
+        return len(self._locks)
 
 
 def _dump(value: Any) -> str:

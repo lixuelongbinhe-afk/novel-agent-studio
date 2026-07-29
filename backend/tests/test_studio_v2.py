@@ -921,8 +921,10 @@ async def test_regenerate_one_planning_item_supersedes_old_version(db: Session) 
 
     current = studio.project_overview(db, project_id)["artifacts"]
     series = [item for item in current if item["metadata"].get("agent_name") == agent_name]
+    history = studio.artifact_versions(db, int(replacement["artifacts"][0]["id"]))
     assert len(replacement["artifacts"]) == 1
-    assert {item["status"] for item in series} == {"pending", "superseded"}
+    assert {item["status"] for item in series} == {"pending"}
+    assert {item["status"] for item in history} == {"pending", "superseded"}
 
 
 @pytest.mark.asyncio

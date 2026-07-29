@@ -585,6 +585,17 @@ class WorkflowRunEvent(Base):
     __tablename__ = "workflow_run_events"
     __table_args__ = (
         UniqueConstraint("workflow_run_id", "sequence", name="uq_run_event_sequence"),
+        Index(
+            "ix_workflow_run_events_type_created_run",
+            "event_type",
+            "created_at",
+            "workflow_run_id",
+        ),
+        Index(
+            "ix_workflow_run_events_created_run",
+            "created_at",
+            "workflow_run_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -733,6 +744,14 @@ class ProviderDataPolicy(TimestampMixin, Base):
 
 class ContextBuild(Base):
     __tablename__ = "context_builds"
+    __table_args__ = (
+        Index(
+            "ix_context_builds_project_created_id",
+            "project_id",
+            "created_at",
+            "id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(

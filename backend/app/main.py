@@ -30,6 +30,7 @@ from app.migrations import upgrade_database
 from app.services.gateway_http import shared_http_client
 from app.services.studio import mark_interrupted_generation_jobs
 from app.services.storage_management import cleanup_storage
+from app.services.runtime_maintenance import runtime_maintenance
 from app.services.workflow_runtime import event_bus, workflow_run_manager
 from app.services.workflows import mark_interrupted_runs
 
@@ -64,9 +65,11 @@ async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         mark_interrupted_generation_jobs(db)
         if settings.storage_auto_gc:
             cleanup_storage(db, dry_run=False)
+    runtime_maintenance.start()
     try:
         yield
     finally:
+        await runtime_maintenance.shutdown()
         await workflow_run_manager.shutdown()
         await event_bus.shutdown()
         checkpoint_sqlite(truncate=True)
