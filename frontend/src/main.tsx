@@ -10,6 +10,14 @@ const HomePage = lazy(() => import("./pages/HomePage").then((module) => ({ defau
 const StudioPage = lazy(() => import("./pages/StudioPage").then((module) => ({ default: module.StudioPage })));
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 const CustomApiPage = lazy(() => import("./pages/CustomApiPage").then((module) => ({ default: module.CustomApiPage })));
+const ApprovalPage = lazy(() => import("./pages/ApprovalPage").then((module) => ({ default: module.ApprovalPage })));
+const WorkspacePage = lazy(() => import("./pages/WorkspacePage").then((module) => ({ default: module.WorkspacePage })));
+const ReleasePage = lazy(() => import("./pages/ReleasePage").then((module) => ({ default: module.ReleasePage })));
+const ContextPage = lazy(() => import("./pages/ContextPage").then((module) => ({ default: module.ContextPage })));
+const LibraryPage = lazy(() => import("./pages/LibraryPage").then((module) => ({ default: module.LibraryPage })));
+const RecoveryPage = lazy(() => import("./pages/RecoveryPage").then((module) => ({ default: module.RecoveryPage })));
+const AgentWorkflowPage = lazy(() => import("./pages/AgentWorkflowPage").then((module) => ({ default: module.AgentWorkflowPage })));
+const ModelCenterPage = lazy(() => import("./pages/ModelCenterPage").then((module) => ({ default: module.ModelCenterPage })));
 
 function deferred(element: React.ReactNode) {
   return <Suspense fallback={<div className="route-loading">正在打开...</div>}>{element}</Suspense>;
@@ -29,7 +37,15 @@ const router = createBrowserRouter([
       { path: "/", element: deferred(<HomePage />) },
       { path: "/studio/:projectId", element: deferred(<StudioPage />) },
       { path: "/models", element: deferred(<ModelsPage />) },
-      { path: "/advanced-api", element: deferred(<CustomApiPage />) }
+      { path: "/advanced-api", element: deferred(<CustomApiPage />) },
+      { path: "/approvals", element: deferred(<ApprovalPage />) },
+      { path: "/workspace", element: deferred(<WorkspacePage />) },
+      { path: "/release", element: deferred(<ReleasePage />) },
+      { path: "/context", element: deferred(<ContextPage />) },
+      { path: "/library", element: deferred(<LibraryPage />) },
+      { path: "/recovery", element: deferred(<RecoveryPage />) },
+      { path: "/workflows", element: deferred(<AgentWorkflowPage />) },
+      { path: "/model-center", element: deferred(<ModelCenterPage />) }
     ]
   }
 ]);

@@ -1,14 +1,21 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArchiveRestore,
   BookOpenText,
+  Boxes,
   Braces,
+  BrainCircuit,
   ChevronLeft,
   CircleDot,
   FolderKanban,
+  Library,
+  PackageCheck,
   PanelLeftClose,
   Settings2,
-  Sparkles
+  ShieldCheck,
+  Sparkles,
+  Workflow
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { studioApi } from "../api/studio";
@@ -58,6 +65,19 @@ export function AppShell() {
             <BookOpenText size={17} />
             {!sidebarCollapsed ? <span>创作流程</span> : null}
           </NavLink>
+          <NavLink to="/workspace" title="写作台">
+            <Boxes size={17} />
+            {!sidebarCollapsed ? <span>写作台</span> : null}
+          </NavLink>
+          <NavLink to="/approvals" title="待审核">
+            <ShieldCheck size={17} />
+            {!sidebarCollapsed ? <span>待审核</span> : null}
+          </NavLink>
+          <NavLink to="/workflows" title="Agent 工作流">
+            <Workflow size={17} />
+            {!sidebarCollapsed ? <span>Agent 工作流</span> : null}
+          </NavLink>
+          {!sidebarCollapsed ? <span className="nav-section-label">配置与数据</span> : null}
           <NavLink to="/models" title="模型与 API">
             <Settings2 size={17} />
             {!sidebarCollapsed ? <span>模型与 API</span> : null}
@@ -65,6 +85,26 @@ export function AppShell() {
           <NavLink to="/advanced-api" title="自定义 HTTP">
             <Braces size={17} />
             {!sidebarCollapsed ? <span>自定义 HTTP</span> : null}
+          </NavLink>
+          <NavLink to="/model-center" title="高级模型中心">
+            <Settings2 size={17} />
+            {!sidebarCollapsed ? <span>高级模型中心</span> : null}
+          </NavLink>
+          <NavLink to="/context" title="上下文">
+            <BrainCircuit size={17} />
+            {!sidebarCollapsed ? <span>上下文</span> : null}
+          </NavLink>
+          <NavLink to="/library" title="资料库">
+            <Library size={17} />
+            {!sidebarCollapsed ? <span>资料库</span> : null}
+          </NavLink>
+          <NavLink to="/recovery" title="恢复">
+            <ArchiveRestore size={17} />
+            {!sidebarCollapsed ? <span>恢复</span> : null}
+          </NavLink>
+          <NavLink to="/release" title="发布与备份">
+            <PackageCheck size={17} />
+            {!sidebarCollapsed ? <span>发布与备份</span> : null}
           </NavLink>
         </nav>
 

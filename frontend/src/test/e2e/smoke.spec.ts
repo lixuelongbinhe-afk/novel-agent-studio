@@ -1,5 +1,24 @@
 import { expect, test } from "@playwright/test";
 
+test("all implemented workspaces are reachable from real routes", async ({ page }) => {
+  const routes: Array<[string, RegExp]> = [
+    ["/approvals", /审批与写回|先选择项目/],
+    ["/workspace", /卷 \/ 章 \/ 场景|先选择项目/],
+    ["/release", /数据与发布/],
+    ["/context", /上下文记忆|先选择项目/],
+    ["/library", /资料库|先选择项目/],
+    ["/recovery", /回收站|先选择项目/],
+    ["/workflows", /智能体工作流|先选择项目/],
+    ["/model-center", /模型中心/]
+  ];
+
+  for (const [route, content] of routes) {
+    await page.goto(route);
+    await expect(page.locator(".nas-main")).toContainText(content);
+    await expect(page.locator(".app-error-boundary")).toHaveCount(0);
+  }
+});
+
 test("collapsed sidebar keeps only in-bounds brand and status expand targets", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
