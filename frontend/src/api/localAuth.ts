@@ -55,7 +55,7 @@ async function readDesktopBridgeToken(): Promise<string> {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
-      document.removeEventListener("pywebviewready", onReady);
+      window.removeEventListener("pywebviewready", onReady);
       resolve(value);
     };
     const onReady = () => {
@@ -64,6 +64,6 @@ async function readDesktopBridgeToken(): Promise<string> {
       else void bridge().then(finish, () => finish(""));
     };
     const timeout = window.setTimeout(() => finish(""), BRIDGE_READY_TIMEOUT_MS);
-    document.addEventListener("pywebviewready", onReady, { once: true });
+    window.addEventListener("pywebviewready", onReady, { once: true });
   });
 }

@@ -5,6 +5,7 @@ describe("local API token", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
     window.history.replaceState(null, "", "/");
+    delete window.pywebview;
   });
 
   it("captures the fragment without leaving the token in browser history", async () => {
@@ -33,5 +34,19 @@ describe("local API token", () => {
     expect(window.location.href).not.toContain("bridge-secret");
     expect(window.location.hash).toBe("");
     delete window.pywebview;
+  });
+
+  it("waits for the bridge event dispatched by pywebview on window", async () => {
+    window.history.replaceState(null, "", "/#nas-desktop=1");
+    const ready = initializeLocalApiToken();
+    const consume = vi.fn(async () => "delayed-bridge-secret");
+
+    window.pywebview = { api: { consume_local_api_token: consume } };
+    window.dispatchEvent(new CustomEvent("pywebviewready"));
+    await ready;
+
+    const headers = new Headers(withLocalApiToken()?.headers);
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(headers.get("Authorization")).toBe("Bearer delayed-bridge-secret");
   });
 });
