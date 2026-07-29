@@ -106,3 +106,20 @@ def test_second_launch_signals_existing_instance(monkeypatch: pytest.MonkeyPatch
     launcher.signal_existing_instance(42)
 
     assert calls == [42]
+
+
+def test_desktop_url_contains_no_api_token() -> None:
+    token = "super-secret-local-token"
+
+    url = launcher.desktop_document_url("http://127.0.0.1:8123")
+
+    assert token not in url
+    assert "nas-token" not in url
+    assert url == "http://127.0.0.1:8123#nas-desktop=1"
+
+
+def test_desktop_bridge_releases_token_only_once() -> None:
+    bridge = launcher.DesktopApiBridge("one-time-token")
+
+    assert bridge.consume_local_api_token() == "one-time-token"
+    assert bridge.consume_local_api_token() == ""

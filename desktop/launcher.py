@@ -16,7 +16,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 
 APP_NAME = "Novel Agent Studio"
@@ -25,6 +24,7 @@ VERSION = "2.2.8"
 HOST = "127.0.0.1"
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0
+DESKTOP_FRAGMENT = "nas-desktop=1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -364,6 +364,24 @@ class DesktopController:
             threading.Thread(target=self.run_gui_smoke, name="nas-gui-smoke", daemon=True).start()
 
 
+class DesktopApiBridge:
+    """Expose the local token once through pywebview's process bridge, never the URL."""
+
+    def __init__(self, api_token: str) -> None:
+        self._api_token = api_token
+        self._lock = threading.Lock()
+
+    def consume_local_api_token(self) -> str:
+        with self._lock:
+            token = self._api_token
+            self._api_token = ""
+            return token
+
+
+def desktop_document_url(url: str) -> str:
+    return f"{url}#{DESKTOP_FRAGMENT}"
+
+
 def show_error(message: str, data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "launch-error.log").write_text(message, encoding="utf-8")
@@ -385,15 +403,17 @@ def run_desktop(
     controller = DesktopController(
         data_dir, url, reopen_event, gui_smoke_seconds, api_token
     )
+    bridge = DesktopApiBridge(api_token)
     window = webview.create_window(
         APP_NAME,
-        url=url,
+        url=desktop_document_url(url),
         width=1440,
         height=900,
         min_size=(1024, 680),
         background_color="#151616",
         text_select=True,
         zoomable=False,
+        js_api=bridge,
     )
     if window is None:
         raise RuntimeError("无法创建桌面窗口")
@@ -403,8 +423,7 @@ def run_desktop(
         controller.after_start,
         gui="edgechromium",
         debug=False,
-        private_mode=False,
-        storage_path=str(data_dir / "webview-profile"),
+        private_mode=True,
     )
     controller.stop_event.set()
     if controller.tray is not None:
@@ -429,7 +448,6 @@ def main() -> int:
         listener = reserve_listener(args.port)
         port = int(listener.getsockname()[1])
         url = f"http://{HOST}:{port}"
-        desktop_url = f"{url}#nas-token={quote(api_token, safe='')}"
         server, thread = start_server(listener)
         wait_for_ready(url, thread)
         if args.smoke_test:
@@ -441,7 +459,7 @@ def main() -> int:
                 time.sleep(0.25)
             return 0
         run_desktop(
-            desktop_url,
+            url,
             data_dir,
             reopen_event,
             args.gui_smoke_test_seconds,

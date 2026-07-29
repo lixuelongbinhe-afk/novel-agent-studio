@@ -11,6 +11,12 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
+    env:
+      # No commercial signing certificate is provisioned yet. Keep this decision explicit;
+      # switch to 1 and configure a certificate secret before claiming signed releases.
+      NAS_REQUIRE_CODE_SIGNING: "0"
+      NAS_SIGN_CERTIFICATE_PATH: ""
+      NAS_SIGN_CERTIFICATE_THUMBPRINT: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

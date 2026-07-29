@@ -2,6 +2,7 @@
 
 - SQLite stores only credential environment variable names, never API Key values.
 - Production startup fails closed when the local API session token is missing. Development mode may run without a token only with an explicit warning; bundled and script launchers generate a fresh cryptographically random token for each process.
+- The desktop launcher transfers its local API token once through the pywebview process bridge, never through the document URL, command line, or persistent WebView profile. The bridge token is kept only in page `sessionStorage`, and desktop WebView sessions run in private mode.
 - Every `/api/` request carrying an Origin header is checked against the local allowlist, including read-only methods. Requests without an Origin remain available to authenticated local clients.
 - API schemas reject credential variable names that look like literal secrets.
 - Automated tests use Mock/Fake providers and isolated databases.

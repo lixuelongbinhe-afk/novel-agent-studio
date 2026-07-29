@@ -13,8 +13,10 @@ $version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
 $portableName = "NovelAgentStudio-Portable-$version.zip"
 $setupName = "NovelAgentStudio-Setup-$version.exe"
 $signingCertificate = $env:NAS_SIGN_CERTIFICATE_PATH
+$signingThumbprint = $env:NAS_SIGN_CERTIFICATE_THUMBPRINT
 $requireSigning = $env:NAS_REQUIRE_CODE_SIGNING -eq "1"
 $timestampUrl = if ($env:NAS_SIGN_TIMESTAMP_URL) { $env:NAS_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+$importedSigningCertificates = @()
 
 function Assert-ChildPath {
   param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Parent)
@@ -51,22 +53,56 @@ function Get-SignTool {
 
 function Protect-ReleaseArtifact {
   param([Parameter(Mandatory=$true)][string]$Path)
-  if (-not $signingCertificate) { return }
-  if (-not (Test-Path -LiteralPath $signingCertificate)) {
-    throw "Signing certificate does not exist: $signingCertificate"
+  if (-not $signingThumbprint) {
+    throw "Protect-ReleaseArtifact requires an initialized signing certificate thumbprint"
   }
   $signTool = Get-SignTool
-  $arguments = @("sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $timestampUrl, "/f", $signingCertificate)
-  if ($env:NAS_SIGN_CERTIFICATE_PASSWORD) {
-    $arguments += @("/p", $env:NAS_SIGN_CERTIFICATE_PASSWORD)
-  }
+  $arguments = @("sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $timestampUrl, "/sha1", $signingThumbprint)
   $arguments += $Path
   Invoke-Checked -Command { & $signTool @arguments } -Failure "Code signing failed for $Path"
   Invoke-Checked -Command { & $signTool verify /pa $Path } -Failure "Signature verification failed for $Path"
 }
 
-if ($requireSigning -and -not $signingCertificate) {
-  throw "NAS_REQUIRE_CODE_SIGNING=1 but NAS_SIGN_CERTIFICATE_PATH is not configured"
+try {
+if ($signingCertificate -and $signingThumbprint) {
+  throw "Configure either NAS_SIGN_CERTIFICATE_PATH or NAS_SIGN_CERTIFICATE_THUMBPRINT, not both"
+}
+if ($signingCertificate) {
+  if (-not (Test-Path -LiteralPath $signingCertificate)) {
+    throw "Signing certificate does not exist: $signingCertificate"
+  }
+  $securePassword = if ($env:NAS_SIGN_CERTIFICATE_PASSWORD) {
+    ConvertTo-SecureString $env:NAS_SIGN_CERTIFICATE_PASSWORD -AsPlainText -Force
+  } else {
+    New-Object System.Security.SecureString
+  }
+  $importedSigningCertificates = @(Import-PfxCertificate `
+    -FilePath $signingCertificate `
+    -CertStoreLocation Cert:\CurrentUser\My `
+    -Password $securePassword `
+    -Exportable:$false)
+  $codeSigningCertificate = $importedSigningCertificates |
+    Where-Object { $_.HasPrivateKey } |
+    Select-Object -First 1
+  if (-not $codeSigningCertificate -or -not $codeSigningCertificate.Thumbprint) {
+    throw "Signing certificate could not be imported"
+  }
+  $signingThumbprint = $codeSigningCertificate.Thumbprint
+}
+if ($requireSigning -and -not $signingThumbprint) {
+  throw "NAS_REQUIRE_CODE_SIGNING=1 but no certificate path or thumbprint is configured"
+}
+if ($signingThumbprint) {
+  if ($signingThumbprint -notmatch '^[A-Fa-f0-9]{40,64}$') {
+    throw "Signing certificate thumbprint is not valid"
+  }
+  $storedCertificate = Get-Item -LiteralPath "Cert:\CurrentUser\My\$signingThumbprint" -ErrorAction SilentlyContinue
+  if (-not $storedCertificate -or -not $storedCertificate.HasPrivateKey) {
+    throw "Signing certificate is not available with a private key in Cert:\CurrentUser\My"
+  }
+  Write-Host "Code signing: enabled with certificate thumbprint $signingThumbprint"
+} else {
+  Write-Warning "Code signing is explicitly disabled (NAS_REQUIRE_CODE_SIGNING=0); artifacts will be unsigned"
 }
 
 $resolvedStage = Assert-ChildPath -Path $stage -Parent $root
@@ -160,7 +196,7 @@ foreach ($executable in @(
   (Join-Path $appSource "NovelAgentStudioConsole.exe"),
   $uninstaller
 )) {
-  Protect-ReleaseArtifact -Path $executable
+  if ($signingThumbprint) { Protect-ReleaseArtifact -Path $executable }
 }
 
 $readme = @(
@@ -232,7 +268,7 @@ $hashResource = "/resource:$payloadHashFile,payload.sha256"
 Invoke-Checked -Command {
   & $csc /nologo /target:winexe /optimize+ /out:$setupExe $payloadResource $hashResource /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll (Join-Path $root "scripts\NovelAgentStudioInstaller.cs")
 } -Failure "Installer compilation failed"
-Protect-ReleaseArtifact -Path $setupExe
+if ($signingThumbprint) { Protect-ReleaseArtifact -Path $setupExe }
 
 foreach ($artifact in @($portableZip, $setupExe)) {
   if (-not (Test-Path -LiteralPath $artifact) -or (Get-Item -LiteralPath $artifact).Length -lt 1MB) {
@@ -254,3 +290,8 @@ Write-Host "Extracted portable ZIP GUI lifecycle smoke test: PASS"
 Write-Host "Portable ZIP: $portableZip"
 Write-Host "Installer EXE: $setupExe"
 Write-Host "Checksums: $checksumPath"
+} finally {
+  foreach ($certificate in $importedSigningCertificates) {
+    Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+  }
+}
