@@ -20,6 +20,7 @@ class FakeWindow:
         self.hidden = False
         self.destroyed = False
         self.shown = False
+        self.frontend_ready = True
 
     def hide(self) -> None:
         self.hidden = True
@@ -32,6 +33,9 @@ class FakeWindow:
 
     def destroy(self) -> None:
         self.destroyed = True
+
+    def evaluate_js(self, _script: str) -> bool:
+        return self.frontend_ready
 
 
 def test_random_port_remains_reserved_until_server_uses_socket() -> None:
@@ -123,3 +127,21 @@ def test_desktop_bridge_releases_token_only_once() -> None:
 
     assert bridge.consume_local_api_token() == "one-time-token"
     assert bridge.consume_local_api_token() == ""
+
+
+def test_gui_smoke_fails_when_frontend_did_not_receive_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    controller = launcher.DesktopController(
+        tmp_path, "http://127.0.0.1:1", None, 0.01, "token"
+    )
+    window = FakeWindow()
+    window.frontend_ready = False
+    controller.window = window
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(launcher, "smoke_test", lambda _url, _token: None)
+
+    controller.run_gui_smoke()
+
+    assert "token bridge" in controller.gui_smoke_error
+    assert window.destroyed is True

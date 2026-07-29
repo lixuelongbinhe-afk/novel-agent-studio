@@ -269,6 +269,7 @@ class DesktopController:
         self.window: Any | None = None
         self.tray: Any | None = None
         self.force_exit = False
+        self.gui_smoke_error = ""
         self.stop_event = threading.Event()
         self.settings_path = data_dir / "desktop-settings.json"
 
@@ -352,10 +353,25 @@ class DesktopController:
     def run_gui_smoke(self) -> None:
         if self.gui_smoke_seconds <= 0:
             return
-        time.sleep(self.gui_smoke_seconds)
-        smoke_test(self.url.split("#", 1)[0], self.api_token)
-        print(f"{APP_NAME} {VERSION} GUI smoke test passed")
-        self.exit_app()
+        try:
+            time.sleep(self.gui_smoke_seconds)
+            smoke_test(self.url.split("#", 1)[0], self.api_token)
+            if self.window is None:
+                raise RuntimeError("GUI smoke test window is unavailable")
+            frontend_ready = self.window.evaluate_js(
+                "Boolean(sessionStorage.getItem('nas.local-api-token')) && "
+                "Boolean(document.querySelector('#root .nas-shell')) && "
+                "!location.href.includes('nas-token')"
+            )
+            if frontend_ready is not True:
+                raise RuntimeError(
+                    "desktop token bridge or frontend rendering did not become ready"
+                )
+            print(f"{APP_NAME} {VERSION} GUI smoke test passed")
+        except Exception as exc:
+            self.gui_smoke_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.exit_app()
 
     def after_start(self) -> None:
         self.start_tray()
@@ -425,6 +441,8 @@ def run_desktop(
         debug=False,
         private_mode=True,
     )
+    if controller.gui_smoke_error:
+        raise RuntimeError(f"GUI smoke test failed: {controller.gui_smoke_error}")
     controller.stop_event.set()
     if controller.tray is not None:
         controller.tray.stop()
