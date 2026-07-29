@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.migrations import (
     PHASE_1_REVISION,
-    STUDIO_V2_REVISION,
+    current_schema_revision,
     upgrade_database,
 )
 
@@ -70,7 +70,7 @@ def test_empty_database_reaches_studio_v2_with_presets(tmp_path: Path) -> None:
         }
         assert {"tokenizer_name", "tokenizer_source"} <= model_columns
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == STUDIO_V2_REVISION
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == current_schema_revision()
             assert connection.scalar(text("SELECT COUNT(*) FROM provider_presets")) == 9
             assert connection.scalar(
                 text("SELECT default_model FROM provider_presets WHERE slug = 'deepseek'")
@@ -154,6 +154,27 @@ def test_migration_refuses_insufficient_backup_space(
         engine.dispose()
 
 
+def test_new_dynamic_head_triggers_backup_without_constant_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "dynamic-head.db"
+    url = database_url(database)
+    upgrade_database(url)
+
+    monkeypatch.setattr(
+        "app.migrations.current_schema_revision",
+        lambda _config=None: "future_dynamic_head",
+    )
+    upgrade_database(url)
+
+    journal = json.loads(
+        database.with_suffix(".db.migration.json").read_text(encoding="utf-8")
+    )
+    assert journal["status"] == "completed"
+    assert journal["to_revision"] == "future_dynamic_head"
+    assert Path(journal["backup"]).is_file()
+
+
 def test_unversioned_phase_1_database_is_upgraded_without_data_loss(
     tmp_path: Path,
 ) -> None:
@@ -186,7 +207,7 @@ def test_unversioned_phase_1_database_is_upgraded_without_data_loss(
         assert "generic_http_adapter_configurations" in tables
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT title FROM projects WHERE id = 1")) == "保留的旧项目"
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == STUDIO_V2_REVISION
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == current_schema_revision()
             assert connection.scalar(text("SELECT COUNT(*) FROM provider_presets")) == 9
             assert connection.scalar(text("SELECT COUNT(*) FROM context_policies")) == 1
     finally:
@@ -260,7 +281,7 @@ def test_story_order_migration_normalizes_legacy_rows_and_enforces_uniqueness(
             )
     finally:
         engine.dispose()
-    command.upgrade(config, STUDIO_V2_REVISION)
+    command.upgrade(config, "head")
     engine = create_engine(url)
     try:
         with engine.connect() as connection:
@@ -351,7 +372,7 @@ def test_deepseek_v4_migration_updates_only_official_deepseek_profiles(
     finally:
         engine.dispose()
 
-    command.upgrade(config, STUDIO_V2_REVISION)
+    command.upgrade(config, "head")
     engine = create_engine(url)
     try:
         with engine.connect() as connection:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import weakref
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -22,9 +21,8 @@ class WorkflowEventBus:
     """Serialize workflow persistence and publish monotonically ordered events."""
 
     def __init__(self) -> None:
-        self._locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
-            weakref.WeakValueDictionary()
-        )
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._lock_loops: dict[int, asyncio.AbstractEventLoop] = {}
         settings = get_settings()
         self._writer = DatabaseWriter(
             lambda: SessionLocal(),
@@ -40,7 +38,7 @@ class WorkflowEventBus:
         node_key: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> int:
-        lock = self._locks.setdefault(run_id, asyncio.Lock())
+        lock = self._lock_for(run_id)
         async with lock:
 
             def write(db: Session) -> int:
@@ -88,7 +86,7 @@ class WorkflowEventBus:
     ) -> int:
         if not delta:
             return 0
-        lock = self._locks.setdefault(run_id, asyncio.Lock())
+        lock = self._lock_for(run_id)
         async with lock:
 
             def write(db: Session) -> int:
@@ -132,7 +130,25 @@ class WorkflowEventBus:
         await self._writer.drain()
 
     async def shutdown(self) -> None:
-        await self._writer.shutdown()
+        try:
+            await self._writer.shutdown()
+        finally:
+            self._locks.clear()
+            self._lock_loops.clear()
+
+    def release(self, run_id: int) -> None:
+        self._locks.pop(run_id, None)
+        self._lock_loops.pop(run_id, None)
+
+    def _lock_for(self, run_id: int) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        lock = self._locks.get(run_id)
+        if lock is None or self._lock_loops.get(run_id) is not loop:
+            # Locks belong to one event loop; a restarted loop gets a fresh lock.
+            lock = asyncio.Lock()
+            self._locks[run_id] = lock
+            self._lock_loops[run_id] = loop
+        return lock
 
     def writer_metrics(self) -> DatabaseWriterMetrics:
         return self._writer.metrics()

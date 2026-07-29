@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 from collections.abc import Generator
 from pathlib import Path
 
@@ -34,6 +33,7 @@ def stream_database(
     monkeypatch.setattr(workflow_runtime, "SessionLocal", factory)
     monkeypatch.setattr(workflow_events, "SessionLocal", factory)
     workflow_runtime.event_bus._locks.clear()
+    workflow_runtime.event_bus._lock_loops.clear()
     with factory() as db, db.begin():
         project = models.Project(title="流式持久化压力测试")
         db.add(project)
@@ -120,16 +120,60 @@ async def test_ten_thousand_deltas_use_bounded_checkpoint_transactions(
 
 
 @pytest.mark.asyncio
-async def test_event_bus_does_not_retain_per_run_locks(
+async def test_event_bus_releases_per_run_locks_explicitly(
     stream_database: tuple[sessionmaker[Session], Engine, int, int],
 ) -> None:
     _factory, _engine, run_id, _attempt_id = stream_database
 
     for _ in range(100):
         await workflow_runtime.event_bus.emit(run_id, "heartbeat")
-    gc.collect()
+    assert workflow_runtime.event_bus.active_lock_count() == 1
+    workflow_runtime.event_bus.release(run_id)
 
     assert workflow_runtime.event_bus.active_lock_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_event_bus_uses_one_lock_for_concurrent_emitters(
+    stream_database: tuple[sessionmaker[Session], Engine, int, int],
+) -> None:
+    factory, _engine, run_id, _attempt_id = stream_database
+    first = workflow_runtime.event_bus._lock_for(run_id)
+    second = workflow_runtime.event_bus._lock_for(run_id)
+    assert first is second
+
+    sequences = await asyncio.gather(
+        *(workflow_runtime.event_bus.emit(run_id, "heartbeat") for _ in range(20))
+    )
+    assert sorted(sequences) == list(range(1, 21))
+    with factory() as db:
+        persisted = db.scalars(
+            select(models.WorkflowRunEvent.sequence)
+            .where(models.WorkflowRunEvent.workflow_run_id == run_id)
+            .order_by(models.WorkflowRunEvent.sequence)
+        ).all()
+    assert persisted == list(range(1, 21))
+
+
+def test_event_bus_replaces_lock_after_event_loop_restart() -> None:
+    bus = workflow_events.WorkflowEventBus()
+
+    async def lock_for_current_loop() -> asyncio.Lock:
+        return bus._lock_for(42)
+
+    first = asyncio.run(lock_for_current_loop())
+    second = asyncio.run(lock_for_current_loop())
+    assert first is not second
+    bus.release(42)
+
+
+@pytest.mark.asyncio
+async def test_event_bus_shutdown_clears_locks() -> None:
+    bus = workflow_events.WorkflowEventBus()
+    bus._lock_for(7)
+    assert bus.active_lock_count() == 1
+    await bus.shutdown()
+    assert bus.active_lock_count() == 0
 
 
 @pytest.mark.asyncio

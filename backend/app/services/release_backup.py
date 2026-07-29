@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.core.config import get_settings
 from app.database import Base
-from app.migrations import STUDIO_V2_REVISION
+from app.migrations import current_schema_revision
 from app.schemas.release import (
     BackupManifestRead,
     BackupPreviewRead,
@@ -146,7 +146,7 @@ def create_backup_archive_file(db: Session) -> Path:
             format=BACKUP_FORMAT,
             schema_version=BACKUP_SCHEMA_VERSION,
             app_version=settings.app_version,
-            migration_revision=STUDIO_V2_REVISION,
+            migration_revision=current_schema_revision(),
             created_at=datetime.now(timezone.utc),
             data_sha256=data_hash.hexdigest(),
             tables=counts,

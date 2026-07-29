@@ -29,7 +29,7 @@ from app import models
 from app.core.config import get_settings
 from app.core.logging_config import list_log_files
 from app.database import engine
-from app.migrations import STUDIO_V2_REVISION
+from app.migrations import current_schema_revision
 from app.schemas.release import ExportKind, ReleaseStatusRead
 from app.services import agents, custom_adapters, workflows
 from app.services.release_backup import current_table_counts
@@ -50,7 +50,7 @@ def release_status(db: Session, *, frontend_bundled: bool) -> ReleaseStatusRead:
     return ReleaseStatusRead(
         app_version=settings.app_version,
         environment=settings.environment,
-        migration_revision=STUDIO_V2_REVISION,
+        migration_revision=current_schema_revision(),
         frontend_bundled=frontend_bundled,
         database_integrity=integrity,
         database_bytes=(database_path.stat().st_size if database_path and database_path.exists() else 0),

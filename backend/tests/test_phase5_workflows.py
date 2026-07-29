@@ -58,6 +58,7 @@ def session_factory(
     monkeypatch.setattr(workflow_events, "SessionLocal", factory)
     monkeypatch.setattr(workflow_api, "SessionLocal", factory)
     workflow_runtime.event_bus._locks.clear()
+    workflow_runtime.event_bus._lock_loops.clear()
     yield factory
     engine.dispose()
 

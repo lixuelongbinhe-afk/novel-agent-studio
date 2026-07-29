@@ -8,6 +8,7 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
@@ -22,7 +23,8 @@ PHASE_4_REVISION = "e47a1d8f2c60"
 PHASE_5_REVISION = "f8b2c4d6e810"
 PHASE_6_REVISION = "a6c8e0f2b419"
 PHASE_7_REVISION = "d7e9f1a3c520"
-STUDIO_V2_REVISION = "a2b4c6d8e010"
+# This identifies the schema shape detected by STUDIO_V2_TABLES, not the current head.
+STUDIO_V2_BASE_REVISION = "b94f8d2c710a"
 PHASE_1_TABLES = {
     "projects",
     "provider_accounts",
@@ -98,6 +100,7 @@ def upgrade_database(database_url: str | None = None) -> None:
     resolved_url = database_url or get_settings().database_url
     config.attributes["database_url"] = resolved_url
     config.set_main_option("sqlalchemy.url", resolved_url.replace("%", "%%"))
+    target_revision = current_schema_revision(config)
     migration_engine = create_engine(resolved_url)
     try:
         table_names = set(inspect(migration_engine).get_table_names())
@@ -113,7 +116,7 @@ def upgrade_database(database_url: str | None = None) -> None:
         migration_engine.dispose()
 
     database_path = _sqlite_database_path(resolved_url)
-    needs_schema_upgrade = bool(table_names) and current_revision != STUDIO_V2_REVISION
+    needs_schema_upgrade = bool(table_names) and current_revision != target_revision
     backup_path = (
         _prepare_migration_backup(database_path, current_revision)
         if needs_schema_upgrade and database_path is not None
@@ -126,7 +129,7 @@ def upgrade_database(database_url: str | None = None) -> None:
             {
                 "status": "running",
                 "from_revision": current_revision or "legacy-unversioned",
-                "to_revision": STUDIO_V2_REVISION,
+                "to_revision": target_revision,
                 "backup": str(backup_path),
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -158,7 +161,7 @@ def upgrade_database(database_url: str | None = None) -> None:
             {
                 "status": "failed_restored" if restored else "failed",
                 "from_revision": current_revision or "legacy-unversioned",
-                "to_revision": STUDIO_V2_REVISION,
+                "to_revision": target_revision,
                 "backup": str(backup_path) if backup_path is not None else None,
                 "error": f"{type(exc).__name__}: {exc}"[:2_000],
                 "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -172,12 +175,23 @@ def upgrade_database(database_url: str | None = None) -> None:
                 {
                     "status": "completed",
                     "from_revision": current_revision or "legacy-unversioned",
-                    "to_revision": STUDIO_V2_REVISION,
+                    "to_revision": target_revision,
                     "backup": str(backup_path),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
             _prune_migration_backups(backup_path.parent)
+
+
+def current_schema_revision(config: Config | None = None) -> str:
+    if config is None:
+        backend_root = Path(__file__).resolve().parents[1]
+        config = Config(str(backend_root / "alembic.ini"))
+        config.set_main_option("script_location", str(backend_root / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic migration graph has no current head")
+    return head
 
 
 def _sqlite_database_path(database_url: str) -> Path | None:
@@ -323,7 +337,7 @@ def _legacy_baseline(table_names: set[str]) -> str:
             "Legacy database has Phase 7 tables but is missing the Phase 6 schema"
         )
     if studio_v2_present:
-        return STUDIO_V2_REVISION
+        return STUDIO_V2_BASE_REVISION
     if phase_7_present:
         return PHASE_7_REVISION
     if phase_6_present:

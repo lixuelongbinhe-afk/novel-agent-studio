@@ -329,3 +329,4 @@
 - [x] Record the extreme-case findings and residual operational limits in `docs/LONG_RUNNING_RELIABILITY_AUDIT.md`.
 - [x] Fail closed when a production local API token is missing, generate secure tokens in script launchers, and validate Origin on all API methods.
 - [x] Apply SSRF validation, DNS pinning, original Host headers, and TLS SNI preservation to every built-in Provider adapter.
+- [x] Replace weak workflow locks with explicit run lifecycle cleanup and derive migration backup decisions from the dynamic Alembic head.

@@ -88,6 +88,7 @@ class WorkflowRunManager:
         finally:
             self._tasks.pop(run_id, None)
             self._cancel_events.pop(run_id, None)
+            event_bus.release(run_id)
 
 
 workflow_run_manager = WorkflowRunManager()
