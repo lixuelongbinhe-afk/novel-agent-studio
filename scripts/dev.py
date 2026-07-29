@@ -1,4 +1,5 @@
 import os
+import secrets
 import subprocess
 import shutil
 import time
@@ -35,9 +36,13 @@ def main() -> int:
     except RuntimeError as exc:
         print(f"Development environment is incomplete: {exc}")
         return 2
+    token = secrets.token_urlsafe(32)
+    backend_environment = os.environ.copy()
+    backend_environment["NAS_LOCAL_API_TOKEN"] = token
     backend = subprocess.Popen(
         [str(backend_python), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
         cwd=ROOT / "backend",
+        env=backend_environment,
     )
     try:
         frontend = subprocess.Popen(
@@ -48,7 +53,10 @@ def main() -> int:
         backend.terminate()
         backend.wait(timeout=5)
         raise
-    print("Novel Agent Studio started: backend http://127.0.0.1:8000, frontend http://127.0.0.1:5173")
+    print(
+        "Novel Agent Studio started: backend http://127.0.0.1:8000, "
+        f"frontend http://127.0.0.1:5173/#nas-token={token}"
+    )
     try:
         while True:
             if backend.poll() is not None:

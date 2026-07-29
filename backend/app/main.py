@@ -24,6 +24,7 @@ from app.core.security import (
     LocalApiTokenMiddleware,
     LocalOriginMiddleware,
     SecurityHeadersMiddleware,
+    validate_local_api_configuration,
 )
 from app.database import SessionLocal, checkpoint_sqlite
 from app.migrations import upgrade_database
@@ -58,6 +59,9 @@ frontend_dist = _frontend_dist()
 @asynccontextmanager
 async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    validate_local_api_configuration(
+        token=settings.local_api_token, production=settings.production
+    )
     cleanup_log_files(delete_all=False)
     upgrade_database()
     with SessionLocal() as db, db.begin():
@@ -87,7 +91,11 @@ app = FastAPI(
 app.state.frontend_bundled = frontend_dist is not None
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(LocalOriginMiddleware, allowed_origins=settings.cors_origin_list)
-app.add_middleware(LocalApiTokenMiddleware, token=settings.local_api_token)
+app.add_middleware(
+    LocalApiTokenMiddleware,
+    token=settings.local_api_token,
+    require_token=settings.production,
+)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_host_list)
 app.add_middleware(
     CORSMiddleware,

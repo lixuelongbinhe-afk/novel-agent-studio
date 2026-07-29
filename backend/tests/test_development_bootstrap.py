@@ -18,6 +18,8 @@ def test_backend_editable_build_discovers_only_application_packages() -> None:
 
 def test_windows_development_bootstrap_checks_dependencies_and_uses_pnpm() -> None:
     script = (ROOT / "scripts" / "dev.ps1").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts" / "dev.py").read_text(encoding="utf-8")
+    start_script = (ROOT / "scripts" / "start.ps1").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert ".venv\\Scripts\\python.exe" in script
@@ -28,6 +30,10 @@ def test_windows_development_bootstrap_checks_dependencies_and_uses_pnpm() -> No
     assert "pip install -e \".[dev]\"" in readme
     assert "pnpm install --frozen-lockfile" in readme
     assert "npm.cmd" not in readme
+    assert "secrets.token_urlsafe(32)" in launcher
+    assert 'backend_environment["NAS_LOCAL_API_TOKEN"]' in launcher
+    assert "RandomNumberGenerator" in start_script
+    assert "#nas-token=" in start_script
 
 
 def test_release_version_metadata_is_synchronized() -> None:

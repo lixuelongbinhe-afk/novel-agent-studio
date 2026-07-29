@@ -13,7 +13,17 @@ $env:NAS_ENV = "production"
 $env:NAS_FRONTEND_DIST = $frontendDist
 $env:NAS_CORS_ORIGINS = ""
 $env:NAS_ALLOWED_HOSTS = "127.0.0.1,localhost"
-Write-Host "Novel Agent Studio: http://127.0.0.1:8000"
+$tokenBytes = New-Object byte[] 32
+$random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+  $random.GetBytes($tokenBytes)
+} finally {
+  $random.Dispose()
+}
+$token = [Convert]::ToBase64String($tokenBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$env:NAS_LOCAL_API_TOKEN = $token
+$encodedToken = [Uri]::EscapeDataString($token)
+Write-Host "Novel Agent Studio: http://127.0.0.1:8000/#nas-token=$encodedToken"
 Push-Location $backendDir
 try {
   & $backendPython -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-server-header

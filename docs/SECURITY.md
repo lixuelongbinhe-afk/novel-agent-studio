@@ -1,6 +1,8 @@
 # Security
 
 - SQLite stores only credential environment variable names, never API Key values.
+- Production startup fails closed when the local API session token is missing. Development mode may run without a token only with an explicit warning; bundled and script launchers generate a fresh cryptographically random token for each process.
+- Every `/api/` request carrying an Origin header is checked against the local allowlist, including read-only methods. Requests without an Origin remain available to authenticated local clients.
 - API schemas reject credential variable names that look like literal secrets.
 - Automated tests use Mock/Fake providers and isolated databases.
 - Model output is rendered as text by default; arbitrary model HTML is never inserted into the DOM.

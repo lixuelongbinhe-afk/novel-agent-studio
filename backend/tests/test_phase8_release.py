@@ -20,6 +20,7 @@ from app.core.security import (
     LocalApiTokenMiddleware,
     LocalOriginMiddleware,
     SecurityHeadersMiddleware,
+    validate_local_api_configuration,
 )
 from app.database import Base, get_db
 from app.services import release_backup
@@ -461,6 +462,10 @@ def test_release_api_stream_limits_mime_and_security_headers(tmp_path: Path) -> 
         "/api/release/logs", headers={"Origin": "https://malicious.example"}
     )
     assert blocked.status_code == 403
+    blocked_read = client.get(
+        "/api/release/status", headers={"Origin": "https://malicious.example"}
+    )
+    assert blocked_read.status_code == 403
     engine.dispose()
 
 
@@ -489,6 +494,41 @@ def test_local_api_token_protects_api_without_exposing_health() -> None:
         "/api/protected", headers={"Authorization": "Bearer local-secret"}
     )
     assert accepted.status_code == 200
+
+
+def test_production_local_api_token_fails_closed() -> None:
+    api_app = FastAPI()
+    api_app.add_middleware(
+        LocalApiTokenMiddleware, token="", require_token=True
+    )
+
+    @api_app.get("/api/protected")
+    def protected() -> dict[str, bool]:
+        return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="NAS_LOCAL_API_TOKEN"):
+        with TestClient(api_app) as client:
+            client.get("/api/protected")
+
+
+def test_development_without_token_warns_and_remains_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "app.core.security.logger.warning", lambda message: warnings.append(message)
+    )
+    validate_local_api_configuration(token="", production=False)
+    assert warnings and "authentication is disabled in development" in warnings[0]
+
+    api_app = FastAPI()
+    api_app.add_middleware(LocalApiTokenMiddleware, token="")
+
+    @api_app.get("/api/development")
+    def development() -> dict[str, bool]:
+        return {"ok": True}
+
+    assert TestClient(api_app).get("/api/development").status_code == 200
 
 
 def _repack(manifest: dict[str, Any], data: dict[str, Any]) -> bytes:

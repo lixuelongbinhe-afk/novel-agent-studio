@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import logging
 import secrets
 
 from fastapi import Request, Response
@@ -8,12 +9,25 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
-_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+logger = logging.getLogger(__name__)
+
+
+def validate_local_api_configuration(*, token: str, production: bool) -> None:
+    if production and not token:
+        raise RuntimeError(
+            "NAS_LOCAL_API_TOKEN is required when NAS_ENV=production"
+        )
+    if not token:
+        logger.warning(
+            "Local API authentication is disabled in development because "
+            "NAS_LOCAL_API_TOKEN is empty"
+        )
 
 
 class LocalApiTokenMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: object, token: str) -> None:
+    def __init__(self, app: object, token: str, *, require_token: bool = False) -> None:
         super().__init__(app)  # type: ignore[arg-type]
+        validate_local_api_configuration(token=token, production=require_token)
         self.token = token
 
     async def dispatch(
@@ -49,7 +63,7 @@ class LocalOriginMiddleware(BaseHTTPMiddleware):
         origin = request.headers.get("origin")
         request_origin = f"{request.url.scheme}://{request.headers.get('host', '')}".rstrip("/")
         if (
-            request.method in _UNSAFE_METHODS
+            request.url.path.startswith("/api/")
             and origin
             and origin.rstrip("/") not in self.allowed_origins
             and origin.rstrip("/") != request_origin
