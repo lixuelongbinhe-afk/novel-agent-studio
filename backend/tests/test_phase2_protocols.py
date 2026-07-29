@@ -26,6 +26,7 @@ from app.services.gateway_http import (
     ProviderRuntime,
     redact_headers,
 )
+from app.services.ssrf import TargetGuard
 from app.services.streaming import iter_ndjson, iter_sse
 from tests.fake_provider import app as fake_provider
 
@@ -40,6 +41,15 @@ ADAPTERS: list[tuple[str, AdapterFactory, str, str]] = [
     ("gemini", GeminiAdapter, "http://fake/v1beta", "fake-gemini"),
     ("ollama", OllamaAdapter, "http://fake", "fake-ollama"),
 ]
+
+
+async def public_resolver(_hostname: str, _port: int) -> list[str]:
+    return ["93.184.216.34"]
+
+
+@pytest.fixture(autouse=True)
+def resolve_fake_provider_to_public_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.ssrf.resolve_host", public_resolver)
 
 
 def request(
@@ -300,3 +310,104 @@ async def test_cancelling_consumer_closes_upstream_stream() -> None:
     await asyncio.sleep(0)
     assert tracking.closed is True
     await client.aclose()
+
+
+@pytest.mark.parametrize("factory", [OpenAIChatAdapter, AnthropicMessagesAdapter])
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/v1",
+        "http://10.0.0.1/v1",
+    ],
+)
+async def test_builtin_adapters_reject_unapproved_private_targets(
+    gateway: GatewayHTTPClient,
+    factory: AdapterFactory,
+    base_url: str,
+) -> None:
+    response = await factory(gateway).complete(
+        request(), runtime("openai_chat", base_url)
+    )
+    assert response.error is not None
+    assert response.error.code == "invalid_request"
+    assert response.error.retryable is False
+
+
+async def test_builtin_adapter_pins_validated_ip_and_preserves_host() -> None:
+    captured: list[httpx.Request] = []
+
+    async def handler(request_value: httpx.Request) -> httpx.Response:
+        captured.append(request_value)
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "fake-model",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OpenAIChatAdapter(
+        GatewayHTTPClient(client), TargetGuard(resolver=public_resolver)
+    )
+    response = await adapter.complete(
+        request(), runtime("openai_chat", "https://provider.example/v1")
+    )
+    assert response.error is None
+    assert captured[0].url.host == "93.184.216.34"
+    assert captured[0].headers["host"] == "provider.example"
+    assert captured[0].extensions["sni_hostname"] == b"provider.example"
+    await client.aclose()
+
+
+async def test_ollama_requires_exact_local_origin_approval() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"content": "ok"}, "done": True},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = OllamaAdapter(GatewayHTTPClient(client))
+    unapproved = ProviderRuntime(
+        protocol="ollama",
+        base_url="http://127.0.0.1:11434",
+        options={"security_mode": "local_private"},
+    )
+    rejected = await adapter.complete(request(), unapproved)
+    assert rejected.error is not None
+    assert rejected.error.code == "invalid_request"
+
+    approved = ProviderRuntime(
+        protocol="ollama",
+        base_url="http://127.0.0.1:11434",
+        options={
+            "security_mode": "local_private",
+            "approved_origin": "http://127.0.0.1:11434",
+        },
+    )
+    accepted = await adapter.complete(request(), approved)
+    assert accepted.error is None
+
+    bundled_preset = ProviderRuntime(
+        protocol="ollama", base_url="http://127.0.0.1:11434"
+    )
+    preset_response = await adapter.complete(request(), bundled_preset)
+    assert preset_response.error is None
+    await client.aclose()
+
+
+async def test_builtin_stream_rejects_private_target() -> None:
+    adapter = OpenAIChatAdapter()
+    events = [
+        event
+        async for event in adapter.stream(
+            request(), runtime("openai_chat", "http://127.0.0.1:8080/v1")
+        )
+    ]
+    assert [event.event for event in events] == ["start", "error", "done"]
+    assert events[1].error is not None
+    assert events[1].error.code == "invalid_request"

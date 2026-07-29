@@ -107,12 +107,18 @@ class GatewayHTTPClient:
         headers: Mapping[str, str] | None = None,
         json_body: Any | None = None,
         request_id: str | None = None,
+        sni_hostname: str | None = None,
     ) -> tuple[Any, str]:
         response: httpx.Response | None = None
         local_request_id = request_id or new_request_id()
         try:
             response = await self._send(
-                method, url, headers=headers, json_body=json_body, request_id=local_request_id
+                method,
+                url,
+                headers=headers,
+                json_body=json_body,
+                request_id=local_request_id,
+                sni_hostname=sni_hostname,
             )
             body = await self._read_limited(response)
             upstream_request_id = _response_request_id(response, local_request_id)

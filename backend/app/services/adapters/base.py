@@ -14,7 +14,14 @@ from app.schemas import (
     NormalizedToolCall,
     NormalizedUsage,
 )
-from app.services.gateway_http import GatewayHTTPClient, ProviderRuntime, shared_http_client
+from app.services.gateway_http import (
+    GatewayHTTPClient,
+    ProviderRequestError,
+    ProviderRuntime,
+    new_request_id,
+    shared_http_client,
+)
+from app.services.ssrf import PinnedTarget, TargetGuard, TargetSecurityError
 
 
 class ModelProtocolAdapter(Protocol):
@@ -34,14 +41,55 @@ class ModelProtocolAdapter(Protocol):
 class HTTPAdapter:
     name = "http"
 
-    def __init__(self, client: GatewayHTTPClient | None = None) -> None:
+    def __init__(
+        self,
+        client: GatewayHTTPClient | None = None,
+        target_guard: TargetGuard | None = None,
+    ) -> None:
         self.http = client or shared_http_client
+        self.target_guard = target_guard or TargetGuard()
 
     @staticmethod
     def require_runtime(runtime: ProviderRuntime | None) -> ProviderRuntime:
         if runtime is None:
             raise ValueError("Provider runtime is required")
         return runtime
+
+    async def validate_target(
+        self, url: str, runtime: ProviderRuntime
+    ) -> PinnedTarget:
+        security_mode = str(runtime.options.get("security_mode") or "public_only")
+        approved_value = runtime.options.get("approved_origin")
+        approved_origin = str(approved_value) if approved_value else None
+        if (
+            "security_mode" not in runtime.options
+            and runtime.protocol == "ollama"
+            and runtime.base_url.rstrip("/") == "http://127.0.0.1:11434"
+        ):
+            # Selecting the bundled Ollama preset is approval for this one exact Origin.
+            security_mode = "local_private"
+            approved_origin = "http://127.0.0.1:11434"
+        try:
+            return await self.target_guard.validate(
+                url,
+                security_mode=security_mode,
+                approved_origin=approved_origin,
+            )
+        except TargetSecurityError as exc:
+            raise ProviderRequestError(
+                NormalizedProviderError(
+                    code="invalid_request",
+                    message=str(exc),
+                    retryable=False,
+                    request_id=new_request_id(),
+                )
+            ) from exc
+
+    @staticmethod
+    def target_headers(
+        headers: Mapping[str, str], target: PinnedTarget
+    ) -> dict[str, str]:
+        return {**headers, "Host": target.host_header}
 
 
 def content_text(content: list[NormalizedContentPart]) -> str:

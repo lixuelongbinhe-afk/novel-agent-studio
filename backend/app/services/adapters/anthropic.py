@@ -40,12 +40,16 @@ class AnthropicMessagesAdapter(HTTPAdapter):
         provider = self.require_runtime(runtime)
         request_id = new_request_id()
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "v1/messages"), provider
+            )
             data, response_id = await self.http.request_json(
                 "POST",
-                join_url(provider.base_url, "v1/messages"),
-                headers=_headers(provider),
+                target.request_url,
+                headers=self.target_headers(_headers(provider), target),
                 json_body=_payload(request, stream=False),
                 request_id=request_id,
+                sni_hostname=target.sni_hostname,
             )
             return _parse_response(data, request, response_id)
         except ProviderRequestError as exc:
@@ -65,13 +69,19 @@ class AnthropicMessagesAdapter(HTTPAdapter):
         yield NormalizedStreamEvent(sequence=sequence, event="start", request_id=request_id)
         sequence += 1
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "v1/messages"), provider
+            )
             async def chunks() -> AsyncIterator[bytes]:
                 upstream = self.http.stream_bytes(
                     "POST",
-                    join_url(provider.base_url, "v1/messages"),
-                    headers={**_headers(provider), "Accept": "text/event-stream"},
+                    target.request_url,
+                    headers=self.target_headers(
+                        {**_headers(provider), "Accept": "text/event-stream"}, target
+                    ),
                     json_body=_payload(request, stream=True),
                     request_id=request_id,
+                    sni_hostname=target.sni_hostname,
                 )
                 try:
                     async for chunk, _ in upstream:
@@ -181,8 +191,14 @@ class AnthropicMessagesAdapter(HTTPAdapter):
             await events.aclose()
 
     async def list_models(self, runtime: ProviderRuntime) -> list[dict[str, Any]]:
+        target = await self.validate_target(
+            join_url(runtime.base_url, "v1/models"), runtime
+        )
         data, _ = await self.http.request_json(
-            "GET", join_url(runtime.base_url, "v1/models"), headers=_headers(runtime)
+            "GET",
+            target.request_url,
+            headers=self.target_headers(_headers(runtime), target),
+            sni_hostname=target.sni_hostname,
         )
         raw_models = data.get("data", []) if isinstance(data, Mapping) else []
         return [

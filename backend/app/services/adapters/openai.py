@@ -44,12 +44,16 @@ class OpenAIChatAdapter(HTTPAdapter):
         provider = self.require_runtime(runtime)
         request_id = new_request_id()
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "chat/completions"), provider
+            )
             data, response_id = await self.http.request_json(
                 "POST",
-                join_url(provider.base_url, "chat/completions"),
-                headers=_openai_headers(provider),
+                target.request_url,
+                headers=self.target_headers(_openai_headers(provider), target),
                 json_body=_chat_payload(request, stream=False),
                 request_id=request_id,
+                sni_hostname=target.sni_hostname,
             )
             return _parse_chat_response(data, request, response_id)
         except ProviderRequestError as exc:
@@ -68,13 +72,20 @@ class OpenAIChatAdapter(HTTPAdapter):
         finished = False
         finish_reason: str | None = None
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "chat/completions"), provider
+            )
             async def chunks() -> AsyncIterator[bytes]:
                 upstream = self.http.stream_bytes(
                     "POST",
-                    join_url(provider.base_url, "chat/completions"),
-                    headers={**_openai_headers(provider), "Accept": "text/event-stream"},
+                    target.request_url,
+                    headers=self.target_headers(
+                        {**_openai_headers(provider), "Accept": "text/event-stream"},
+                        target,
+                    ),
                     json_body=_chat_payload(request, stream=True),
                     request_id=request_id,
+                    sni_hostname=target.sni_hostname,
                 )
                 try:
                     async for chunk, _ in upstream:
@@ -166,8 +177,12 @@ class OpenAIChatAdapter(HTTPAdapter):
                 yield item
 
     async def list_models(self, runtime: ProviderRuntime) -> list[dict[str, Any]]:
+        target = await self.validate_target(join_url(runtime.base_url, "models"), runtime)
         data, _ = await self.http.request_json(
-            "GET", join_url(runtime.base_url, "models"), headers=_openai_headers(runtime)
+            "GET",
+            target.request_url,
+            headers=self.target_headers(_openai_headers(runtime), target),
+            sni_hostname=target.sni_hostname,
         )
         raw_models = data.get("data", []) if isinstance(data, Mapping) else []
         return [
@@ -186,12 +201,16 @@ class OpenAIResponsesAdapter(HTTPAdapter):
         provider = self.require_runtime(runtime)
         request_id = new_request_id()
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "responses"), provider
+            )
             data, response_id = await self.http.request_json(
                 "POST",
-                join_url(provider.base_url, "responses"),
-                headers=_openai_headers(provider),
+                target.request_url,
+                headers=self.target_headers(_openai_headers(provider), target),
                 json_body=_responses_payload(request, stream=False),
                 request_id=request_id,
+                sni_hostname=target.sni_hostname,
             )
             return _parse_responses_response(data, request, response_id)
         except ProviderRequestError as exc:
@@ -207,13 +226,20 @@ class OpenAIResponsesAdapter(HTTPAdapter):
         yield NormalizedStreamEvent(sequence=sequence, event="start", request_id=request_id)
         sequence += 1
         try:
+            target = await self.validate_target(
+                join_url(provider.base_url, "responses"), provider
+            )
             async def chunks() -> AsyncIterator[bytes]:
                 upstream = self.http.stream_bytes(
                     "POST",
-                    join_url(provider.base_url, "responses"),
-                    headers={**_openai_headers(provider), "Accept": "text/event-stream"},
+                    target.request_url,
+                    headers=self.target_headers(
+                        {**_openai_headers(provider), "Accept": "text/event-stream"},
+                        target,
+                    ),
                     json_body=_responses_payload(request, stream=True),
                     request_id=request_id,
+                    sni_hostname=target.sni_hostname,
                 )
                 try:
                     async for chunk, _ in upstream:

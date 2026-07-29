@@ -12,8 +12,9 @@
 - Provider logs and later exports must redact authorization headers, credential values, and sensitive request fragments.
 - Provider Base URLs reject embedded usernames, passwords, query parameters, and fragments. Custom endpoints must be relative.
 - Custom adapter schemas reject static credential-shaped Headers, query values, and request-template values; a bound credential placeholder is allowed without storing its runtime value.
-- Generic HTTP targets allow only `http` and `https`, reject URL userinfo and metadata hosts, validate every DNS answer, block link-local/reserved/metadata addresses, and pin the validated IP to prevent DNS rebinding.
+- Every built-in and Generic HTTP Provider target allows only `http` and `https`, rejects URL userinfo and metadata hosts, validates every DNS answer, blocks link-local/reserved/metadata addresses, and pins the validated IP to prevent DNS rebinding.
 - Private and loopback targets require `local_private` plus explicit approval of the exact scheme, host, and port. Relevant Provider, authentication, or credential changes revoke approval, test state, and enablement.
+- The bundled Ollama preset grants approval only to its exact fixed Origin, `http://127.0.0.1:11434`; changing the address falls back to normal private-Origin approval requirements.
 - Gateway redirects and proxy-environment inheritance are disabled. HTTPS IP pinning preserves the validated hostname for Host and SNI.
 - Adapter manifests never contain credential references or values, import disabled, and undergo schema validation plus a recursive secret scan.
 - Debug output contains a redacted request preview and normalized result only. It never exposes hidden reasoning or raw authorization material.
