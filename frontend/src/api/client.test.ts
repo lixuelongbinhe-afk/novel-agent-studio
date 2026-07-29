@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiTimeoutError,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  WorkflowStreamParseError,
   api,
   request,
   type ModelDebugRequest,
@@ -77,6 +78,20 @@ describe("non-stream request timeout", () => {
 });
 
 describe("model stream client", () => {
+  it("reports malformed workflow SSE as a recognizable protocol error", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("id: 1\nevent: run_event\ndata: {broken-json}\n\n"));
+        controller.close();
+      }
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, { status: 200 })));
+
+    await expect(
+      api.streamWorkflowEvents(9, () => undefined)
+    ).rejects.toBeInstanceOf(WorkflowStreamParseError);
+  });
+
   it("parses UTF-8 and SSE records split across arbitrary response chunks", async () => {
     const source = [
       'event: start\r\ndata: {"sequence":1,"event":"start","text_delta":"","request_id":"req-1","tool_call":null,"usage":null,"error":null,"finish_reason":null,"warning":null}\r\n\r\n',

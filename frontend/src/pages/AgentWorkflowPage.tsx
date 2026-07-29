@@ -733,12 +733,13 @@ function RunView({
     onError: (error) => onError(errorMessage(error, "派生运行失败"))
   });
 
-  const events = useWorkflowSSE({
+  const workflowStream = useWorkflowSSE({
     runId: selectedRunId,
     projectId,
     active: isActiveStatus(run?.status),
     snapshotEvents: snapshot?.events ?? []
   });
+  const events = workflowStream.events;
   const selectedNode = run?.nodes.find((node) => node.node_key === selectedNodeKey) ?? null;
   const statuses = useMemo(() => Object.fromEntries((run?.nodes ?? []).map((node) => [node.node_key, node.status])) as Record<string, NodeRunStatus>, [run?.nodes]);
   const frozenWorkflow = workflowFromSnapshot(snapshot?.snapshot);
@@ -769,6 +770,8 @@ function RunView({
               <div><Coins size={16} /><span>已知成本</span><strong>{runCost(run.nodes)}</strong></div>
               <div><Activity size={16} /><span>节点</span><strong>{run.nodes.filter((node) => node.status === "completed").length}/{run.nodes.length}</strong></div>
             </div>
+
+            {workflowStream.error ? <ErrorNotice message={workflowStream.error} /> : null}
 
             {frozenWorkflow ? <div className="run-canvas-band"><WorkflowCanvas workflowKey={`run-${run.id}`} value={{ nodes: frozenWorkflow.nodes, edges: frozenWorkflow.edges }} agents={agents} statuses={statuses} readOnly /></div> : snapshotQuery.isLoading ? <div className="route-loading">正在读取不可变运行快照...</div> : null}
 

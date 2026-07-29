@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { api, type WorkflowRunEvent } from "../../../api/client";
+import {
+  ApiError,
+  WorkflowStreamParseError,
+  api,
+  type WorkflowRunEvent
+} from "../../../api/client";
 
 type WorkflowSSEOptions = {
   runId: number | null;
@@ -12,19 +17,27 @@ type WorkflowSSEOptions = {
 
 export const MAX_RETAINED_WORKFLOW_EVENTS = 500;
 const MAX_RECONNECT_DELAY_MS = 8_000;
+export const MAX_WORKFLOW_RECONNECT_ATTEMPTS = 6;
+
+export type WorkflowSSEState = {
+  events: WorkflowRunEvent[];
+  error: string | null;
+};
 
 export function useWorkflowSSE({
   runId,
   projectId,
   active,
   snapshotEvents
-}: WorkflowSSEOptions): WorkflowRunEvent[] {
+}: WorkflowSSEOptions): WorkflowSSEState {
   const queryClient = useQueryClient();
   const [liveEvents, setLiveEvents] = useState<WorkflowRunEvent[]>([]);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const lastEventId = useRef(0);
 
   useEffect(() => {
     setLiveEvents([]);
+    setConnectionError(null);
     lastEventId.current = 0;
   }, [runId]);
 
@@ -59,13 +72,14 @@ export function useWorkflowSSE({
     };
 
     const listen = async () => {
-      let reconnectDelay = 500;
+      let reconnectAttempts = 0;
       while (!stopped && !controller.signal.aborted) {
         try {
           await api.streamWorkflowEvents(
             runId,
             (message) => {
-              reconnectDelay = 500;
+              reconnectAttempts = 0;
+              setConnectionError(null);
               if ("events" in message.data && "run" in message.data) {
                 enqueueEvents(message.data.events);
               } else if ("sequence" in message.data) {
@@ -85,10 +99,23 @@ export function useWorkflowSSE({
             queryClient.invalidateQueries({ queryKey: ["workflow-runs", projectId] })
           ]);
           break;
-        } catch {
+        } catch (error) {
           if (controller.signal.aborted || stopped) break;
-          await delay(reconnectDelay);
-          reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+          if (
+            isPermanentWorkflowStreamError(error) ||
+            reconnectAttempts >= MAX_WORKFLOW_RECONNECT_ATTEMPTS
+          ) {
+            setConnectionError(workflowStreamErrorMessage(error, false));
+            break;
+          }
+          const reconnectDelay = workflowReconnectDelay(reconnectAttempts);
+          reconnectAttempts += 1;
+          setConnectionError(workflowStreamErrorMessage(error, true, reconnectAttempts));
+          try {
+            await delay(reconnectDelay, controller.signal);
+          } catch {
+            break;
+          }
         }
       }
     };
@@ -101,15 +128,37 @@ export function useWorkflowSSE({
     };
   }, [active, projectId, queryClient, runId]);
 
-  return useMemo(
-    () =>
-      mergeWorkflowEvents(
+  const events = useMemo(
+    () => mergeWorkflowEvents(
         snapshotEvents,
         liveEvents,
         MAX_RETAINED_WORKFLOW_EVENTS
       ),
     [liveEvents, snapshotEvents]
   );
+  return useMemo(() => ({ events, error: connectionError }), [connectionError, events]);
+}
+
+export function isPermanentWorkflowStreamError(error: unknown): boolean {
+  return (
+    error instanceof WorkflowStreamParseError ||
+    (error instanceof ApiError && [401, 403, 404].includes(error.status))
+  );
+}
+
+export function workflowReconnectDelay(attempt: number): number {
+  return Math.min(500 * (2 ** attempt), MAX_RECONNECT_DELAY_MS);
+}
+
+function workflowStreamErrorMessage(
+  error: unknown,
+  retrying: boolean,
+  attempt = 0
+): string {
+  const detail = error instanceof Error && error.message ? error.message : "未知错误";
+  return retrying
+    ? `工作流实时连接失败，${workflowReconnectDelay(attempt - 1) / 1_000} 秒后进行第 ${attempt} 次重连：${detail}`
+    : `工作流实时连接已停止：${detail}`;
 }
 
 export function mergeWorkflowEvents(
@@ -125,6 +174,16 @@ export function mergeWorkflowEvents(
   return merged.length > limit ? merged.slice(-limit) : merged;
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    const abort = () => {
+      window.clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }

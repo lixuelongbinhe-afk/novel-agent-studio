@@ -99,6 +99,7 @@ vi.mock("./WorkflowCanvas", () => ({
 
 vi.mock("../api/client", () => ({
   ApiError: class ApiError extends Error {},
+  WorkflowStreamParseError: class WorkflowStreamParseError extends Error {},
   api: {
     listProjects: async () => [{ id: 1, title: "雾港回声", summary: "", language: "zh-CN", target_words: 100000, revision: 1, deleted_at: null, created_at: "2026-07-18", updated_at: "2026-07-18" }],
     listAgents: async () => [agent],

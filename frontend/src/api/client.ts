@@ -1156,6 +1156,16 @@ export class ApiTimeoutError extends Error {
   }
 }
 
+export class WorkflowStreamParseError extends Error {
+  detail: unknown;
+
+  constructor(message: string, detail?: unknown) {
+    super(message);
+    this.name = "WorkflowStreamParseError";
+    this.detail = detail;
+  }
+}
+
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const LONG_REQUEST_TIMEOUT_MS = 120_000;
 
@@ -1348,7 +1358,46 @@ function emitWorkflowSseBlock(
     else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
   }
   if (!data.length) return;
-  onEvent({ id, event, data: JSON.parse(data.join("\n")) as WorkflowRunEvent | WorkflowRunSnapshot });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data.join("\n"));
+  } catch (error) {
+    throw new WorkflowStreamParseError("工作流事件流包含无法解析的 JSON", error);
+  }
+  if (!isWorkflowStreamData(parsed)) {
+    throw new WorkflowStreamParseError("工作流事件流缺少必要字段", parsed);
+  }
+  onEvent({ id, event, data: parsed });
+}
+
+function isWorkflowStreamData(value: unknown): value is WorkflowRunEvent | WorkflowRunSnapshot {
+  if (!isRecord(value)) return false;
+  if (isWorkflowRunEvent(value)) return true;
+  return (
+    isRecord(value.run) &&
+    typeof value.run.id === "number" &&
+    typeof value.run.status === "string" &&
+    isRecord(value.snapshot) &&
+    isRecord(value.plan) &&
+    Array.isArray(value.events) &&
+    value.events.every(isWorkflowRunEvent)
+  );
+}
+
+function isWorkflowRunEvent(value: unknown): value is WorkflowRunEvent {
+  return (
+    isRecord(value) &&
+    typeof value.sequence === "number" &&
+    Number.isFinite(value.sequence) &&
+    typeof value.event === "string" &&
+    (value.node_key === null || typeof value.node_key === "string") &&
+    isRecord(value.payload) &&
+    typeof value.created_at === "string"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function findSseBoundary(value: string): { index: number; width: number } | null {

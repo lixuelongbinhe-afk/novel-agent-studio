@@ -1,10 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { WorkflowRunEvent } from "../../../api/client";
+import { ApiError, api, type WorkflowRunEvent } from "../../../api/client";
 import {
   MAX_RETAINED_WORKFLOW_EVENTS,
-  mergeWorkflowEvents
+  mergeWorkflowEvents,
+  useWorkflowSSE,
+  workflowReconnectDelay
 } from "./useWorkflowSSE";
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+function wrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return createElement(QueryClientProvider, { client, children });
+}
 
 function workflowEvent(sequence: number): WorkflowRunEvent {
   return {
@@ -39,5 +54,42 @@ describe("mergeWorkflowEvents", () => {
     expect(new Set(merged.map((event) => event.sequence)).size).toBe(
       MAX_RETAINED_WORKFLOW_EVENTS
     );
+  });
+
+  it("stops immediately and exposes a permanent authorization failure", async () => {
+    const stream = vi.spyOn(api, "streamWorkflowEvents").mockRejectedValue(
+      new ApiError(401, "本地 API 鉴权失败", null)
+    );
+    const { result } = renderHook(
+      () => useWorkflowSSE({ runId: 9, projectId: 1, active: true, snapshotEvents: [] }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.error).toContain("连接已停止"));
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries transient failures with exponential delays", async () => {
+    vi.useFakeTimers();
+    const stream = vi.spyOn(api, "streamWorkflowEvents").mockRejectedValue(
+      new TypeError("network disconnected")
+    );
+    const { unmount } = renderHook(
+      () => useWorkflowSSE({ runId: 9, projectId: 1, active: true, snapshotEvents: [] }),
+      { wrapper }
+    );
+    await act(async () => undefined);
+    expect(stream).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(workflowReconnectDelay(0) - 1));
+    expect(stream).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(stream).toHaveBeenCalledTimes(2);
+
+    await act(async () => vi.advanceTimersByTimeAsync(workflowReconnectDelay(1) - 1));
+    expect(stream).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(stream).toHaveBeenCalledTimes(3);
+    unmount();
   });
 });
