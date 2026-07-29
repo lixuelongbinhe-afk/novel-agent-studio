@@ -20,7 +20,11 @@ class FakeWindow:
         self.hidden = False
         self.destroyed = False
         self.shown = False
-        self.frontend_ready = True
+        self.frontend_status = {
+            "hasToken": True,
+            "hasShell": True,
+            "hasTokenInUrl": False,
+        }
 
     def hide(self) -> None:
         self.hidden = True
@@ -34,8 +38,8 @@ class FakeWindow:
     def destroy(self) -> None:
         self.destroyed = True
 
-    def evaluate_js(self, _script: str) -> bool:
-        return self.frontend_ready
+    def evaluate_js(self, _script: str) -> str:
+        return json.dumps(self.frontend_status)
 
 
 def test_random_port_remains_reserved_until_server_uses_socket() -> None:
@@ -136,7 +140,7 @@ def test_gui_smoke_fails_when_frontend_did_not_receive_token(
         tmp_path, "http://127.0.0.1:1", None, 0.01, "token"
     )
     window = FakeWindow()
-    window.frontend_ready = False
+    window.frontend_status["hasToken"] = False
     controller.window = window
     monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(launcher, "smoke_test", lambda _url, _token: None)
@@ -144,4 +148,5 @@ def test_gui_smoke_fails_when_frontend_did_not_receive_token(
     controller.run_gui_smoke()
 
     assert "token bridge" in controller.gui_smoke_error
+    assert "'hasToken': False" in controller.gui_smoke_error
     assert window.destroyed is True

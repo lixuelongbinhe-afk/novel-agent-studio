@@ -358,14 +358,30 @@ class DesktopController:
             smoke_test(self.url.split("#", 1)[0], self.api_token)
             if self.window is None:
                 raise RuntimeError("GUI smoke test window is unavailable")
-            frontend_ready = self.window.evaluate_js(
-                "Boolean(sessionStorage.getItem('nas.local-api-token')) && "
-                "Boolean(document.querySelector('#root .nas-shell')) && "
-                "!location.href.includes('nas-token')"
+            raw_status = self.window.evaluate_js(
+                "JSON.stringify({"
+                "documentState: document.readyState,"
+                "hasPywebview: Boolean(window.pywebview),"
+                "hasBridgeMethod: typeof window.pywebview?.api?.consume_local_api_token === 'function',"
+                "hasToken: Boolean(sessionStorage.getItem('nas.local-api-token')),"
+                "rootLength: document.querySelector('#root')?.innerHTML.length ?? -1,"
+                "hasShell: Boolean(document.querySelector('#root .nas-shell')),"
+                "hasTokenInUrl: location.href.includes('nas-token')"
+                "})"
             )
-            if frontend_ready is not True:
+            try:
+                frontend_status = json.loads(raw_status) if isinstance(raw_status, str) else {}
+            except ValueError:
+                frontend_status = {}
+            frontend_ready = (
+                frontend_status.get("hasToken") is True
+                and frontend_status.get("hasShell") is True
+                and frontend_status.get("hasTokenInUrl") is False
+            )
+            if not frontend_ready:
                 raise RuntimeError(
-                    "desktop token bridge or frontend rendering did not become ready"
+                    "desktop token bridge or frontend rendering did not become ready: "
+                    f"{frontend_status or raw_status!r}"
                 )
             print(f"{APP_NAME} {VERSION} GUI smoke test passed")
         except Exception as exc:
