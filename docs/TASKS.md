@@ -1,5 +1,16 @@
 # Tasks
 
+## V2.2.9 Long-Running Reliability Remediation
+
+- [x] Close built-in Provider SSRF gaps and fail closed when production local API authentication is missing.
+- [x] Move Studio and Workflow blocking execution off the API event loop.
+- [x] Enforce generation leases in SQLite, retain explicit lock lifetimes, and use a dynamic linear Alembic head.
+- [x] Preserve transaction boundaries for credentials, scene batches, model invocations, and actionable failure audits.
+- [x] Publish the eight implemented workspaces through real routes and navigation (P2-1 route A).
+- [x] Add cancellable non-stream request timeouts and bounded, visible Workflow SSE recovery.
+- [x] Make release signing intent explicit, minimize CI permissions, and transfer desktop API tokens outside the document URL.
+- [x] Correct release download instructions, remove IDE metadata, index uncovered foreign keys, time-bound the audit exception, and pin direct frontend dependencies.
+
 ## V2.2.7 DeepSeek V4 Compatibility
 
 - [x] Replace the retired DeepSeek Chat/Reasoner defaults with V4 Flash and V4 Pro.

@@ -50,6 +50,8 @@ jobs:
           --output ../outputs/backend-sbom.cdx.json
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
+      # Temporary client-only React Router RSC exception; see docs/SECURITY.md.
+      # Mandatory review date: 2026-10-31. Remove once a compatible fixed release exists.
       - run: pnpm audit --audit-level high --ignore GHSA-qwww-vcr4-c8h2
         working-directory: frontend
       - run: ./scripts/package-desktop.ps1

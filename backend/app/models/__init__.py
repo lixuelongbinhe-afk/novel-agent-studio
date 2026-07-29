@@ -145,8 +145,8 @@ class EntityRelation(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
-    source_entity_id: Mapped[int] = mapped_column(ForeignKey("story_entities.id", ondelete="CASCADE"))
-    target_entity_id: Mapped[int] = mapped_column(ForeignKey("story_entities.id", ondelete="CASCADE"))
+    source_entity_id: Mapped[int] = mapped_column(ForeignKey("story_entities.id", ondelete="CASCADE"), index=True)
+    target_entity_id: Mapped[int] = mapped_column(ForeignKey("story_entities.id", ondelete="CASCADE"), index=True)
     relation_type: Mapped[str] = mapped_column(String(80))
     notes: Mapped[str] = mapped_column(Text, default="")
 
@@ -156,7 +156,7 @@ class EntityStateChange(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     entity_id: Mapped[int] = mapped_column(ForeignKey("story_entities.id", ondelete="CASCADE"), index=True)
-    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"))
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"), index=True)
     field_name: Mapped[str] = mapped_column(String(100))
     old_value: Mapped[str] = mapped_column(Text, default="")
     new_value: Mapped[str] = mapped_column(Text, default="")
@@ -168,7 +168,7 @@ class TimelineEvent(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
-    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"))
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"), index=True)
     label: Mapped[str] = mapped_column(String(200))
     event_time: Mapped[str] = mapped_column(String(100), default="")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -183,7 +183,7 @@ class Foreshadow(TimestampMixin, Base):
     setup_text: Mapped[str] = mapped_column(Text)
     payoff_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), default="open")
-    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"))
+    chapter_id: Mapped[int | None] = mapped_column(ForeignKey("chapters.id", ondelete="SET NULL"), index=True)
 
 
 class StyleGuide(TimestampMixin, Base):
@@ -257,7 +257,7 @@ class ModelCapability(TimestampMixin, Base):
     __tablename__ = "model_capabilities"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    model_profile_id: Mapped[int] = mapped_column(ForeignKey("model_profiles.id", ondelete="CASCADE"))
+    model_profile_id: Mapped[int] = mapped_column(ForeignKey("model_profiles.id", ondelete="CASCADE"), index=True)
     capability: Mapped[str] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(40), default="supported")
     source: Mapped[str] = mapped_column(String(80), default="provider_default")
@@ -267,7 +267,7 @@ class ModelPricing(TimestampMixin, Base):
     __tablename__ = "model_pricing"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    model_profile_id: Mapped[int] = mapped_column(ForeignKey("model_profiles.id", ondelete="CASCADE"))
+    model_profile_id: Mapped[int] = mapped_column(ForeignKey("model_profiles.id", ondelete="CASCADE"), index=True)
     input_per_million: Mapped[float | None] = mapped_column(Float, nullable=True)
     cached_input_per_million: Mapped[float | None] = mapped_column(Float, nullable=True)
     output_per_million: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -915,7 +915,7 @@ class GenericHttpAdapterConfiguration(TimestampMixin, Base):
         ForeignKey("provider_accounts.id", ondelete="CASCADE"), index=True
     )
     credential_reference_id: Mapped[int | None] = mapped_column(
-        ForeignKey("credential_references.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("credential_references.id", ondelete="SET NULL"), nullable=True, index=True
     )
     method: Mapped[str] = mapped_column(String(8), default="POST")
     endpoint: Mapped[str] = mapped_column(String(500), default="/")
@@ -1033,7 +1033,7 @@ class GenerationJob(TimestampMixin, Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     active_scope_key: Mapped[str | None] = mapped_column(String(320), nullable=True)
     result_artifact_id: Mapped[int | None] = mapped_column(
-        ForeignKey("creative_artifacts.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("creative_artifacts.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
 

@@ -6,13 +6,13 @@ Novel Agent Studio（小说智能体工作室）v2.2.8 是面向长篇小说创�
 
 安装版：
 
-1. 双击 `outputs/NovelAgentStudio-Setup-2.2.8.exe`。
+1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载 `NovelAgentStudio-Setup-2.2.8.exe` 并双击运行。
 2. 安装完成后，从开始菜单打开“小说智能体工作室”。
 3. 实际程序位于 `%LOCALAPPDATA%\Programs\NovelAgentStudio\NovelAgentStudio.exe`。
 
 免安装版：
 
-1. 完整解压 `outputs/NovelAgentStudio-Portable-2.2.8.zip`，不要只拖出单个 EXE。
+1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载并完整解压 `NovelAgentStudio-Portable-2.2.8.zip`，不要只拖出单个 EXE。
 2. 双击解压目录中的 `NovelAgentStudio\NovelAgentStudio.exe`。
 
 从 v2.1.2 升级后，如果旧项目把“章节规划师”显示成正文且缺少后续章节，请打开项目并点击顶部的“修复章节结构”。程序会先创建永久特殊快照，再将错误占位章移入回收状态，并按项目设定补齐缺失章节。
@@ -76,7 +76,7 @@ DeepSeek 官方预设默认使用 `deepseek-v4-flash`，并可切换到 `deepsee
 
 免安装版数据：解压目录中的 `NovelAgentStudio\data`
 
-目录内包含 `studio-v2.db`、轮转日志和专用 WebView 配置。卸载器默认询问是否保留数据；`--silent` 卸载会保留数据。完整备份含未发布正文且未加密，请像保护原稿一样保护 `.nasbackup.zip` 文件。
+目录内包含 `studio-v2.db` 和轮转日志。桌面 WebView 使用不落盘的私密会话。卸载器默认询问是否保留数据；`--silent` 卸载会保留数据。完整备份含未发布正文且未加密，请像保护原稿一样保护 `.nasbackup.zip` 文件。
 
 ## 本地开发：首次初始化
 

@@ -83,6 +83,25 @@ def test_empty_database_reaches_studio_v2_with_presets(tmp_path: Path) -> None:
             assert connection.scalar(
                 text("SELECT default_model FROM provider_presets WHERE slug = 'deepseek'")
             ) == "deepseek-v4-flash"
+        expected_fk_indexes = {
+            "entity_relations": {
+                "ix_entity_relations_source_entity_id",
+                "ix_entity_relations_target_entity_id",
+            },
+            "entity_state_changes": {"ix_entity_state_changes_chapter_id"},
+            "timeline_events": {"ix_timeline_events_chapter_id"},
+            "foreshadows": {"ix_foreshadows_chapter_id"},
+            "model_capabilities": {"ix_model_capabilities_model_profile_id"},
+            "model_pricing": {"ix_model_pricing_model_profile_id"},
+            "generic_http_adapter_configurations": {
+                "ix_generic_http_adapter_configurations_credential_reference_id"
+            },
+            "generation_jobs": {"ix_generation_jobs_result_artifact_id"},
+        }
+        for table, expected in expected_fk_indexes.items():
+            assert expected <= {
+                str(index["name"]) for index in inspect(engine).get_indexes(table)
+            }
     finally:
         engine.dispose()
 

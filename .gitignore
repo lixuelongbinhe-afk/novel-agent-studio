@@ -4,6 +4,7 @@ __pycache__/
 .test-tmp/
 .ruff_cache/
 .mypy_cache/
+.idea/
 node_modules/
 dist/
 work/
