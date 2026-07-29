@@ -1146,10 +1146,27 @@ export class ApiError extends Error {
   }
 }
 
+export class ApiTimeoutError extends Error {
+  timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`请求超过 ${Math.ceil(timeoutMs / 1_000)} 秒仍未完成，请稍后重试`);
+    this.name = "ApiTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+export const LONG_REQUEST_TIMEOUT_MS = 120_000;
+
 const jsonHeaders = { "Content-Type": "application/json" };
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, withLocalApiToken(init));
+export async function request<T>(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<T> {
+  const response = await fetchWithTimeout(url, init, timeoutMs);
   if (!response.ok) {
     throw await responseError(response);
   }
@@ -1158,7 +1175,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function downloadRequest(url: string, init?: RequestInit): Promise<DownloadedFile> {
-  const response = await fetch(url, withLocalApiToken(init));
+  const response = await fetchWithTimeout(url, init, LONG_REQUEST_TIMEOUT_MS);
   if (!response.ok) throw await responseError(response);
   const disposition = response.headers.get("content-disposition") ?? "";
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -1172,6 +1189,38 @@ async function downloadRequest(url: string, init?: RequestInit): Promise<Downloa
     }
   }
   return { blob: await response.blob(), filename };
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const callerSignal = init?.signal;
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(
+      url,
+      withLocalApiToken({ ...init, signal: controller.signal })
+    );
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError(timeoutMs);
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export function saveDownloadedFile(file: DownloadedFile): void {
@@ -1922,7 +1971,7 @@ export const api = {
         ...(password ? { "X-NAS-Backup-Password": password } : {})
       },
       body: file
-    }),
+    }, LONG_REQUEST_TIMEOUT_MS),
   restoreBackup: (
     file: File,
     strategy: "empty_only" | "replace_all",
@@ -1938,7 +1987,8 @@ export const api = {
           ...(password ? { "X-NAS-Backup-Password": password } : {})
         },
         body: file
-      }
+      },
+      LONG_REQUEST_TIMEOUT_MS
     ),
   downloadReleaseExport: (
     kind: ReleaseExportKind,

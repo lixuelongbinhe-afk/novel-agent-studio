@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, type ModelDebugRequest, type NormalizedStreamEvent } from "./client";
+import {
+  ApiTimeoutError,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  api,
+  request,
+  type ModelDebugRequest,
+  type NormalizedStreamEvent
+} from "./client";
 
 const payload: ModelDebugRequest = {
   provider_account_id: 1,
@@ -8,7 +15,66 @@ const payload: ModelDebugRequest = {
   messages: [{ role: "user", content: [{ type: "text", text: "测试" }] }]
 };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+function pendingUntilAbort(_input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    const rejectAbort = () => reject(init?.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    if (init?.signal?.aborted) rejectAbort();
+    else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+  });
+}
+
+describe("non-stream request timeout", () => {
+  it("aborts the underlying fetch and rejects with an explicit timeout error", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(pendingUntilAbort);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = expect(request("/api/stuck")).rejects.toBeInstanceOf(ApiTimeoutError);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+
+    await result;
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("preserves a caller-provided abort signal", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(pendingUntilAbort));
+    const controller = new AbortController();
+
+    const result = expect(
+      request("/api/cancelled", { signal: controller.signal })
+    ).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort(new DOMException("Cancelled", "AbortError"));
+
+    await result;
+  });
+
+  it("does not apply the short request timeout to streaming calls", async () => {
+    vi.useFakeTimers();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      }
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(stream, { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const streaming = api.streamModel(payload, () => undefined);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS + 1);
+
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted ?? false).toBe(false);
+    streamController?.close();
+    await streaming;
+  });
+});
 
 describe("model stream client", () => {
   it("parses UTF-8 and SSE records split across arbitrary response chunks", async () => {
