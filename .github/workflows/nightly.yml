@@ -36,3 +36,5 @@ jobs:
         with:
           name: workflow-soak-report
           path: artifacts/workflow-soak.json
+          if-no-files-found: error
+          retention-days: 14

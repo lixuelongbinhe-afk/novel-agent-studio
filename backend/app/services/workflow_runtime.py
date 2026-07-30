@@ -1790,12 +1790,14 @@ async def _finish_completed(run_id: int, output: Any) -> None:
         run.error_json = "null"
         run.completed_at = models.utcnow()
         run.revision += 1
-    await event_bus.write(
+    await event_bus.write_with_event(
+        run_id,
         write,
+        "run_completed",
+        payload={"output": output},
         priority=10,
         correlation_id=f"workflow:{run_id}:complete",
     )
-    await event_bus.emit(run_id, "run_completed", payload={"output": output})
 
 
 async def _finish_failed(run_id: int, error: dict[str, Any]) -> None:
@@ -1808,14 +1810,17 @@ async def _finish_failed(run_id: int, error: dict[str, Any]) -> None:
         run.completed_at = models.utcnow()
         run.revision += 1
         return True
-    changed = await event_bus.write(
+    (changed, _sequence) = await event_bus.write_with_event(
+        run_id,
         write,
+        "run_failed",
+        payload={"error": error},
         priority=10,
         correlation_id=f"workflow:{run_id}:failed",
+        should_emit=bool,
     )
     if not changed:
         return
-    await event_bus.emit(run_id, "run_failed", payload={"error": error})
 
 
 async def _finish_cancelled(run_id: int) -> None:
@@ -1840,15 +1845,17 @@ async def _finish_cancelled(run_id: int) -> None:
             node.status = "cancelled"
             node.completed_at = models.utcnow()
         return True, approvals.cancel_pending_for_run(db, run_id)
-    changed, cancelled_approval_ids = await event_bus.write(
+    (changed, cancelled_approval_ids), _sequence = await event_bus.write_with_event(
+        run_id,
         write,
+        "run_cancelled",
         priority=5,
         correlation_id=f"workflow:{run_id}:cancel",
+        should_emit=lambda result: result[0],
     )
     if not changed:
         return
     approval_signals.notify(*cancelled_approval_ids)
-    await event_bus.emit(run_id, "run_cancelled")
 
 
 async def _mark_ready(run_id: int, node_key: str) -> None:

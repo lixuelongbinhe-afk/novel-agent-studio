@@ -155,6 +155,48 @@ async def test_event_bus_uses_one_lock_for_concurrent_emitters(
     assert persisted == list(range(1, 21))
 
 
+@pytest.mark.asyncio
+async def test_terminal_status_and_event_are_committed_atomically(
+    stream_database: tuple[sessionmaker[Session], Engine, int, int],
+) -> None:
+    factory, engine, run_id, _attempt_id = stream_database
+    commits = 0
+
+    def count_commit(_connection: object) -> None:
+        nonlocal commits
+        commits += 1
+
+    def finish(db: Session) -> None:
+        run = db.get(models.WorkflowRun, run_id)
+        assert run is not None
+        run.status = "completed"
+
+    event.listen(engine, "commit", count_commit)
+    try:
+        _result, sequence = await workflow_runtime.event_bus.write_with_event(
+            run_id,
+            finish,
+            "run_completed",
+            payload={"output": {"chapter": 1}},
+            priority=10,
+            correlation_id=f"workflow:{run_id}:complete",
+        )
+    finally:
+        event.remove(engine, "commit", count_commit)
+
+    assert sequence == 1
+    assert commits == 1
+    with factory() as db:
+        run = db.get(models.WorkflowRun, run_id)
+        persisted = db.scalars(
+            select(models.WorkflowRunEvent).where(
+                models.WorkflowRunEvent.workflow_run_id == run_id
+            )
+        ).all()
+    assert run is not None and run.status == "completed"
+    assert [item.event_type for item in persisted] == ["run_completed"]
+
+
 def test_event_bus_replaces_lock_after_event_loop_restart() -> None:
     bus = workflow_events.WorkflowEventBus()
 

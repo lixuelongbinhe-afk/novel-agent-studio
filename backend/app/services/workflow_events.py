@@ -76,6 +76,47 @@ class WorkflowEventBus:
             correlation_id=correlation_id,
         )
 
+    async def write_with_event(
+        self,
+        run_id: int,
+        operation: Callable[[Session], T],
+        event_type: str,
+        *,
+        node_key: str | None = None,
+        payload: dict[str, Any] | None = None,
+        priority: int,
+        correlation_id: str,
+        should_emit: Callable[[T], bool] | None = None,
+    ) -> tuple[T, int]:
+        """Commit a state transition and its observable event atomically."""
+        lock = self._lock_for(run_id)
+        async with lock:
+
+            def write(db: Session) -> tuple[T, int]:
+                result = operation(db)
+                if should_emit is not None and not should_emit(result):
+                    return result, 0
+                run = db.get(models.WorkflowRun, run_id)
+                if run is None:
+                    raise RuntimeError("WorkflowRun not found")
+                run.event_sequence += 1
+                event = models.WorkflowRunEvent(
+                    workflow_run_id=run_id,
+                    sequence=run.event_sequence,
+                    event_type=event_type,
+                    node_key=node_key,
+                    payload_json=_dump(payload or {}),
+                )
+                db.add(event)
+                db.flush()
+                return result, event.sequence
+
+            return await self._writer.submit(
+                write,
+                priority=priority,
+                correlation_id=correlation_id,
+            )
+
     async def emit_stream_checkpoint(
         self,
         run_id: int,
