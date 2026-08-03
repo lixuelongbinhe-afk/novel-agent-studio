@@ -7,7 +7,7 @@ import time
 from typing import Any, cast
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import create_engine, select
@@ -40,6 +40,7 @@ from app.services import (
     workflow_validation,
     workflows,
 )
+from app.services.errors import DomainError
 
 
 @pytest.fixture
@@ -316,7 +317,7 @@ def test_agent_versioning_and_safe_templates(
         unsafe = agent_payload(
             project.id, profile.id, name="不安全", prompt="{input.__class__}"
         )
-        with pytest.raises(HTTPException, match="无效"):
+        with pytest.raises(DomainError, match="无效"):
             agents.create_agent(db, unsafe)
 
         referenced = workflows.create_workflow(
@@ -340,7 +341,7 @@ def test_agent_versioning_and_safe_templates(
                 ],
             ),
         )
-        with pytest.raises(HTTPException, match="正被工作流引用"):
+        with pytest.raises(DomainError, match="正被工作流引用"):
             agents.delete_agent(db, updated.id, updated.revision)
         workflows.delete_workflow(db, referenced.id, referenced.revision)
         agents.delete_agent(db, updated.id, updated.revision)

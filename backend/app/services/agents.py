@@ -4,12 +4,16 @@ import hashlib
 import json
 from typing import Any, cast
 
-from fastapi import HTTPException
 from jsonschema import Draft202012Validator, SchemaError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+    PayloadTooLargeError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas import (
     AgentBudget,
@@ -49,7 +53,7 @@ def create_agent(db: Session, payload: AgentDefinitionCreate) -> AgentDefinition
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="同一项目中 Agent 名称不能重复")
+        raise ConflictError("同一项目中 Agent 名称不能重复")
     config_hash = agent_config_hash(payload)
     row = models.AgentDefinition(
         **_storage_values(payload), version=1, config_hash=config_hash
@@ -74,7 +78,7 @@ def update_agent(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="同一项目中 Agent 名称不能重复")
+        raise ConflictError("同一项目中 Agent 名称不能重复")
     next_hash = agent_config_hash(payload)
     for key, value in _storage_values(payload).items():
         setattr(row, key, value)
@@ -99,7 +103,7 @@ def delete_agent(db: Session, agent_id: int, expected_revision: int) -> None:
         )
     ).all()
     if any(_json_object(value).get("agent_id") == agent_id for value in reference_configs):
-        raise HTTPException(status_code=409, detail="Agent 正被工作流引用，不能删除")
+        raise ConflictError("Agent 正被工作流引用，不能删除")
     soft_delete(row)
     db.flush()
 
@@ -181,20 +185,20 @@ def _validate_agent(
     if payload.route_id is not None:
         route = cast(models.ModelRoute, get_or_404(db, models.ModelRoute, payload.route_id))
         if route.project_id is not None and route.project_id != payload.project_id:
-            raise HTTPException(status_code=409, detail="Agent 不能引用其他项目的 Route")
+            raise ConflictError("Agent 不能引用其他项目的 Route")
     try:
         validate_template(payload.system_prompt)
         validate_template(payload.prompt_template)
         Draft202012Validator.check_schema(payload.input_schema)
         Draft202012Validator.check_schema(payload.output_schema)
     except (SafeTemplateError, SchemaError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise InvalidInputError(str(exc)) from exc
     for value, label in (
         (payload.input_schema, "input_schema"),
         (payload.output_schema, "output_schema"),
     ):
         if len(_dump(value).encode("utf-8")) > 500_000:
-            raise HTTPException(status_code=413, detail=f"{label} 超过 500 KB")
+            raise PayloadTooLargeError(f"{label} 超过 500 KB")
 
 
 def _dump(value: Any) -> str:

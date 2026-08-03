@@ -9,6 +9,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app import models
 from app.core.text import extract_visible_text
+from app.services.errors import ConflictError, NotFoundError
 
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -22,18 +23,14 @@ def word_count(text: str) -> int:
 def get_or_404(db: Session, model: type[Any], item_id: int) -> Any:
     item = db.get(model, item_id)
     if item is None or getattr(item, "deleted_at", None) is not None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
+        raise NotFoundError(f"{model.__name__} not found")
     return item
 
 
 def get_including_deleted_or_404(db: Session, model: type[Any], item_id: int) -> Any:
     item = db.get(model, item_id)
     if item is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
+        raise NotFoundError(f"{model.__name__} not found")
     return item
 
 
@@ -50,15 +47,12 @@ def list_deleted(db: Session, model: type[Any], *filters: ColumnElement[bool]) -
 
 def require_revision(item: Any, expected_revision: int) -> None:
     if item.revision != expected_revision:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=409,
-            detail={
+        raise ConflictError(
+            {
                 "message": "Record revision conflict",
                 "current_revision": item.revision,
                 "record_id": item.id,
-            },
+            }
         )
 
 

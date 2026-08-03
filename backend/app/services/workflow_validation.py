@@ -5,11 +5,13 @@ import json
 from collections import deque
 from typing import Any, cast
 
-from fastapi import HTTPException
 from jsonschema import Draft202012Validator, SchemaError
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    InvalidInputError,
+)
 from app.repositories import get_or_404
 from app.schemas import (
     WorkflowEdgeWrite,
@@ -146,13 +148,10 @@ def compile_graph(
 ) -> dict[str, Any]:
     validation = validate_graph(db, project_id, nodes, edges)
     if not validation.valid:
-        raise HTTPException(
-            status_code=422,
-            detail={
+        raise InvalidInputError({
                 "message": "工作流验证失败",
                 "issues": [issue.model_dump(mode="json") for issue in validation.issues],
-            },
-        )
+            })
     return _build_plan(nodes, edges, validation.topological_order)
 
 

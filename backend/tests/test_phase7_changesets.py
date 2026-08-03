@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
@@ -22,6 +21,7 @@ from app.schemas import (
 )
 from app.services import approvals, change_sets, writeback
 from app.services.entity_resolution import EntityResolver
+from app.services.errors import DomainError
 
 
 @pytest.fixture
@@ -475,7 +475,7 @@ def test_no_write_without_approval_and_revision_conflict_is_visible(db: Session)
     )
     revision = row.revision
     db.commit()
-    with pytest.raises(HTTPException, match="未批准"):
+    with pytest.raises(DomainError, match="未批准"):
         with db.begin():
             writeback.apply_change_set(
                 db,
@@ -554,7 +554,7 @@ def test_edit_supersedes_approval_and_rejects_non_whitelisted_field(db: Session)
     malicious = latest[0].model_copy(
         update={"proposed": {**latest[0].proposed, "raw_sql": "DROP TABLE chapters"}}
     )
-    with pytest.raises(HTTPException, match="非白名单字段"):
+    with pytest.raises(DomainError, match="非白名单字段"):
         change_sets.edit_change_set(
             db,
             row.id,

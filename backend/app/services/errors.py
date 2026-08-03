@@ -24,7 +24,7 @@ class DomainError(Exception):
 
     kind: ErrorKind = ErrorKind.INVALID_INPUT
 
-    def __init__(self, detail: str, *, context: dict[str, str] | None = None) -> None:
+    def __init__(self, detail: object, *, context: dict[str, str] | None = None) -> None:
         super().__init__(detail)
         self.detail = detail
         self.context = context or {}

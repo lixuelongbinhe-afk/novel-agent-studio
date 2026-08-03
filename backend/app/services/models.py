@@ -5,11 +5,14 @@ import os
 import time
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    BadRequestError,
+    ConflictError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas import (
     ModelProfileCreate,
@@ -49,7 +52,7 @@ def create_provider(db: Session, payload: ProviderAccountCreate) -> models.Provi
         select(models.ProviderAccount).where(models.ProviderAccount.name == payload.name)
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Provider name already exists")
+        raise ConflictError("Provider name already exists")
     provider = models.ProviderAccount(**payload.model_dump())
     db.add(provider)
     db.flush()
@@ -84,7 +87,7 @@ def update_provider(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="Provider name already exists")
+        raise ConflictError("Provider name already exists")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(provider, key, value)
     provider.revision += 1
@@ -129,7 +132,7 @@ def create_model_profile(db: Session, payload: ModelProfileCreate) -> models.Mod
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Model already exists for this provider")
+        raise ConflictError("Model already exists for this provider")
     profile = models.ModelProfile(**payload.model_dump())
     db.add(profile)
     db.flush()
@@ -178,7 +181,7 @@ def create_preset(db: Session, payload: ProviderPresetCreate) -> models.Provider
         select(models.ProviderPreset).where(models.ProviderPreset.slug == payload.slug)
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Preset slug already exists")
+        raise ConflictError("Preset slug already exists")
     data = payload.model_dump(exclude={"options"})
     preset = models.ProviderPreset(
         **data, options_json=json.dumps(payload.options, ensure_ascii=False)
@@ -201,7 +204,7 @@ def update_preset(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="Preset slug already exists")
+        raise ConflictError("Preset slug already exists")
     for key, value in payload.model_dump(exclude={"expected_revision", "options"}).items():
         setattr(preset, key, value)
     preset.options_json = json.dumps(payload.options, ensure_ascii=False)
@@ -319,7 +322,7 @@ async def sync_provider_models(db: Session, provider_id: int) -> ModelSyncRead:
     try:
         adapter = model_gateway.registry.get(runtime.protocol)
     except KeyError as exc:
-        raise HTTPException(status_code=400, detail="Unsupported provider protocol") from exc
+        raise BadRequestError("Unsupported provider protocol") from exc
     discovered = await adapter.list_models(runtime)
     created = 0
     updated = 0

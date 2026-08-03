@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import Literal
 
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -33,6 +32,7 @@ from app.schemas.studio import (
     StudioProjectCreate,
 )
 from app.services import chapter_plans, model_execution, studio
+from app.services.errors import DomainError, ErrorKind
 
 
 @pytest.fixture
@@ -145,7 +145,7 @@ def test_delete_project_route_removes_project_from_dashboard(db: Session) -> Non
 
     assert response.status_code == 204
     assert studio.dashboard(db) == []
-    with pytest.raises(HTTPException, match="项目不存在"):
+    with pytest.raises(DomainError, match="项目不存在"):
         studio.project_overview(db, project_id)
 
 
@@ -180,7 +180,7 @@ def test_continuation_import_builds_editable_tree_and_permanent_original(db: Ses
     assert original["content"] == manuscript
     assert original["metadata"]["readonly"] is True
     assert overview["snapshots"][0]["permanent"] is True
-    with pytest.raises(HTTPException, match="永久只读"):
+    with pytest.raises(DomainError, match="永久只读"):
         studio.update_artifact(
             db,
             int(original["id"]),
@@ -306,7 +306,7 @@ async def test_generation_context_failure_marks_job_failed(
         raise RuntimeError("context build failed")
 
     monkeypatch.setattr(studio, "_generation_context", fail_context)
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         await studio.generate(
             db,
             project_id,
@@ -314,7 +314,7 @@ async def test_generation_context_failure_marks_job_failed(
             GenerateRequest(idempotency_key="context-failure", use_demo_model=True),
         )
 
-    assert exc_info.value.status_code == 502
+    assert exc_info.value.kind is ErrorKind.UPSTREAM_FAILED
     job = db.scalar(select(models.GenerationJob))
     assert job is not None
     assert job.status == "failed"
@@ -525,10 +525,10 @@ def test_incomplete_chapter_plan_blocks_tree_creation(db: Session) -> None:
     )
     db.flush()
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DomainError) as exc_info:
         studio._ensure_chapter_tree_from_plan(db, project_id)
 
-    assert exc_info.value.status_code == 409
+    assert exc_info.value.kind is ErrorKind.CONFLICT
     assert "4" in str(exc_info.value.detail)
     assert studio.project_overview(db, project_id)["tree"]["chapters"] == []
     assert studio._chapter_generation_ranges(80) == [
@@ -821,7 +821,7 @@ def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session
     assert preview["missing_numbers"] == [4]
     assert preview["suspect_chapters"][0]["id"] == suspect.id
 
-    with pytest.raises(HTTPException, match="确认"):
+    with pytest.raises(DomainError, match="确认"):
         studio.repair_chapter_tree(
             db, project_id, ChapterTreeRepairRequest(confirm=False)
         )
@@ -949,7 +949,7 @@ async def test_multi_agent_failure_keeps_audit_but_no_business_output(
         return response
 
     monkeypatch.setattr(studio, "_model_call", fail_second_call)
-    with pytest.raises(HTTPException, match="业务产出和阶段推进未提交"):
+    with pytest.raises(DomainError, match="业务产出和阶段推进未提交"):
         await studio.generate(
             db,
             project_id,
@@ -1102,7 +1102,7 @@ def test_major_conflict_requires_author_resolution(db: Session) -> None:
     db.add(artifact)
     db.commit()
 
-    with pytest.raises(HTTPException, match="重大冲突必须由作者选择处理方式"):
+    with pytest.raises(DomainError, match="重大冲突必须由作者选择处理方式"):
         studio.decide_artifact(
             db,
             artifact.id,
@@ -1162,7 +1162,7 @@ async def test_full_planning_approval_gate_builds_writing_tree(db: Session) -> N
             GenerateRequest(idempotency_key=f"creative-{phase}", use_demo_model=True),
         )
         if index == 0:
-            with pytest.raises(HTTPException, match="请先完成并批准"):
+            with pytest.raises(DomainError, match="请先完成并批准"):
                 await studio.generate(
                     db,
                     project_id,

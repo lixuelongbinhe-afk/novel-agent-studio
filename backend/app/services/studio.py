@@ -6,11 +6,19 @@ import re
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, load_only
 
 from app import models
+from app.services.errors import (
+    BudgetPausedError,
+    ConflictError,
+    DomainError,
+    InvalidInputError,
+    NotFoundError,
+    UnavailableError,
+    UpstreamFailedError,
+)
 from app.repositories import word_count
 from app.schemas import ModelDebugRequest, NormalizedContentPart, NormalizedMessage
 from app.schemas.context import ContextBuildRequest
@@ -192,7 +200,7 @@ def create_continuation_project(
         source_text = str(payload.text or "").strip()
         source_name = payload.source_name.strip() or "粘贴正文"
     if not source_text:
-        raise HTTPException(status_code=422, detail="导入正文不能为空")
+        raise InvalidInputError("导入正文不能为空")
 
     parsed = parse_manuscript(source_text, payload.title.strip())
     imported_words = word_count(source_text)
@@ -289,7 +297,7 @@ def update_continuation_settings(
 ) -> dict[str, Any]:
     state = _state(db, project_id)
     if state.entry_mode != "continuation":
-        raise HTTPException(status_code=409, detail="该项目不是半成品续写项目")
+        raise ConflictError("该项目不是半成品续写项目")
     config = _json_object(state.config_json)
     for key, value in payload.model_dump(exclude_none=True).items():
         config[key] = value.strip() if isinstance(value, str) else value
@@ -381,7 +389,7 @@ def _source_project_manuscript(db: Session, project_id: int) -> tuple[str, str]:
             blocks.extend((f"## {chapter.title}", chapter.content))
     text = "\n\n".join(blocks).strip()
     if not text:
-        raise HTTPException(status_code=409, detail="所选项目没有可导入的正文")
+        raise ConflictError("所选项目没有可导入的正文")
     return text, source.title
 
 
@@ -614,7 +622,7 @@ def update_artifact(
 ) -> dict[str, Any]:
     current = _artifact(db, artifact_id)
     if _json_object(current.metadata_json).get("readonly"):
-        raise HTTPException(status_code=409, detail="原始导入副本为永久只读内容，不能修改")
+        raise ConflictError("原始导入副本为永久只读内容，不能修改")
     _require_revision(current, payload.expected_revision)
     current.status = "superseded"
     current.revision += 1
@@ -696,7 +704,7 @@ def decide_artifact(
     metadata = _json_object(artifact.metadata_json)
     if payload.action == "approve" and metadata.get("conflict_level") == "major":
         if payload.conflict_resolution is None:
-            raise HTTPException(status_code=409, detail="重大冲突必须由作者选择处理方式")
+            raise ConflictError("重大冲突必须由作者选择处理方式")
         metadata["conflict_resolution"] = payload.conflict_resolution
         artifact.metadata_json = _dump(metadata)
         if payload.conflict_resolution == "preserve_canon":
@@ -708,7 +716,7 @@ def decide_artifact(
             _advance_stage(db, artifact)
             return _artifact_record(artifact)
         if payload.conflict_resolution == "manual_merge" and artifact.source != "user":
-            raise HTTPException(status_code=409, detail="请先编辑合并内容并保存新版本，再选择手工合并")
+            raise ConflictError("请先编辑合并内容并保存新版本，再选择手工合并")
     if payload.action == "approve":
         if artifact.kind == "chapters":
             _validate_chapter_plan_approval(db, artifact)
@@ -731,7 +739,7 @@ async def generate(
     db: Session, project_id: int, phase: str, payload: GenerateRequest
 ) -> dict[str, Any]:
     if phase not in PHASE_AGENTS:
-        raise HTTPException(status_code=422, detail="不支持的创作阶段")
+        raise InvalidInputError("不支持的创作阶段")
     project = _project(db, project_id)
     state = _state(db, project_id)
     _require_generation_prerequisites(db, project_id, phase, payload)
@@ -739,9 +747,9 @@ async def generate(
     if payload.agent_name is not None:
         phase_agents = [item for item in phase_agents if item[0] == payload.agent_name]
         if not phase_agents:
-            raise HTTPException(status_code=422, detail="该阶段不存在指定的 Agent")
+            raise InvalidInputError("该阶段不存在指定的 Agent")
     if state.budget_paused:
-        raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
+        raise BudgetPausedError("项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, payload.use_demo_model)
     completed_calls = 0
     total_calls = 0
@@ -758,10 +766,7 @@ async def generate(
             model_reason=reason,
         )
     except generation_jobs.GenerationLeaseConflict as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="生成任务租约暂时不可用，请稍后重试",
-        ) from exc
+        raise UnavailableError("生成任务租约暂时不可用，请稍后重试") from exc
     job = lease.job
     if lease.replayed:
         replay_artifacts = _generation_job_artifacts(db, job)
@@ -953,7 +958,7 @@ async def generate(
                 ).order_by(models.Scene.position)
             ).all()
             if chapter is None or not scenes:
-                raise HTTPException(status_code=409, detail="场景级审核需要该章节先建立场景大纲")
+                raise ConflictError("场景级审核需要该章节先建立场景大纲")
             combined = "\n\n".join(outputs)
             previous_scene = ""
             for scene_index, scene in enumerate(scenes):
@@ -1033,7 +1038,7 @@ async def generate(
             cancelled=True,
         )
         raise
-    except HTTPException as exc:
+    except DomainError as exc:
         generation_jobs.fail(
             db,
             job.id,
@@ -1047,7 +1052,7 @@ async def generate(
             str(exc), completed_calls, total_calls
         )
         generation_jobs.fail(db, job.id, message)
-        raise HTTPException(status_code=502, detail=message) from exc
+        raise UpstreamFailedError(message) from exc
 
 
 def _generation_job_artifacts(
@@ -1110,7 +1115,7 @@ async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, 
     )
     response = await _model_call(db, project_id, prompt, profile, use_demo=payload.use_demo_model)
     if response.error is not None:
-        raise HTTPException(status_code=502, detail=response.error.message)
+        raise UpstreamFailedError(response.error.message)
     proposal = _chat_proposal(db, project_id, payload, response.text)
     assistant = models.StudioMessage(
         project_id=project_id,
@@ -1134,9 +1139,9 @@ async def decide_message_proposal(
 ) -> dict[str, Any]:
     message = db.get(models.StudioMessage, message_id)
     if message is None or message.project_id != project_id:
-        raise HTTPException(status_code=404, detail="对话消息不存在")
+        raise NotFoundError("对话消息不存在")
     if message.proposal_status != "pending":
-        raise HTTPException(status_code=409, detail="该修改提案已处理")
+        raise ConflictError("该修改提案已处理")
     if action == "reject":
         message.proposal_status = "rejected"
         db.commit()
@@ -1157,7 +1162,7 @@ async def decide_message_proposal(
         )
         message = db.get(models.StudioMessage, message_id)
         if message is None:
-            raise HTTPException(status_code=404, detail="对话消息不存在")
+            raise NotFoundError("对话消息不存在")
         message.proposal_status = "applied"
         db.commit()
         return _message_record(message)
@@ -1169,14 +1174,14 @@ async def decide_message_proposal(
     if proposal.get("target_type") == "chapter":
         chapter = db.get(models.Chapter, int(proposal.get("target_id") or 0))
         if chapter is None:
-            raise HTTPException(status_code=404, detail="目标章节不存在")
+            raise NotFoundError("目标章节不存在")
         chapter.content = str(proposal.get("content") or "")
         chapter.word_count = word_count(chapter.content)
         chapter.revision += 1
     else:
         artifact = db.get(models.CreativeArtifact, int(proposal.get("target_id") or 0))
         if artifact is None:
-            raise HTTPException(status_code=404, detail="目标创作成果不存在")
+            raise NotFoundError("目标创作成果不存在")
         artifact.status = "superseded"
         artifact.revision += 1
         db.add(
@@ -1373,7 +1378,7 @@ def create_snapshot(
 def restore_snapshot(db: Session, project_id: int, snapshot_id: int) -> dict[str, Any]:
     snapshot = db.get(models.ProjectSnapshot, snapshot_id)
     if snapshot is None or snapshot.project_id != project_id:
-        raise HTTPException(status_code=404, detail="项目快照不存在")
+        raise NotFoundError("项目快照不存在")
     create_snapshot(
         db,
         project_id,
@@ -1441,7 +1446,7 @@ def setup_provider(db: Session, payload: ProviderSetup) -> dict[str, Any]:
         "openai_compatible": "openai_chat",
     }
     if db.scalar(select(models.ProviderAccount).where(models.ProviderAccount.name == payload.name)):
-        raise HTTPException(status_code=409, detail="Provider 名称已存在")
+        raise ConflictError("Provider 名称已存在")
     provider = models.ProviderAccount(
         name=payload.name,
         provider_type=protocol_map[payload.preset],
@@ -1504,7 +1509,7 @@ def list_studio_providers(db: Session) -> list[dict[str, Any]]:
 def update_provider_secret(db: Session, provider_id: int, api_key: str) -> dict[str, Any]:
     provider = db.get(models.ProviderAccount, provider_id)
     if provider is None or provider.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Provider 不存在")
+        raise NotFoundError("Provider 不存在")
     set_provider_secret(provider_id, api_key)
     profiles = db.scalars(
         select(models.ModelProfile).where(models.ModelProfile.provider_account_id == provider_id)
@@ -1515,7 +1520,7 @@ def update_provider_secret(db: Session, provider_id: int, api_key: str) -> dict[
 def delete_studio_provider(db: Session, provider_id: int) -> None:
     provider = db.get(models.ProviderAccount, provider_id)
     if provider is None:
-        raise HTTPException(status_code=404, detail="Provider 不存在")
+        raise NotFoundError("Provider 不存在")
     delete_provider_secret(provider_id)
     provider.deleted_at = datetime.now(timezone.utc)
     provider.enabled = False
@@ -1549,7 +1554,7 @@ def _project(db: Session, project_id: int) -> models.Project:
         )
     )
     if project is None:
-        raise HTTPException(status_code=404, detail="项目不存在")
+        raise NotFoundError("项目不存在")
     return project
 
 
@@ -1561,7 +1566,7 @@ def _artifact(db: Session, artifact_id: int) -> models.CreativeArtifact:
         )
     )
     if artifact is None:
-        raise HTTPException(status_code=404, detail="创作成果不存在")
+        raise NotFoundError("创作成果不存在")
     return artifact
 
 
@@ -1851,11 +1856,8 @@ def _ensure_chapter_tree_from_plan(db: Session, project_id: int) -> None:
     expected_numbers = list(range(1, requested_chapters + 1))
     if sorted(planned_numbers) != expected_numbers:
         missing = sorted(set(expected_numbers) - set(planned_numbers))
-        raise HTTPException(
-            status_code=409,
-            detail="批准的章节规划不能建立完整卷章树；仍缺少第 "
-            f"{_format_number_ranges(missing)} 章，请返回章节规划重新生成。",
-        )
+        raise ConflictError("批准的章节规划不能建立完整卷章树；仍缺少第 "
+            f"{_format_number_ranges(missing)} 章，请返回章节规划重新生成。")
     scene_plans = [
         item
         for item in approved
@@ -1919,17 +1921,11 @@ def _reconcile_chapter_tree(
                 unplanned_with_prose.append(chapter)
             continue
         if number in chapters_by_number:
-            raise HTTPException(
-                status_code=409,
-                detail=f"现有卷章树包含重复的第 {number} 章，请先使用章节修复工具处理。",
-            )
+            raise ConflictError(f"现有卷章树包含重复的第 {number} 章，请先使用章节修复工具处理。")
         chapters_by_number[number] = chapter
     if unplanned_with_prose:
         names = "、".join(chapter.title for chapter in unplanned_with_prose[:8])
-        raise HTTPException(
-            status_code=409,
-            detail=f"现有正文中有不属于批准计划的章节：{names}。为避免丢失正文，系统已停止推进，请先手工确认。",
-        )
+        raise ConflictError(f"现有正文中有不属于批准计划的章节：{names}。为避免丢失正文，系统已停止推进，请先手工确认。")
 
     volumes_by_number = {
         number: volume
@@ -1967,7 +1963,7 @@ def _reconcile_chapter_tree(
             chapter_title = str(chapter_data["title"])
             number = _chapter_title_number(chapter_title)
             if number is None:
-                raise HTTPException(status_code=409, detail=f"章节标题缺少规范编号：{chapter_title}")
+                raise ConflictError(f"章节标题缺少规范编号：{chapter_title}")
             planned_chapter = chapters_by_number.get(number)
             if planned_chapter is None:
                 planned_chapter = models.Chapter(
@@ -2023,10 +2019,7 @@ def _reconcile_chapter_tree(
         if number is not None
     )
     if active_numbers != list(range(1, requested_chapters + 1)):
-        raise HTTPException(
-            status_code=409,
-            detail="卷章树校验失败，阶段未推进；请保留项目并运行章节结构修复。",
-        )
+        raise ConflictError("卷章树校验失败，阶段未推进；请保留项目并运行章节结构修复。")
 
 
 def _reconcile_chapter_scenes(
@@ -2101,7 +2094,7 @@ def _ensure_continuation_tree_from_plan(db: Session, project_id: int) -> None:
         .order_by(models.Volume.position, models.Volume.id)
     ).all())
     if not volumes:
-        raise HTTPException(status_code=409, detail="导入正文没有可用分卷")
+        raise ConflictError("导入正文没有可用分卷")
     existing_chapters = db.scalars(
         select(models.Chapter)
         .where(
@@ -2437,11 +2430,8 @@ def _validate_chapter_plan_approval(
             detail.append(f"重复章节号：{_format_number_ranges(validation['duplicate_numbers'])}")
         if validation["out_of_range_numbers"]:
             detail.append(f"越界章节号：{_format_number_ranges(validation['out_of_range_numbers'])}")
-        raise HTTPException(
-            status_code=409,
-            detail="章节规划尚不完整（覆盖率 "
-            f"{validation['coverage_percent']}%）：{'；'.join(detail)}。请重新生成缺失章节后再审核。",
-        )
+        raise ConflictError("章节规划尚不完整（覆盖率 "
+            f"{validation['coverage_percent']}%）：{'；'.join(detail)}。请重新生成缺失章节后再审核。")
 
 
 def _normalized_approved_volume_titles(
@@ -2613,7 +2603,7 @@ def repair_chapter_tree(
     payload: ChapterTreeRepairRequest,
 ) -> dict[str, Any]:
     if not payload.confirm:
-        raise HTTPException(status_code=409, detail="修复章节结构需要作者明确确认")
+        raise ConflictError("修复章节结构需要作者明确确认")
     preview = chapter_tree_repair_preview(db, project_id)
     if not preview["can_repair"]:
         return {"repaired": False, "overview": project_overview(db, project_id)}
@@ -2641,7 +2631,7 @@ def repair_chapter_tree(
         .order_by(models.Volume.position, models.Volume.id)
     ).all()
     if not volumes:
-        raise HTTPException(status_code=409, detail="项目没有可用分卷，无法补齐章节")
+        raise ConflictError("项目没有可用分卷，无法补齐章节")
 
     canonical_by_key: dict[str, models.Volume] = {}
     for volume in volumes:
@@ -2785,19 +2775,19 @@ def _require_generation_prerequisites(
     state = _state(db, project_id)
     order = _stage_order(state)
     if phase not in order or state.stage not in order:
-        raise HTTPException(status_code=409, detail="当前项目模式不支持该创作阶段")
+        raise ConflictError("当前项目模式不支持该创作阶段")
     config = _json_object(state.config_json)
     if state.entry_mode == "continuation" and config.get("conflict_paused"):
-        raise HTTPException(status_code=409, detail="发现重大连续性冲突，必须由作者确认处理后才能继续")
+        raise ConflictError("发现重大连续性冲突，必须由作者确认处理后才能继续")
     phase_index = order.index(phase)
     current_index = order.index(state.stage)
     if phase_index > current_index and not (state.stage == "idea" and phase == "world"):
-        raise HTTPException(status_code=409, detail=f"请先完成并批准“{STAGE_LABELS[state.stage]}”阶段")
+        raise ConflictError(f"请先完成并批准“{STAGE_LABELS[state.stage]}”阶段")
     if phase == "drafting":
         if not payload.chapter_id:
-            raise HTTPException(status_code=422, detail="正文生成必须选择章节")
+            raise InvalidInputError("正文生成必须选择章节")
         if state.entry_mode == "continuation" and config.get("continuation_start") == "choose":
-            raise HTTPException(status_code=409, detail="请先选择接着写当前章或从下一章开始")
+            raise ConflictError("请先选择接着写当前章或从下一章开始")
         planning = (
             ["continuation_analysis", "continuation_outline", "continuation_plan"]
             if state.entry_mode == "continuation"
@@ -2806,14 +2796,14 @@ def _require_generation_prerequisites(
         if state.entry_mode in {"creative", "continuation"} and not all(
             _phase_complete(db, project_id, item) for item in planning
         ):
-            raise HTTPException(status_code=409, detail="所有规划成果分别批准后才能开始正文")
+            raise ConflictError("所有规划成果分别批准后才能开始正文")
         pending_planning = int(db.scalar(select(func.count(models.CreativeArtifact.id)).where(
             models.CreativeArtifact.project_id == project_id,
             models.CreativeArtifact.kind.in_(planning),
             models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
         )) or 0)
         if pending_planning:
-            raise HTTPException(status_code=409, detail="仍有规划成果待审核，不能开始正文")
+            raise ConflictError("仍有规划成果待审核，不能开始正文")
     if phase == "review":
         volume_ids = select(models.Volume.id).where(models.Volume.project_id == project_id)
         empty_chapters = int(db.scalar(select(func.count(models.Chapter.id)).where(
@@ -2821,7 +2811,7 @@ def _require_generation_prerequisites(
             models.Chapter.word_count == 0,
         )) or 0)
         if empty_chapters:
-            raise HTTPException(status_code=409, detail="仍有章节未完成，不能开始全文审阅")
+            raise ConflictError("仍有章节未完成，不能开始全文审阅")
 
 
 def _maybe_finish_drafting(db: Session, project_id: int) -> None:
@@ -2847,7 +2837,7 @@ async def extract_style_reference(
     project = _project(db, project_id)
     state = _state(db, project_id)
     if state.budget_paused:
-        raise HTTPException(status_code=409, detail="项目预算已暂停，请先在费用面板确认继续")
+        raise BudgetPausedError("项目预算已暂停，请先在费用面板确认继续")
     profile, reason = _select_model(db, state, use_demo_model)
     input_budget = max(512, _studio_input_budget(profile, use_demo_model, 2200) - 600)
     chunks = _chunk_text_by_tokens(text, input_budget)
@@ -2869,7 +2859,7 @@ async def extract_style_reference(
             max_tokens=1200 if len(chunks) > 1 else 2200,
         )
         if partial.error is not None:
-            raise HTTPException(status_code=502, detail=partial.error.message)
+            raise UpstreamFailedError(partial.error.message)
         if len(chunks) == 1:
             response = partial
             break
@@ -2895,7 +2885,7 @@ async def extract_style_reference(
             max_tokens=2200,
         )
     if response.error is not None:
-        raise HTTPException(status_code=502, detail=response.error.message)
+        raise UpstreamFailedError(response.error.message)
     metadata = {
         "agent_name": "参考文风分析",
         "filename": filename,
@@ -2934,7 +2924,7 @@ def _select_model(
     ).all()
     profiles = [profile for profile in profiles if _provider_has_key(db, profile.provider_account_id)]
     if not profiles:
-        raise HTTPException(status_code=409, detail="尚未配置可用 API，请先前往“模型与 API”添加密钥")
+        raise ConflictError("尚未配置可用 API，请先前往“模型与 API”添加密钥")
     strategy = state.routing_strategy
     if strategy == "quality":
         chosen = max(profiles, key=lambda item: item.context_window)
@@ -3681,7 +3671,7 @@ def _record(row: Any) -> dict[str, Any]:
 
 def _require_revision(row: Any, expected: int) -> None:
     if row.revision != expected:
-        raise HTTPException(status_code=409, detail="内容已在其他位置更新，请刷新后重试")
+        raise ConflictError("内容已在其他位置更新，请刷新后重试")
 
 
 def _json_object(value: str) -> dict[str, Any]:

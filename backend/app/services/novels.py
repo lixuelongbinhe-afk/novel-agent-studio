@@ -2,11 +2,16 @@ import json
 from collections.abc import Iterable
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    BadRequestError,
+    ConflictError,
+    InvalidInputError,
+    NotFoundError,
+)
 from app.repositories import (
     get_including_deleted_or_404,
     get_or_404,
@@ -179,7 +184,7 @@ def _require_available_chapter_number(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail=f"项目中已经存在第 {number} 章")
+        raise ConflictError(f"项目中已经存在第 {number} 章")
 
 
 def list_chapter_versions(db: Session, chapter_id: int) -> list[models.ChapterVersion]:
@@ -200,7 +205,7 @@ def restore_chapter_version(
         require_revision(chapter, expected_revision)
     version = db.get(models.ChapterVersion, version_id)
     if version is None or version.chapter_id != chapter.id:
-        raise HTTPException(status_code=404, detail="Chapter version not found")
+        raise NotFoundError("Chapter version not found")
     _snapshot_chapter(db, chapter, "before_restore")
     chapter.title = version.title
     chapter.content = version.content
@@ -232,7 +237,7 @@ def update_scene(db: Session, scene_id: int, payload: SceneUpdate) -> models.Sce
 def reorder_records(db: Session, resource: str, payload: ReorderRequest) -> list[Any]:
     model: Any = {"volume": models.Volume, "chapter": models.Chapter, "scene": models.Scene, "timeline": models.TimelineEvent}.get(resource)
     if model is None:
-        raise HTTPException(status_code=400, detail="Unsupported sortable resource")
+        raise BadRequestError("Unsupported sortable resource")
     records = []
     parent_values: set[tuple[str, int]] = set()
     for requested in payload.items:
@@ -244,10 +249,10 @@ def reorder_records(db: Session, resource: str, payload: ReorderRequest) -> list
                 break
         records.append((record, requested.position))
     if len(parent_values) != 1:
-        raise HTTPException(status_code=400, detail="All reordered records must share one parent")
+        raise BadRequestError("All reordered records must share one parent")
     requested_positions = [position for _, position in records]
     if len(set(requested_positions)) != len(requested_positions):
-        raise HTTPException(status_code=422, detail="排序位置不能重复")
+        raise InvalidInputError("排序位置不能重复")
     parent_field, parent_id = next(iter(parent_values))
     selected_ids = {record.id for record, _ in records}
     occupied = db.scalars(
@@ -259,7 +264,7 @@ def reorder_records(db: Session, resource: str, payload: ReorderRequest) -> list
     ).all()
     collisions = sorted(set(requested_positions) & set(occupied))
     if collisions:
-        raise HTTPException(status_code=409, detail=f"排序位置已被其他记录占用：{collisions}")
+        raise ConflictError(f"排序位置已被其他记录占用：{collisions}")
     for index, (record, _) in enumerate(records, 1):
         record.position = -1_000_000 - index
     db.flush()
@@ -287,7 +292,7 @@ def _require_available_position(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail=f"位置 {position} 已被同级记录占用")
+        raise ConflictError(f"位置 {position} 已被同级记录占用")
 
 
 def create_entity(db: Session, project_id: int, payload: StoryEntityCreate) -> models.StoryEntity:
@@ -322,7 +327,7 @@ def create_alias(db: Session, entity_id: int, payload: EntityAliasCreate) -> mod
     try:
         db.flush()
     except Exception as exc:
-        raise HTTPException(status_code=409, detail="Alias already exists for this entity") from exc
+        raise ConflictError("Alias already exists for this entity") from exc
     return alias
 
 
@@ -516,7 +521,7 @@ def project_trash(db: Session, project_id: int) -> dict[str, list[Any]]:
 def delete_record(db: Session, resource: str, item_id: int, expected_revision: int) -> None:
     model = RESOURCE_MODELS.get(resource)
     if model is None:
-        raise HTTPException(status_code=400, detail="Unsupported resource")
+        raise BadRequestError("Unsupported resource")
     item = get_or_404(db, model, item_id)
     require_revision(item, expected_revision)
     soft_delete(item)
@@ -526,10 +531,10 @@ def delete_record(db: Session, resource: str, item_id: int, expected_revision: i
 def restore_record(db: Session, resource: str, item_id: int, expected_revision: int) -> None:
     model = RESOURCE_MODELS.get(resource)
     if model is None:
-        raise HTTPException(status_code=400, detail="Unsupported resource")
+        raise BadRequestError("Unsupported resource")
     item = get_including_deleted_or_404(db, model, item_id)
     if item.deleted_at is None:
-        raise HTTPException(status_code=409, detail="Record is not deleted")
+        raise ConflictError("Record is not deleted")
     require_revision(item, expected_revision)
     restore(item)
     db.flush()
@@ -572,7 +577,7 @@ def _require_project_entities(db: Session, project_id: int, entity_ids: Iterable
     )
     actual = set(db.scalars(stmt).all())
     if actual != expected:
-        raise HTTPException(status_code=400, detail="Entity does not belong to this project")
+        raise BadRequestError("Entity does not belong to this project")
 
 
 def _require_project_chapter(db: Session, project_id: int, chapter_id: int | None) -> None:
@@ -589,4 +594,4 @@ def _require_project_chapter(db: Session, project_id: int, chapter_id: int | Non
         )
     )
     if db.scalar(stmt) is None:
-        raise HTTPException(status_code=400, detail="Chapter does not belong to this project")
+        raise BadRequestError("Chapter does not belong to this project")

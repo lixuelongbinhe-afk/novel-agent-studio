@@ -5,11 +5,14 @@ import json
 from datetime import datetime
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404, require_revision
 from app.schemas.approvals import (
     ApprovalCreate,
@@ -107,16 +110,16 @@ def create_change_set(
     project = cast(models.Project, get_or_404(db, models.Project, payload.project_id))
     run = cast(models.WorkflowRun, get_or_404(db, models.WorkflowRun, payload.workflow_run_id))
     if run.project_id != project.id:
-        raise HTTPException(status_code=422, detail="运行不属于当前项目")
+        raise InvalidInputError("运行不属于当前项目")
     if run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
-        raise HTTPException(status_code=409, detail="终态或已取消运行不能创建变更集")
+        raise ConflictError("终态或已取消运行不能创建变更集")
     node_run = cast(models.NodeRun, get_or_404(db, models.NodeRun, payload.node_run_id))
     if node_run.workflow_run_id != run.id or node_run.node_key != payload.node_key:
-        raise HTTPException(status_code=422, detail="变更集节点与运行节点不匹配")
+        raise InvalidInputError("变更集节点与运行节点不匹配")
     chapter = _chapter_in_project(db, payload.chapter_id, project.id)
     scene = _scene_in_project(db, payload.scene_id, project.id)
     if scene is not None and chapter is not None and scene.chapter_id != chapter.id:
-        raise HTTPException(status_code=422, detail="目标场景不属于目标章节")
+        raise InvalidInputError("目标场景不属于目标章节")
     approved_prose = _approved_prose(
         db,
         payload.source_approval_id,
@@ -208,7 +211,7 @@ def edit_change_set(
     if len(payload.items) != len(existing_items) or {
         item.id for item in payload.items
     } != set(existing_by_id):
-        raise HTTPException(status_code=422, detail="编辑必须完整保留原变更项 ID 集合")
+        raise InvalidInputError("编辑必须完整保留原变更项 ID 集合")
     updated: list[ProposedChangeItem] = []
     for incoming in payload.items:
         current = existing_by_id[incoming.id]
@@ -218,7 +221,7 @@ def edit_change_set(
             or incoming.target_id != current.target_id
             or incoming.base_revision != current.base_revision
         ):
-            raise HTTPException(status_code=422, detail=f"{incoming.id} 的目标或操作不可直接修改")
+            raise InvalidInputError(f"{incoming.id} 的目标或操作不可直接修改")
         candidate = current.model_copy(
             update={"proposed": incoming.proposed, "decision": incoming.decision}
         )
@@ -299,7 +302,7 @@ def create_change_set_approval(
     _require_mutable(row)
     node_run = cast(models.NodeRun, get_or_404(db, models.NodeRun, node_run_id))
     if node_run.workflow_run_id != row.workflow_run_id or node_run.node_key != node_key:
-        raise HTTPException(status_code=422, detail="审批节点与变更集运行不匹配")
+        raise InvalidInputError("审批节点与变更集运行不匹配")
     existing = _pending_change_set_approval(db, row)
     if existing is not None:
         value = approvals.approval_snapshot(existing).value
@@ -433,16 +436,13 @@ def calculate_changes_hash(
 def validate_proposed_fields(item: ProposedChangeItem) -> None:
     allowed = ALLOWED_PROPOSED_FIELDS.get(item.kind)
     if allowed is None:
-        raise HTTPException(status_code=422, detail=f"不支持的变更类型：{item.kind}")
+        raise InvalidInputError(f"不支持的变更类型：{item.kind}")
     extras = set(item.proposed) - allowed
     if extras:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{item.id} 包含非白名单字段：{', '.join(sorted(extras))}",
-        )
+        raise InvalidInputError(f"{item.id} 包含非白名单字段：{', '.join(sorted(extras))}")
     serialized = _dump(item.proposed)
     if len(serialized.encode("utf-8")) > 2_500_000:
-        raise HTTPException(status_code=422, detail=f"{item.id} 的变更内容过大")
+        raise InvalidInputError(f"{item.id} 的变更内容过大")
     _validate_json_shape(item.id, item.proposed)
 
 
@@ -499,7 +499,7 @@ def _approved_prose(
     if submitted_prose is None:
         return None
     if approval_id is None:
-        raise HTTPException(status_code=422, detail="正文变更必须引用已批准的正文审批")
+        raise InvalidInputError("正文变更必须引用已批准的正文审批")
     approval = cast(
         models.ApprovalRequest,
         get_or_404(db, models.ApprovalRequest, approval_id),
@@ -511,12 +511,12 @@ def _approved_prose(
         or approval.status != "approved"
         or approval.superseded_by_id is not None
     ):
-        raise HTTPException(status_code=409, detail="正文审批无效、未批准或已被替代")
+        raise ConflictError("正文审批无效、未批准或已被替代")
     snapshot_value = approvals.approval_snapshot(approval).value
     if not isinstance(snapshot_value, str):
-        raise HTTPException(status_code=422, detail="正文审批快照不是文本")
+        raise InvalidInputError("正文审批快照不是文本")
     if submitted_prose != snapshot_value:
-        raise HTTPException(status_code=409, detail="提交正文与已批准快照不一致")
+        raise ConflictError("提交正文与已批准快照不一致")
     return snapshot_value
 
 
@@ -528,7 +528,7 @@ def _chapter_in_project(
     chapter = cast(models.Chapter, get_or_404(db, models.Chapter, chapter_id))
     volume = cast(models.Volume, get_or_404(db, models.Volume, chapter.volume_id))
     if volume.project_id != project_id:
-        raise HTTPException(status_code=422, detail="章节不属于当前项目")
+        raise InvalidInputError("章节不属于当前项目")
     return chapter
 
 
@@ -656,12 +656,12 @@ def _manual_merge_items(
 ) -> list[ProposedChangeItem]:
     current_by_id = {item.id: item for item in current}
     if len(incoming) != len(current) or {item.id for item in incoming} != set(current_by_id):
-        raise HTTPException(status_code=422, detail="手工合并必须完整保留变更项 ID 集合")
+        raise InvalidInputError("手工合并必须完整保留变更项 ID 集合")
     merged: list[ProposedChangeItem] = []
     for item in incoming:
         original = current_by_id[item.id]
         if item.kind != original.kind:
-            raise HTTPException(status_code=422, detail=f"{item.id} 的变更类型不可修改")
+            raise InvalidInputError(f"{item.id} 的变更类型不可修改")
         validate_proposed_fields(item)
         _validate_manual_target(db, row, item)
         merged.append(
@@ -686,17 +686,17 @@ def _validate_manual_target(
 ) -> None:
     if item.target_id is None:
         if item.operation == "update":
-            raise HTTPException(status_code=422, detail=f"{item.id} 的 update 缺少目标")
+            raise InvalidInputError(f"{item.id} 的 update 缺少目标")
         return
     model_entry = TARGET_MODELS.get(item.kind)
     if model_entry is None:
-        raise HTTPException(status_code=422, detail=f"{item.id} 不允许指定目标")
+        raise InvalidInputError(f"{item.id} 不允许指定目标")
     _, model = model_entry
     target = db.get(model, item.target_id)
     if target is None or getattr(target, "deleted_at", None) is not None:
-        raise HTTPException(status_code=422, detail=f"{item.id} 的手工目标不存在")
+        raise InvalidInputError(f"{item.id} 的手工目标不存在")
     if not _target_in_project(db, target, row.project_id):
-        raise HTTPException(status_code=422, detail=f"{item.id} 的手工目标不属于当前项目")
+        raise InvalidInputError(f"{item.id} 的手工目标不属于当前项目")
 
 
 def _refresh_item_base(db: Session, item: ProposedChangeItem) -> ProposedChangeItem:
@@ -708,7 +708,7 @@ def _refresh_item_base(db: Session, item: ProposedChangeItem) -> ProposedChangeI
     _, model = model_entry
     target = db.get(model, item.target_id)
     if target is None or getattr(target, "deleted_at", None) is not None:
-        raise HTTPException(status_code=409, detail=f"{item.id} 的目标已删除，不能重基")
+        raise ConflictError(f"{item.id} 的目标已删除，不能重基")
     return item.model_copy(
         update={
             "base_revision": int(target.revision),
@@ -814,29 +814,29 @@ def _reference_conflicts(
 
 def _validate_json_shape(item_id: str, value: Any, *, depth: int = 0) -> None:
     if depth > 8:
-        raise HTTPException(status_code=422, detail=f"{item_id} 的嵌套层级过深")
+        raise InvalidInputError(f"{item_id} 的嵌套层级过深")
     if value is None or isinstance(value, bool | int | float | str):
         return
     if isinstance(value, list):
         if len(value) > 5_000:
-            raise HTTPException(status_code=422, detail=f"{item_id} 的列表过长")
+            raise InvalidInputError(f"{item_id} 的列表过长")
         for child in value:
             _validate_json_shape(item_id, child, depth=depth + 1)
         return
     if isinstance(value, dict):
         if len(value) > 1_000:
-            raise HTTPException(status_code=422, detail=f"{item_id} 的对象字段过多")
+            raise InvalidInputError(f"{item_id} 的对象字段过多")
         for key, child in value.items():
             if not isinstance(key, str) or len(key) > 200:
-                raise HTTPException(status_code=422, detail=f"{item_id} 含非法对象键")
+                raise InvalidInputError(f"{item_id} 含非法对象键")
             _validate_json_shape(item_id, child, depth=depth + 1)
         return
-    raise HTTPException(status_code=422, detail=f"{item_id} 包含非 JSON 值")
+    raise InvalidInputError(f"{item_id} 包含非 JSON 值")
 
 
 def _require_mutable(row: models.ProposedChangeSet) -> None:
     if row.status in IMMUTABLE_CHANGE_SET_STATUSES:
-        raise HTTPException(status_code=409, detail=f"变更集状态 {row.status} 不可修改")
+        raise ConflictError(f"变更集状态 {row.status} 不可修改")
 
 
 def _dump(value: Any) -> str:

@@ -4,11 +4,15 @@ import json
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+    NotFoundError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas.context import (
     ALL_CLASSIFICATIONS,
@@ -52,7 +56,7 @@ def create_chapter_summary(
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="该章节已有摘要")
+        raise ConflictError("该章节已有摘要")
     row = models.ChapterSummary(
         chapter_id=payload.chapter_id,
         summary=payload.summary,
@@ -82,7 +86,7 @@ def update_chapter_summary(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该章节已有摘要")
+        raise ConflictError("该章节已有摘要")
     row.chapter_id = payload.chapter_id
     row.summary = payload.summary
     row.key_events_json = _dump(payload.key_events)
@@ -119,7 +123,7 @@ def create_scene_state(db: Session, payload: SceneStateCreate) -> SceneStateRead
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="该场景已有状态记录")
+        raise ConflictError("该场景已有状态记录")
     row = models.SceneState(
         scene_id=payload.scene_id,
         viewpoint_entity_id=payload.viewpoint_entity_id,
@@ -148,7 +152,7 @@ def update_scene_state(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该场景已有状态记录")
+        raise ConflictError("该场景已有状态记录")
     row.scene_id = payload.scene_id
     row.viewpoint_entity_id = payload.viewpoint_entity_id
     row.location_entity_id = payload.location_entity_id
@@ -190,7 +194,7 @@ def create_chapter_entity_link(
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="章节与实体的同类链接已存在")
+        raise ConflictError("章节与实体的同类链接已存在")
     row = models.ChapterEntityLink(**payload.model_dump())
     db.add(row)
     db.flush()
@@ -216,7 +220,7 @@ def update_chapter_entity_link(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="章节与实体的同类链接已存在")
+        raise ConflictError("章节与实体的同类链接已存在")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(row, key, value)
     row.revision += 1
@@ -253,7 +257,7 @@ def create_context_pin(db: Session, payload: ContextPinCreate) -> ContextPinRead
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="该来源已经 Pin")
+        raise ConflictError("该来源已经 Pin")
     row = models.ContextPin(**payload.model_dump())
     db.add(row)
     db.flush()
@@ -276,7 +280,7 @@ def update_context_pin(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该来源已经 Pin")
+        raise ConflictError("该来源已经 Pin")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(row, key, value)
     row.revision += 1
@@ -311,7 +315,7 @@ def create_classification(
         )
     )
     if existing is not None:
-        raise HTTPException(status_code=409, detail="该来源已有数据分类")
+        raise ConflictError("该来源已有数据分类")
     row = models.ContentClassification(**payload.model_dump())
     db.add(row)
     db.flush()
@@ -337,7 +341,7 @@ def update_classification(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该来源已有数据分类")
+        raise ConflictError("该来源已有数据分类")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(row, key, value)
     row.revision += 1
@@ -472,7 +476,7 @@ def update_provider_data_policy(
     db: Session, provider_id: int, payload: ProviderDataPolicyUpdate
 ) -> ProviderDataPolicyRead:
     if payload.provider_account_id != provider_id:
-        raise HTTPException(status_code=422, detail="Provider id 与路径不一致")
+        raise InvalidInputError("Provider id 与路径不一致")
     row = ensure_provider_data_policy(db, provider_id)
     require_revision(row, payload.expected_revision)
     row.allowed_classifications_json = _dump(payload.allowed_classifications)
@@ -497,7 +501,7 @@ def delete_record(
     }
     model = mapping.get(resource)
     if model is None:
-        raise HTTPException(status_code=404, detail="不支持的上下文资源")
+        raise NotFoundError("不支持的上下文资源")
     row = get_or_404(db, model, record_id)
     require_revision(row, expected_revision)
     soft_delete(row)
@@ -682,7 +686,7 @@ def _require_policy_name_available(
     if exclude_id is not None:
         statement = statement.where(models.ContextPolicy.id != exclude_id)
     if db.scalar(statement) is not None:
-        raise HTTPException(status_code=409, detail="上下文策略名称已存在")
+        raise ConflictError("上下文策略名称已存在")
 
 
 def _validate_scene_state_entities(
@@ -746,9 +750,9 @@ def _require_source_project(
         style_guide = cast(models.StyleGuide, get_or_404(db, models.StyleGuide, source_id))
         project_id = style_guide.project_id
     else:
-        raise HTTPException(status_code=422, detail=f"不支持的上下文来源：{source_type}")
+        raise InvalidInputError(f"不支持的上下文来源：{source_type}")
     if project_id != expected_project_id:
-        raise HTTPException(status_code=422, detail="上下文来源不属于当前项目")
+        raise InvalidInputError("上下文来源不属于当前项目")
 
 
 def _entity_in_project(
@@ -756,7 +760,7 @@ def _entity_in_project(
 ) -> models.StoryEntity:
     entity = cast(models.StoryEntity, get_or_404(db, models.StoryEntity, entity_id))
     if entity.project_id != project_id:
-        raise HTTPException(status_code=422, detail="实体不属于当前项目")
+        raise InvalidInputError("实体不属于当前项目")
     return entity
 
 
@@ -771,7 +775,7 @@ def _chapter_project_id(db: Session, chapter_id: int) -> int:
         .where(models.Chapter.id == chapter_id, models.Chapter.deleted_at.is_(None))
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=404, detail="Chapter not found")
+        raise NotFoundError("Chapter not found")
     return int(row)
 
 
@@ -783,7 +787,7 @@ def _scene_project_id(db: Session, scene_id: int) -> int:
         .where(models.Scene.id == scene_id, models.Scene.deleted_at.is_(None))
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=404, detail="Scene not found")
+        raise NotFoundError("Scene not found")
     return int(row)
 
 

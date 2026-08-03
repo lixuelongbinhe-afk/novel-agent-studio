@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -13,6 +12,7 @@ from app import models
 from app.database import Base
 from app.schemas import ApprovalCreate, ApprovalDecisionRequest, ApprovalSnapshot
 from app.services import approvals
+from app.services.errors import DomainError, ErrorKind
 
 
 @pytest.fixture
@@ -138,31 +138,31 @@ def test_edit_supersedes_without_mutating_snapshot_and_replays_idempotently(
     assert replay.replacement is not None
     assert replay.replacement.id == result.replacement.id
 
-    with pytest.raises(HTTPException, match="幂等键") as conflict:
+    with pytest.raises(DomainError, match="幂等键") as conflict:
         approvals.decide_approval(
             db,
             row.id,
             decision("edit", edited_value="同一个键的另一份正文"),
         )
-    assert conflict.value.status_code == 409
+    assert conflict.value.kind is ErrorKind.CONFLICT
 
 
 def test_stale_revision_and_project_boundary_are_rejected(db: Session) -> None:
     project, run, node_run = seed_run(db)
     row = create_prose_approval(db, project=project, run=run, node_run=node_run)
 
-    with pytest.raises(HTTPException) as stale:
+    with pytest.raises(DomainError) as stale:
         approvals.decide_approval(
             db,
             row.id,
             decision("approve", expected_revision=99),
         )
-    assert stale.value.status_code == 409
+    assert stale.value.kind is ErrorKind.CONFLICT
 
     other_project = models.Project(title="另一个项目")
     db.add(other_project)
     db.flush()
-    with pytest.raises(HTTPException, match="不属于所选项目") as boundary:
+    with pytest.raises(DomainError, match="不属于所选项目") as boundary:
         create_prose_approval(
             db,
             project=other_project,
@@ -170,7 +170,7 @@ def test_stale_revision_and_project_boundary_are_rejected(db: Session) -> None:
             node_run=node_run,
             revision=2,
         )
-    assert boundary.value.status_code == 422
+    assert boundary.value.kind is ErrorKind.INVALID_INPUT
 
 
 def test_expiry_and_run_cancellation_are_terminal(db: Session) -> None:
@@ -185,9 +185,9 @@ def test_expiry_and_run_cancellation_are_terminal(db: Session) -> None:
     expired_read = approvals.read_approval(db, expired.id)
     assert expired_read.status == "expired"
     assert expired_read.decision_action == "expire"
-    with pytest.raises(HTTPException) as expired_decision:
+    with pytest.raises(DomainError) as expired_decision:
         approvals.decide_approval(db, expired.id, decision("approve"))
-    assert expired_decision.value.status_code == 409
+    assert expired_decision.value.kind is ErrorKind.CONFLICT
 
     _, second_run, second_node = seed_run(db, project=project, node_key="metadata_approval")
     pending = create_prose_approval(
@@ -228,9 +228,9 @@ def test_request_changes_allows_at_most_three_rounds(db: Session) -> None:
         third.id,
         decision("request_changes", note="仍需修改", key="round-three-request"),
     )
-    with pytest.raises(HTTPException, match="最多 3 轮") as maximum:
+    with pytest.raises(DomainError, match="最多 3 轮") as maximum:
         approvals.create_revision_approval(db, third, "第四版正文", note="不应创建")
-    assert maximum.value.status_code == 409
+    assert maximum.value.kind is ErrorKind.CONFLICT
 
 
 def test_snapshot_revision_creation_is_idempotent_but_hash_conflicts(db: Session) -> None:
@@ -239,7 +239,7 @@ def test_snapshot_revision_creation_is_idempotent_but_hash_conflicts(db: Session
     same = create_prose_approval(db, project=project, run=run, node_run=node_run)
     assert same.id == first.id
 
-    with pytest.raises(HTTPException, match="revision") as conflict:
+    with pytest.raises(DomainError, match="revision") as conflict:
         create_prose_approval(
             db,
             project=project,
@@ -247,4 +247,4 @@ def test_snapshot_revision_creation_is_idempotent_but_hash_conflicts(db: Session
             node_run=node_run,
             value="不同内容",
         )
-    assert conflict.value.status_code == 409
+    assert conflict.value.kind is ErrorKind.CONFLICT

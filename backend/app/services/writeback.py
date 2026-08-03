@@ -4,11 +4,14 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeGuard, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404, require_revision, word_count
 from app.schemas.approvals import (
     ProposedChangeItem,
@@ -63,13 +66,13 @@ def apply_change_set(
                     for entry in _json_entries(existing_audit.entries_json)
                 ],
             )
-        raise HTTPException(status_code=409, detail="变更集已经由另一审批写回")
+        raise ConflictError("变更集已经由另一审批写回")
     if row.status in {"cancelled", "superseded"}:
-        raise HTTPException(status_code=409, detail=f"变更集状态 {row.status} 不可写回")
+        raise ConflictError(f"变更集状态 {row.status} 不可写回")
     require_revision(row, payload.expected_change_set_revision)
     run = cast(models.WorkflowRun, get_or_404(db, models.WorkflowRun, row.workflow_run_id))
     if run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
-        raise HTTPException(status_code=409, detail="运行已取消或结束，拒绝写回")
+        raise ConflictError("运行已取消或结束，拒绝写回")
     approval = _validated_approval(db, row, payload.approval_request_id)
     items = change_sets.change_set_items(row)
     accepted = [item for item in items if item.decision == "accept"]
@@ -147,16 +150,16 @@ def _validated_approval(
         or approval.status != "approved"
         or approval.superseded_by_id is not None
     ):
-        raise HTTPException(status_code=409, detail="元数据审批无效、未批准或已被替代")
+        raise ConflictError("元数据审批无效、未批准或已被替代")
     value = approvals.approval_snapshot(approval).value
     if not isinstance(value, dict):
-        raise HTTPException(status_code=422, detail="元数据审批快照格式无效")
+        raise InvalidInputError("元数据审批快照格式无效")
     if (
         value.get("change_set_id") != row.id
         or value.get("changes_hash") != row.changes_hash
         or value.get("change_set_revision") != row.revision
     ):
-        raise HTTPException(status_code=409, detail="审批快照与当前变更集不一致")
+        raise ConflictError("审批快照与当前变更集不一致")
     return approval
 
 
@@ -168,7 +171,7 @@ def _version_chapter_if_needed(
     if not any(item.kind == "chapter_content" for item in accepted):
         return
     if row.chapter_id is None:
-        raise HTTPException(status_code=422, detail="正文写回缺少章节")
+        raise InvalidInputError("正文写回缺少章节")
     chapter = cast(models.Chapter, get_or_404(db, models.Chapter, row.chapter_id))
     db.add(
         models.ChapterVersion(
@@ -210,7 +213,7 @@ def _apply_item(
     }
     handler = handlers.get(item.kind)
     if handler is None:
-        raise HTTPException(status_code=422, detail=f"不支持写回 {item.kind}")
+        raise InvalidInputError(f"不支持写回 {item.kind}")
     return handler()
 
 
@@ -219,7 +222,7 @@ def _apply_chapter_content(
 ) -> int:
     chapter = cast(models.Chapter, get_or_404(db, models.Chapter, _target_id(item)))
     if chapter.id != change_set.chapter_id:
-        raise HTTPException(status_code=422, detail="正文目标不是变更集章节")
+        raise InvalidInputError("正文目标不是变更集章节")
     content = _string(item, "content", max_length=2_000_000)
     chapter.content = content
     chapter.word_count = word_count(content)
@@ -233,7 +236,7 @@ def _apply_chapter_summary(
 ) -> int:
     chapter_id = _integer(item, "chapter_id")
     if chapter_id != change_set.chapter_id:
-        raise HTTPException(status_code=422, detail="摘要目标不是变更集章节")
+        raise InvalidInputError("摘要目标不是变更集章节")
     summary = (
         db.get(models.ChapterSummary, item.target_id)
         if item.target_id is not None
@@ -312,7 +315,7 @@ def _apply_scene_state(
     state.item_entity_ids_json = _dump(list(dict.fromkeys(item_ids)))
     raw_state = item.proposed.get("state")
     if not isinstance(raw_state, dict):
-        raise HTTPException(status_code=422, detail=f"{item.id}.state 必须是对象")
+        raise InvalidInputError(f"{item.id}.state 必须是对象")
     state.state_json = _dump(raw_state)
     state.notes = _string(item, "notes", max_length=50_000)
     if state.id is not None:
@@ -337,11 +340,11 @@ def _apply_entity(
         entity = models.StoryEntity(project_id=change_set.project_id)
         db.add(entity)
     elif entity.project_id != change_set.project_id:
-        raise HTTPException(status_code=422, detail="实体目标不属于当前项目")
+        raise InvalidInputError("实体目标不属于当前项目")
     entity.name = _string(item, "name", max_length=200, minimum_length=1)
     entity.kind = _string(item, "kind", max_length=40, minimum_length=1)
     if entity.kind not in {"character", "location", "item", "organization"}:
-        raise HTTPException(status_code=422, detail=f"{item.id}.kind 不在白名单")
+        raise InvalidInputError(f"{item.id}.kind 不在白名单")
     entity.description = _string(item, "description", max_length=100_000)
     entity.tags = _dump(_string_list(item, "tags", maximum=100))
     if not is_new:
@@ -413,7 +416,7 @@ def _apply_entity_relation(
         relation = models.EntityRelation(project_id=change_set.project_id)
         db.add(relation)
     elif relation.project_id != change_set.project_id:
-        raise HTTPException(status_code=422, detail="关系目标不属于当前项目")
+        raise InvalidInputError("关系目标不属于当前项目")
     relation.source_entity_id = source_id
     relation.target_entity_id = target_id
     relation.relation_type = _string(
@@ -469,7 +472,7 @@ def _apply_timeline(
         event = models.TimelineEvent(project_id=change_set.project_id)
         db.add(event)
     elif event.project_id != change_set.project_id:
-        raise HTTPException(status_code=422, detail="时间线目标不属于当前项目")
+        raise InvalidInputError("时间线目标不属于当前项目")
     chapter_id = _optional_integer(item, "chapter_id")
     if chapter_id is not None:
         _require_chapter_project(db, chapter_id, change_set.project_id)
@@ -497,7 +500,7 @@ def _apply_foreshadow(
         foreshadow = models.Foreshadow(project_id=change_set.project_id)
         db.add(foreshadow)
     elif foreshadow.project_id != change_set.project_id:
-        raise HTTPException(status_code=422, detail="伏笔目标不属于当前项目")
+        raise InvalidInputError("伏笔目标不属于当前项目")
     chapter_id = _optional_integer(item, "chapter_id")
     if chapter_id is not None:
         _require_chapter_project(db, chapter_id, change_set.project_id)
@@ -507,7 +510,7 @@ def _apply_foreshadow(
     foreshadow.payoff_text = _string(item, "payoff_text", max_length=100_000)
     status_value = _string(item, "status", max_length=40, minimum_length=1)
     if status_value not in {"open", "resolved"}:
-        raise HTTPException(status_code=422, detail=f"{item.id}.status 不在白名单")
+        raise InvalidInputError(f"{item.id}.status 不在白名单")
     foreshadow.status = status_value
     foreshadow.chapter_id = chapter_id
     if not is_new:
@@ -522,18 +525,18 @@ def _validate_item_values(
     if item.target_id is not None:
         model_entry = change_sets.TARGET_MODELS.get(item.kind)
         if model_entry is None:
-            raise HTTPException(status_code=422, detail=f"{item.id} 不允许目标 ID")
+            raise InvalidInputError(f"{item.id} 不允许目标 ID")
         _, model = model_entry
         target = db.get(model, item.target_id)
         if target is None or not change_sets._target_in_project(db, target, row.project_id):
-            raise HTTPException(status_code=422, detail=f"{item.id} 的目标不属于当前项目")
+            raise InvalidInputError(f"{item.id} 的目标不属于当前项目")
     project_value = item.proposed.get("project_id")
     if project_value is not None and project_value != row.project_id:
-        raise HTTPException(status_code=422, detail=f"{item.id}.project_id 不匹配")
+        raise InvalidInputError(f"{item.id}.project_id 不匹配")
     chapter_value = item.proposed.get("chapter_id")
     if chapter_value is not None:
         if not _is_integer(chapter_value):
-            raise HTTPException(status_code=422, detail=f"{item.id}.chapter_id 必须是整数")
+            raise InvalidInputError(f"{item.id}.chapter_id 必须是整数")
         _require_chapter_project(db, int(chapter_value), row.project_id)
 
 
@@ -549,7 +552,7 @@ def _required_entity_reference(
         db, project_id, item, id_key, ref_key, refs
     )
     if value is None:
-        raise HTTPException(status_code=422, detail=f"{item.id} 缺少实体引用")
+        raise InvalidInputError(f"{item.id} 缺少实体引用")
     return value
 
 
@@ -564,16 +567,16 @@ def _optional_entity_reference(
     direct = item.proposed.get(id_key)
     reference = item.proposed.get(ref_key)
     if direct is not None and reference is not None:
-        raise HTTPException(status_code=422, detail=f"{item.id} 同时提供 ID 和临时引用")
+        raise InvalidInputError(f"{item.id} 同时提供 ID 和临时引用")
     if direct is not None:
         if not _is_integer(direct):
-            raise HTTPException(status_code=422, detail=f"{item.id}.{id_key} 必须是整数")
+            raise InvalidInputError(f"{item.id}.{id_key} 必须是整数")
         entity_id = int(direct)
         _entity_in_project(db, entity_id, project_id)
         return entity_id
     if reference is not None:
         if not isinstance(reference, str):
-            raise HTTPException(status_code=422, detail=f"{item.id}.{ref_key} 必须是字符串")
+            raise InvalidInputError(f"{item.id}.{ref_key} 必须是字符串")
         return _resolved_ref(reference, refs)
     return None
 
@@ -582,7 +585,7 @@ def _resolved_ref(reference: str, refs: dict[str, int]) -> int:
     try:
         return refs[reference]
     except KeyError as error:
-        raise HTTPException(status_code=409, detail=f"临时实体引用 {reference} 未解析") from error
+        raise ConflictError(f"临时实体引用 {reference} 未解析") from error
 
 
 def _entity_in_project(
@@ -590,7 +593,7 @@ def _entity_in_project(
 ) -> models.StoryEntity:
     entity = cast(models.StoryEntity, get_or_404(db, models.StoryEntity, entity_id))
     if entity.project_id != project_id:
-        raise HTTPException(status_code=422, detail="实体不属于当前项目")
+        raise InvalidInputError("实体不属于当前项目")
     return entity
 
 
@@ -598,7 +601,7 @@ def _require_chapter_project(db: Session, chapter_id: int, project_id: int) -> N
     chapter = cast(models.Chapter, get_or_404(db, models.Chapter, chapter_id))
     volume = cast(models.Volume, get_or_404(db, models.Volume, chapter.volume_id))
     if volume.project_id != project_id:
-        raise HTTPException(status_code=422, detail="章节不属于当前项目")
+        raise InvalidInputError("章节不属于当前项目")
 
 
 def _require_scene_project(
@@ -609,7 +612,7 @@ def _require_scene_project(
 
 def _target_id(item: ProposedChangeItem) -> int:
     if item.target_id is None:
-        raise HTTPException(status_code=422, detail=f"{item.id} 缺少写回目标")
+        raise InvalidInputError(f"{item.id} 缺少写回目标")
     return item.target_id
 
 
@@ -622,7 +625,7 @@ def _string(
 ) -> str:
     value = item.proposed.get(key)
     if not isinstance(value, str) or not minimum_length <= len(value) <= max_length:
-        raise HTTPException(status_code=422, detail=f"{item.id}.{key} 文本长度无效")
+        raise InvalidInputError(f"{item.id}.{key} 文本长度无效")
     return value
 
 
@@ -634,7 +637,7 @@ def _integer(
 ) -> int:
     value = item.proposed.get(key)
     if not _is_integer(value) or value < minimum:
-        raise HTTPException(status_code=422, detail=f"{item.id}.{key} 必须是有效整数")
+        raise InvalidInputError(f"{item.id}.{key} 必须是有效整数")
     return value
 
 
@@ -643,7 +646,7 @@ def _optional_integer(item: ProposedChangeItem, key: str) -> int | None:
     if value is None:
         return None
     if not _is_integer(value) or value < 1:
-        raise HTTPException(status_code=422, detail=f"{item.id}.{key} 必须是有效整数")
+        raise InvalidInputError(f"{item.id}.{key} 必须是有效整数")
     return value
 
 
@@ -654,7 +657,7 @@ def _string_list(
     if not isinstance(value, list) or len(value) > maximum or not all(
         isinstance(entry, str) for entry in value
     ):
-        raise HTTPException(status_code=422, detail=f"{item.id}.{key} 必须是字符串列表")
+        raise InvalidInputError(f"{item.id}.{key} 必须是字符串列表")
     return cast(list[str], value)
 
 
@@ -663,7 +666,7 @@ def _integer_list(item: ProposedChangeItem, key: str) -> list[int]:
     if not isinstance(value, list) or len(value) > 5_000 or not all(
         _is_integer(entry) and int(entry) >= 1 for entry in value
     ):
-        raise HTTPException(status_code=422, detail=f"{item.id}.{key} 必须是正整数列表")
+        raise InvalidInputError(f"{item.id}.{key} 必须是正整数列表")
     return [int(entry) for entry in value]
 
 
