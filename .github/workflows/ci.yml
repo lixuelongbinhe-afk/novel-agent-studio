@@ -59,7 +59,8 @@ jobs:
         working-directory: frontend
       - name: Audit frontend dependencies
         # Temporary client-only React Router RSC exception; see docs/SECURITY.md.
-        # Mandatory review date: 2026-10-31. Remove once a compatible fixed release exists.
+        # Last reviewed: 2026-08-03. Mandatory review date: 2027-01-31.
+        # Remove once a compatible fixed release exists.
         run: pnpm audit --audit-level high --ignore GHSA-qwww-vcr4-c8h2
         working-directory: frontend
       - run: pnpm test --run --reporter=junit --outputFile=../artifacts/frontend-junit.xml
