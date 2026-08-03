@@ -1,5 +1,8 @@
 # Novel Agent Studio
 
+![创建项目](docs/media/01-创建项目.png)
+![内容审核](docs/media/02-内容审核.png)
+
 Novel Agent Studio（小说智能体工作室）v2.2.8 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
 
 ## Windows 直接使用
@@ -80,7 +83,7 @@ DeepSeek 官方预设默认使用 `deepseek-v4-flash`，并可切换到 `deepsee
 
 ## 本地开发：首次初始化
 
-源码运行需要 Python 3.12、Node.js 20+ 和 pnpm 11。Windows 首次 clone 后，在仓库根目录执行：
+源码运行需要 Python 3.12、Node.js 24 和 pnpm 11。Windows 首次 clone 后，在仓库根目录执行：
 
 ```powershell
 py -3.12 -m venv backend\.venv

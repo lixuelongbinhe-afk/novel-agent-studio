@@ -81,7 +81,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("option", { name: "自动" })).toBeAttached();
   await expect(page.getByRole("option", { name: "倒计时" })).toBeAttached();
   await expect(page.getByText("提取参考文风")).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-studio-desktop.png" });
+  await page.screenshot({ path: "../docs/media/01-创建项目.png" });
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: /开始生成/ }).click();
@@ -90,7 +90,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "定位与主题策划", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "文风与边界编辑", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "通过" }).first()).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-review-desktop.png" });
+  await page.screenshot({ path: "../docs/media/02-内容审核.png" });
 
   await page.locator("label.file-action input").setInputFiles("src/test/e2e/fixtures/author-style.md");
   await expect(page.getByRole("heading", { name: "参考文风分析 · author-style.md" })).toBeVisible({ timeout: 30_000 });
