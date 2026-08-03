@@ -139,7 +139,7 @@ pnpm run build
 pnpm run e2e
 ```
 
-最终发布记录见 `docs/FINAL_AUDIT.md`、`docs/SECURITY_AUDIT.md`、`docs/PERFORMANCE_AUDIT.md`、`docs/RELEASE_CHECKLIST.md` 和 `docs/KNOWN_LIMITATIONS.md`。
+发布状态与未关闭项见 `docs/FINAL_AUDIT.md`；安全、性能、发布门禁和已知限制的细节分别见 `docs/SECURITY_AUDIT.md`、`docs/PERFORMANCE_AUDIT.md`、`docs/RELEASE_CHECKLIST.md` 和 `docs/KNOWN_LIMITATIONS.md`。
 
 ## 安全边界
 
