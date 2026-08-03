@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 import pytest
+from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -73,6 +74,75 @@ def test_project_flow_has_expected_defaults_and_dashboard(db: Session) -> None:
     assert overview["state"]["budget_warning_percent"] == 70  # type: ignore[index]
     assert overview["state"]["budget_pause_percent"] == 110  # type: ignore[index]
     assert studio.dashboard(db)[0]["id"] == project_id
+
+
+@pytest.mark.asyncio
+async def test_generate_response_shape_is_stable(db: Session) -> None:
+    """重构返回类型不得改变生成接口的 JSON 形状。"""
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+
+    result = await studio.generate(
+        db,
+        project_id,
+        "world",
+        GenerateRequest(idempotency_key="shape-world", use_demo_model=True),
+    )
+    body = jsonable_encoder(result)
+
+    assert set(body) == {"job", "artifact", "artifacts", "idempotent_replay"}
+    assert set(body["job"]) >= {"id", "project_id", "kind", "status", "label"}
+    assert set(body["artifact"]) >= {
+        "id",
+        "project_id",
+        "kind",
+        "title",
+        "status",
+        "metadata",
+    }
+    assert body["artifact"] == body["artifacts"][0]
+
+
+def test_dashboard_and_project_overview_shapes_are_stable(db: Session) -> None:
+    overview = create_project(db)
+    project_id = int(overview["project"]["id"])  # type: ignore[index]
+
+    dashboard = jsonable_encoder(studio.dashboard(db))
+    refreshed = jsonable_encoder(studio.project_overview(db, project_id))
+
+    assert set(dashboard[0]) == {
+        "id",
+        "title",
+        "summary",
+        "stage",
+        "stage_label",
+        "completed_words",
+        "target_words",
+        "pending_reviews",
+        "updated_at",
+        "entry_mode",
+    }
+    assert set(refreshed) == {
+        "project",
+        "state",
+        "stages",
+        "artifacts",
+        "tree",
+        "jobs",
+        "messages",
+        "snapshots",
+        "chapter_tree_repair",
+        "library_counts",
+        "usage",
+    }
+
+
+def test_studio_any_dict_budget_does_not_regress() -> None:
+    """studio.py 的 dict[str, Any] 数量只允许下降（v2.2.8 基线为 84）。"""
+    source = (
+        Path(__file__).parent.parent / "app" / "services" / "studio.py"
+    ).read_text(encoding="utf-8")
+    assert source.count("dict[str, Any]") <= 84
 
 
 def test_deepseek_setup_uses_current_v4_model_metadata(db: Session) -> None:
