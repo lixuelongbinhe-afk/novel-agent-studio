@@ -33,7 +33,7 @@ from app.schemas.studio import (
     SnapshotCreate,
     StudioProjectCreate,
 )
-from app.services import chapter_plans, model_execution, studio
+from app.services import chapter_plans, model_execution, studio, studio_providers
 from app.services.errors import DomainError, ErrorKind
 
 
@@ -170,7 +170,7 @@ def test_deepseek_setup_uses_current_v4_model_metadata(db: Session) -> None:
     )
 
     with db.begin():
-        result = studio.setup_provider(db, payload)
+        result = studio_providers.setup_provider(db, payload)
 
     assert result["model"] == "deepseek-v4-pro"
     profile = db.scalar(
@@ -188,9 +188,9 @@ def test_provider_secret_failure_keeps_original_error_and_compensates(
     def fail_secret(_provider_id: int, _secret: str) -> None:
         raise RuntimeError("Windows Credential Manager unavailable")
 
-    monkeypatch.setattr(studio, "set_provider_secret", fail_secret)
+    monkeypatch.setattr(studio_providers, "set_provider_secret", fail_secret)
     monkeypatch.setattr(
-        studio, "delete_provider_secret", lambda provider_id: deleted.append(provider_id)
+        studio_providers, "delete_provider_secret", lambda provider_id: deleted.append(provider_id)
     )
     payload = ProviderSetup(
         preset="deepseek",

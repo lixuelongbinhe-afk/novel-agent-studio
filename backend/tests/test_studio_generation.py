@@ -58,3 +58,11 @@ def test_failure_message_reports_pipeline_progress() -> None:
 
     assert "2/6" in message
     assert "上游超时" in message
+
+
+def test_studio_facade_stays_below_split_target() -> None:
+    source = (Path(__file__).parent.parent / "app" / "services" / "studio.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert len(source.splitlines()) < 1_200

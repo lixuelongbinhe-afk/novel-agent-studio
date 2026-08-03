@@ -10,9 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.repositories import word_count
 from app.schemas import ModelDebugRequest, NormalizedContentPart, NormalizedMessage
 from app.schemas.context import ContextBuildRequest
-from app.schemas.studio import GenerateResult, GenerateRequest
+from app.schemas.studio import ChatRequest, GenerateResult, GenerateRequest, SnapshotCreate
 from app.services import context_builder, generation_jobs, model_execution
 from app.services.chapter_tree import (
     _approved_volume_titles,
@@ -28,6 +29,7 @@ from app.services.errors import (
     ConflictError,
     DomainError,
     InvalidInputError,
+    NotFoundError,
     UnavailableError,
     UpstreamFailedError,
 )
@@ -69,6 +71,35 @@ def _studio_json(value: str) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], studio._json_object(value))
 
 
+_state = _studio_state
+_project = _studio_project
+_json_object = _studio_json
+
+
+def _dump(value: object) -> str:
+    from app.services import studio
+
+    return studio._dump(value)
+
+
+def _json_int(value: JsonValue | None) -> int:
+    if isinstance(value, (bool, int, float, str)):
+        return int(value or 0)
+    return 0
+
+
+def _message_record(message: models.StudioMessage) -> dict[str, JsonValue]:
+    from app.services import studio
+
+    return cast(dict[str, JsonValue], studio._message_record(message))
+
+
+def create_snapshot(db: Session, project_id: int, payload: SnapshotCreate) -> dict[str, JsonValue]:
+    from app.services import studio
+
+    return cast(dict[str, JsonValue], studio.create_snapshot(db, project_id, payload))
+
+
 def _stage_order(state: models.StudioProjectState) -> list[str]:
     from app.services import studio
 
@@ -78,13 +109,46 @@ def _stage_order(state: models.StudioProjectState) -> list[str]:
 def _phase_complete(db: Session, project_id: int, phase: str) -> bool:
     from app.services import studio
 
-    return studio._phase_complete(db, project_id, phase)
+    required = {name for name, _ in studio.PHASE_AGENTS.get(phase, [])}
+    if not required:
+        return True
+    artifacts = db.scalars(
+        select(models.CreativeArtifact).where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.kind == phase,
+            models.CreativeArtifact.status != "superseded",
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+    ).all()
+
+    def handled(item: models.CreativeArtifact) -> bool:
+        metadata = _studio_json(item.metadata_json)
+        return item.status == "approved" or (
+            item.status == "rejected" and metadata.get("conflict_resolution") == "preserve_canon"
+        )
+
+    if not artifacts or any(not handled(item) for item in artifacts):
+        return False
+    approved = {
+        str(_studio_json(item.metadata_json).get("agent_name") or "")
+        for item in artifacts
+        if handled(item)
+    }
+    return required <= approved
 
 
 def _supersede_series(db: Session, project_id: int, series_key: str) -> None:
-    from app.services import studio
-
-    studio._supersede_series(db, project_id, series_key)
+    artifacts = db.scalars(
+        select(models.CreativeArtifact).where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.status != "superseded",
+            models.CreativeArtifact.deleted_at.is_(None),
+            func.json_extract(models.CreativeArtifact.metadata_json, "$.series_key") == series_key,
+        )
+    ).all()
+    for item in artifacts:
+        item.status = "superseded"
+        item.revision += 1
 
 
 def _new_artifact(
@@ -93,17 +157,41 @@ def _new_artifact(
     title: str,
     content: str,
     metadata: Mapping[str, object],
-    position: int,
+    position_offset: int,
 ) -> models.CreativeArtifact:
     from app.services import studio
 
-    return studio._new_artifact(project_id, kind, title, content, metadata, position)
+    return models.CreativeArtifact(
+        project_id=project_id,
+        kind=kind,
+        title=title,
+        content=content,
+        status="pending",
+        source="ai",
+        position=(studio.STAGE_ORDER.index(kind) * 100 if kind in studio.STAGE_ORDER else 700)
+        + position_offset,
+        metadata_json=studio._dump(metadata),
+    )
 
 
 def _mark_conflicts(artifact: models.CreativeArtifact) -> None:
     from app.services import studio
 
-    studio._mark_conflicts(artifact)
+    metadata = _studio_json(artifact.metadata_json)
+    major_markers = ("[重大冲突]", "【重大冲突】", "重大冲突：")
+    minor_markers = ("[轻微冲突]", "【轻微冲突】", "轻微冲突：")
+    if any(marker in artifact.content for marker in major_markers):
+        metadata["conflict_level"] = "major"
+        metadata["requires_author_decision"] = True
+    elif any(marker in artifact.content for marker in minor_markers):
+        metadata["conflict_level"] = "minor"
+        metadata["minor_conflict_auto_fixed"] = True
+        for marker in minor_markers:
+            artifact.content = artifact.content.replace(marker, "[已自动校正的轻微冲突]")
+        artifact.content += "\n\n> 系统标记：轻微冲突已按既有设定自动校正，请在审核时确认。"
+    else:
+        metadata["conflict_level"] = "none"
+    artifact.metadata_json = studio._dump(metadata)
 
 
 def _artifact_record(artifact: models.CreativeArtifact) -> dict[str, JsonValue]:
@@ -113,15 +201,15 @@ def _artifact_record(artifact: models.CreativeArtifact) -> dict[str, JsonValue]:
 
 
 def _price_score(db: Session, profile_id: int) -> float:
-    from app.services import studio
+    from app.services import studio_providers
 
-    return studio._price_score(db, profile_id)
+    return studio_providers._price_score(db, profile_id)
 
 
 def _latency(db: Session, provider_id: int) -> int:
-    from app.services import studio
+    from app.services import studio_providers
 
-    return studio._latency(db, provider_id)
+    return studio_providers._latency(db, provider_id)
 
 
 @dataclass(frozen=True)
@@ -1327,3 +1415,218 @@ def _usage_summary(
         "warning": percent >= state.budget_warning_percent,
         "paused": state.budget_paused,
     }
+
+
+async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, Any]:
+    project = _project(db, project_id)
+    state = _state(db, project_id)
+    user_message = models.StudioMessage(
+        project_id=project_id,
+        role="user",
+        content=payload.message,
+        context_scope=_context_scope(payload),
+    )
+    db.add(user_message)
+    db.commit()
+    profile, reason = _select_model(db, state, payload.use_demo_model)
+    context, context_metadata = _generation_context(
+        db,
+        project_id,
+        payload.chapter_id,
+        profile=profile,
+        use_demo=payload.use_demo_model,
+        max_tokens=2200,
+        query=payload.message,
+    )
+    prompt = (
+        "你是小说智能体工作室的总编助理。回答必须基于自动注入的项目上下文。"
+        "若用户要求修改内容，先给出完整修改提案，不要假装已经写入。"
+        "若用户要求推进、执行或进入下一步，只说明将创建待确认操作；"
+        "在作者点击执行前，绝不能声称已经推进工作流或已经开始生成。\n\n"
+        f"项目：{project.title}\n当前阶段：{STAGE_LABELS.get(state.stage, state.stage)}\n"
+        f"自动上下文：\n{context}\n\n"
+        f"当前选中文本：\n{payload.selected_text or '（无）'}\n\n"
+        f"用户要求：{payload.message}"
+    )
+    response = await _model_call(db, project_id, prompt, profile, use_demo=payload.use_demo_model)
+    if response.error is not None:
+        raise UpstreamFailedError(response.error.message)
+    proposal = _chat_proposal(db, project_id, payload, response.text)
+    assistant = models.StudioMessage(
+        project_id=project_id,
+        role="assistant",
+        content=response.text,
+        context_scope=_context_scope(payload),
+        proposal_json=_dump(proposal) if proposal is not None else "null",
+        proposal_status="pending" if proposal is not None else "none",
+        model_name=profile.display_name if profile is not None else "内置演示模型",
+        model_reason=f"{reason} {_context_reason(context_metadata)}",
+    )
+    db.add(assistant)
+    _record_response_cost(state, response)
+    _apply_budget_after_task(state)
+    db.commit()
+    return _message_record(assistant)
+
+
+async def decide_message_proposal(
+    db: Session, project_id: int, message_id: int, action: str
+) -> dict[str, Any]:
+    message = db.get(models.StudioMessage, message_id)
+    if message is None or message.project_id != project_id:
+        raise NotFoundError("对话消息不存在")
+    if message.proposal_status != "pending":
+        raise ConflictError("该修改提案已处理")
+    if action == "reject":
+        message.proposal_status = "rejected"
+        db.commit()
+        return _message_record(message)
+    proposal = _json_object(message.proposal_json)
+    if proposal.get("target_type") == "workflow":
+        phase = str(proposal.get("phase") or "")
+        chapter_id = _json_int(proposal.get("chapter_id")) or None
+        await generate(
+            db,
+            project_id,
+            phase,
+            GenerateRequest(
+                idempotency_key=f"chat-proposal:{message.id}",
+                chapter_id=chapter_id,
+                use_demo_model=bool(proposal.get("use_demo_model")),
+            ),
+        )
+        message = db.get(models.StudioMessage, message_id)
+        if message is None:
+            raise NotFoundError("对话消息不存在")
+        message.proposal_status = "applied"
+        db.commit()
+        return _message_record(message)
+    create_snapshot(
+        db,
+        project_id,
+        SnapshotCreate(label="AI 对话修改前", reason="应用 AI 对话中的修改提案"),
+    )
+    if proposal.get("target_type") == "chapter":
+        chapter = db.get(models.Chapter, _json_int(proposal.get("target_id")))
+        if chapter is None:
+            raise NotFoundError("目标章节不存在")
+        chapter.content = str(proposal.get("content") or "")
+        chapter.word_count = word_count(chapter.content)
+        chapter.revision += 1
+    else:
+        artifact = db.get(models.CreativeArtifact, _json_int(proposal.get("target_id")))
+        if artifact is None:
+            raise NotFoundError("目标创作成果不存在")
+        artifact.status = "superseded"
+        artifact.revision += 1
+        db.add(
+            models.CreativeArtifact(
+                project_id=project_id,
+                kind=artifact.kind,
+                title=artifact.title,
+                content=str(proposal.get("content") or ""),
+                status="pending",
+                source="ai_chat",
+                position=artifact.position,
+                version_number=artifact.version_number + 1,
+                metadata_json=artifact.metadata_json,
+            )
+        )
+    message.proposal_status = "applied"
+    db.commit()
+    return _message_record(message)
+
+
+def _chat_proposal(
+    db: Session, project_id: int, payload: ChatRequest, response_text: str
+) -> dict[str, Any] | None:
+    workflow_words = (
+        "推进工作流",
+        "推到工作流",
+        "继续工作流",
+        "进入下一阶段",
+        "开始下一步",
+        "执行下一步",
+        "推吧",
+    )
+    if any(word in payload.message for word in workflow_words):
+        return _workflow_chat_proposal(db, project_id, payload.use_demo_model)
+    action_words = ("修改", "改写", "重写", "调整", "替换", "润色", "应用")
+    if not any(word in payload.message for word in action_words):
+        return None
+    if payload.chapter_id:
+        return {"target_type": "chapter", "target_id": payload.chapter_id, "content": response_text}
+    state = _state(db, project_id)
+    artifact = db.scalar(
+        select(models.CreativeArtifact)
+        .where(
+            models.CreativeArtifact.project_id == project_id,
+            models.CreativeArtifact.kind == state.stage,
+            models.CreativeArtifact.status.in_(["approved", "pending"]),
+            models.CreativeArtifact.deleted_at.is_(None),
+        )
+        .order_by(models.CreativeArtifact.id.desc())
+    )
+    if artifact is None:
+        return None
+    return {"target_type": "artifact", "target_id": artifact.id, "content": response_text}
+
+
+def _workflow_chat_proposal(
+    db: Session, project_id: int, use_demo_model: bool
+) -> dict[str, Any] | None:
+    from app.services import studio
+
+    state = _state(db, project_id)
+    phase = "world" if state.stage == "idea" else state.stage
+    if phase not in studio.PHASE_AGENTS:
+        return None
+    chapter_id: int | None = None
+    label = f"生成{STAGE_LABELS.get(phase, phase)}"
+    if phase == "drafting":
+        chapter = db.scalar(
+            select(models.Chapter)
+            .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
+            .where(
+                models.Volume.project_id == project_id,
+                models.Volume.deleted_at.is_(None),
+                models.Chapter.deleted_at.is_(None),
+                models.Chapter.word_count == 0,
+            )
+            .order_by(models.Volume.position, models.Chapter.position, models.Chapter.id)
+        )
+        if chapter is None:
+            return None
+        chapter_id = chapter.id
+        label = f"生成{chapter.title}正文"
+        pending = db.scalars(
+            select(models.CreativeArtifact).where(
+                models.CreativeArtifact.project_id == project_id,
+                models.CreativeArtifact.kind.in_(["drafting", "scene_draft"]),
+                models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
+                models.CreativeArtifact.deleted_at.is_(None),
+            )
+        ).all()
+        if any(
+            _json_int(_json_object(item.metadata_json).get("chapter_id")) == chapter_id
+            for item in pending
+        ):
+            return None
+    proposal: dict[str, Any] = {
+        "target_type": "workflow",
+        "phase": phase,
+        "label": label,
+        "use_demo_model": use_demo_model,
+    }
+    if chapter_id is not None:
+        proposal["chapter_id"] = chapter_id
+    return proposal
+
+
+def _context_scope(payload: ChatRequest) -> str:
+    parts = ["project", payload.stage or "current_stage"]
+    if payload.chapter_id:
+        parts.append(f"chapter:{payload.chapter_id}")
+    if payload.selected_text:
+        parts.append("selection")
+    return ",".join(parts)

@@ -26,7 +26,7 @@ from app.schemas.studio import (
     StudioProjectCreate,
     StudioStateUpdate,
 )
-from app.services import document_import, studio
+from app.services import document_import, studio, studio_providers
 from app.services.studio_worker import studio_worker
 
 
@@ -264,7 +264,7 @@ def repair_chapter_tree(
 
 @router.get("/providers")
 def list_providers(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return studio.list_studio_providers(db)
+    return studio_providers.list_studio_providers(db)
 
 
 @router.post("/providers", status_code=status.HTTP_201_CREATED)
@@ -272,7 +272,7 @@ def setup_provider(
     payload: ProviderSetup, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     with db.begin():
-        return studio.setup_provider(db, payload)
+        return studio_providers.setup_provider(db, payload)
 
 
 @router.put("/providers/{provider_id}/secret")
@@ -281,13 +281,13 @@ def update_provider_secret(
     payload: ProviderSecretUpdate,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return studio.update_provider_secret(db, provider_id, payload.api_key)
+    return studio_providers.update_provider_secret(db, provider_id, payload.api_key)
 
 
 @router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_provider(provider_id: int, db: Session = Depends(get_db)) -> Response:
     with db.begin():
-        studio.delete_studio_provider(db, provider_id)
+        studio_providers.delete_studio_provider(db, provider_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
