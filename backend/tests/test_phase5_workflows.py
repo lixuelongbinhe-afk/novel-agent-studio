@@ -889,3 +889,11 @@ def test_seed_creates_valid_parallel_mock_workflow_and_secret_free_snapshot(
         snapshot = workflows.read_run_snapshot(db, run.id).snapshot
         assert len(snapshot["agents"]) == 11
         assert all("credential_env_var" not in item for item in snapshot["providers"])
+
+
+def test_workflow_runtime_any_dict_budget_does_not_regress() -> None:
+    """快照类型化后的 dict[str, Any] 基线从 99 降至 93。"""
+    source = (
+        Path(__file__).parent.parent / "app" / "services" / "workflow_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert source.count("dict[str, Any]") <= 93

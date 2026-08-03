@@ -29,9 +29,12 @@ from app.schemas.studio import (
     ChatRequest,
     ContinuationImportRequest,
     ContinuationSettingsUpdate,
+    DashboardProjectRead,
+    GenerateResult,
     GenerateRequest,
     OutlineImportRequest,
     ProviderSetup,
+    ProjectOverviewRead,
     SnapshotCreate,
     StudioProjectCreate,
     StudioStateUpdate,
@@ -157,7 +160,7 @@ def _merge_parsed_volumes(volumes: list[dict[str, Any]]) -> list[dict[str, Any]]
     return [merged[key] for key in order]
 
 
-def create_project(db: Session, payload: StudioProjectCreate) -> dict[str, Any]:
+def create_project(db: Session, payload: StudioProjectCreate) -> ProjectOverviewRead:
     project = models.Project(
         title=payload.title.strip(),
         summary=payload.idea.strip(),
@@ -193,7 +196,7 @@ def create_project(db: Session, payload: StudioProjectCreate) -> dict[str, Any]:
 
 def create_continuation_project(
     db: Session, payload: ContinuationImportRequest
-) -> dict[str, Any]:
+) -> ProjectOverviewRead:
     if payload.source_project_id is not None:
         source_text, source_name = _source_project_manuscript(db, payload.source_project_id)
     else:
@@ -437,13 +440,13 @@ def _create_imported_manuscript_tree(
             )
 
 
-def dashboard(db: Session) -> list[dict[str, Any]]:
+def dashboard(db: Session) -> list[DashboardProjectRead]:
     projects = db.scalars(
         select(models.Project)
         .where(models.Project.deleted_at.is_(None))
         .order_by(models.Project.updated_at.desc(), models.Project.id.desc())
     ).all()
-    result: list[dict[str, Any]] = []
+    result: list[DashboardProjectRead] = []
     for project in projects:
         state = _state(db, project.id)
         volume_ids = select(models.Volume.id).where(
@@ -470,18 +473,18 @@ def dashboard(db: Session) -> list[dict[str, Any]]:
             or 0
         )
         result.append(
-            {
-                "id": project.id,
-                "title": project.title,
-                "summary": project.summary,
-                "stage": state.stage,
-                "stage_label": STAGE_LABELS.get(state.stage, state.stage),
-                "completed_words": completed_words,
-                "target_words": project.target_words,
-                "pending_reviews": pending,
-                "updated_at": project.updated_at,
-                "entry_mode": state.entry_mode,
-            }
+            DashboardProjectRead(
+                id=project.id,
+                title=project.title,
+                summary=project.summary,
+                stage=state.stage,
+                stage_label=STAGE_LABELS.get(state.stage, state.stage),
+                completed_words=completed_words,
+                target_words=project.target_words,
+                pending_reviews=pending,
+                updated_at=project.updated_at.isoformat(),
+                entry_mode=state.entry_mode,
+            )
         )
     return result
 
@@ -503,7 +506,7 @@ def mark_interrupted_generation_jobs(db: Session) -> int:
     return len(jobs)
 
 
-def project_overview(db: Session, project_id: int) -> dict[str, Any]:
+def project_overview(db: Session, project_id: int) -> ProjectOverviewRead:
     project = _project(db, project_id)
     state = _state(db, project_id)
     volumes = db.scalars(
@@ -584,7 +587,7 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
         "foreshadows": _count(db, models.Foreshadow, project_id),
         "style_guides": _count(db, models.StyleGuide, project_id),
     }
-    return {
+    return ProjectOverviewRead.model_validate({
         "project": _record(project),
         "state": _state_record(state),
         "stages": [
@@ -603,7 +606,7 @@ def project_overview(db: Session, project_id: int) -> dict[str, Any]:
         "chapter_tree_repair": chapter_tree_repair_preview(db, project_id),
         "library_counts": library_counts,
         "usage": _usage_summary(db, project_id, state),
-    }
+    })
 
 
 def update_state(
@@ -737,7 +740,7 @@ def decide_artifact(
 
 async def generate(
     db: Session, project_id: int, phase: str, payload: GenerateRequest
-) -> dict[str, Any]:
+) -> GenerateResult:
     if phase not in PHASE_AGENTS:
         raise InvalidInputError("不支持的创作阶段")
     project = _project(db, project_id)
@@ -771,12 +774,12 @@ async def generate(
     if lease.replayed:
         replay_artifacts = _generation_job_artifacts(db, job)
         artifact = replay_artifacts[0] if replay_artifacts else None
-        return {
+        return GenerateResult.model_validate({
             "job": _record(job),
             "artifact": _artifact_record(artifact) if artifact is not None else None,
             "artifacts": [_artifact_record(item) for item in replay_artifacts],
             "idempotent_replay": True,
-        }
+        })
 
     try:
         phase_max_tokens = _phase_output_tokens(phase)
@@ -1022,12 +1025,12 @@ async def generate(
         generation_jobs.complete(db, job, result_artifact_id=artifacts[0].id)
         _apply_budget_after_task(state)
         db.commit()
-        return {
+        return GenerateResult.model_validate({
             "job": _record(job),
             "artifact": _artifact_record(artifacts[0]),
             "artifacts": [_artifact_record(item) for item in artifacts],
             "idempotent_replay": False,
-        }
+        })
     except asyncio.CancelledError:
         generation_jobs.fail(
             db,
@@ -1375,7 +1378,9 @@ def create_snapshot(
     return _snapshot_record(snapshot)
 
 
-def restore_snapshot(db: Session, project_id: int, snapshot_id: int) -> dict[str, Any]:
+def restore_snapshot(
+    db: Session, project_id: int, snapshot_id: int
+) -> ProjectOverviewRead:
     snapshot = db.get(models.ProjectSnapshot, snapshot_id)
     if snapshot is None or snapshot.project_id != project_id:
         raise NotFoundError("项目快照不存在")
@@ -3516,7 +3521,7 @@ def _usage_summary(
 
 
 def _snapshot_payload(db: Session, project_id: int) -> dict[str, Any]:
-    overview = project_overview(db, project_id)
+    overview = project_overview(db, project_id).model_dump(mode="json")
     return {
         "format": "novel-agent-studio-v2-snapshot",
         "version": 2,
@@ -3653,7 +3658,7 @@ def _snapshot_record(snapshot: models.ProjectSnapshot) -> dict[str, Any]:
         "label": snapshot.label,
         "reason": snapshot.reason,
         "permanent": snapshot.permanent,
-        "created_at": snapshot.created_at,
+        "created_at": snapshot.created_at.isoformat(),
     }
 
 

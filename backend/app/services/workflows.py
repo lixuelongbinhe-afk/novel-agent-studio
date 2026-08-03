@@ -374,7 +374,7 @@ def export_manifest(db: Session, workflow_id: int) -> WorkflowManifest:
     agent_values: list[dict[str, Any]] = []
     for agent_id in agent_ids:
         row = cast(models.AgentDefinition, get_or_404(db, models.AgentDefinition, agent_id))
-        value = agents.agent_snapshot(row)
+        value = agents.agent_snapshot(row).model_dump(mode="json")
         for key in (
             "id",
             "revision",
@@ -1015,7 +1015,9 @@ def _build_snapshot(
         "input": run_input,
         "workflow": graph.model_dump(mode="json"),
         "plan_hash": plan["hash"],
-        "agents": [agents.agent_snapshot(row) for row in agent_rows],
+        "agents": [
+            agents.agent_snapshot(row).model_dump(mode="json") for row in agent_rows
+        ],
         "models": profiles,
         "providers": providers,
         "protocols": protocols,

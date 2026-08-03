@@ -21,6 +21,7 @@ from app.schemas import (
     StateExtractionResult,
     WritebackRequest,
 )
+from app.schemas.workflows import AgentDefinitionRead, WorkflowNodeWrite, WorkflowSnapshotItem
 from app.services import approvals, change_sets, context_builder, writeback
 from app.services.approval_runtime import approval_signals
 from app.services.safe_templates import SafeTemplateError, render_template, resolve_path
@@ -456,7 +457,7 @@ async def _execute_agent_node(
 ) -> Any:
     config = cast(dict[str, Any], node["config"])
     agent_id = int(config["agent_id"])
-    agent = dict(await _agent_snapshot(run_id, agent_id))
+    agent = (await _agent_snapshot(run_id, agent_id)).model_dump(mode="json")
     if forced_output_schema is not None:
         agent["output_mode"] = "json"
         agent["output_schema"] = forced_output_schema
@@ -2073,43 +2074,44 @@ def _check_agent_budget_sync(
             raise WorkflowNodeError("agent_budget_cost", "Agent 费用预算不足")
 
 
-async def _agent_snapshot(run_id: int, agent_id: int) -> dict[str, Any]:
+async def _agent_snapshot(run_id: int, agent_id: int) -> AgentDefinitionRead:
     return await asyncio.to_thread(_agent_snapshot_sync, run_id, agent_id)
 
 
-def _agent_snapshot_sync(run_id: int, agent_id: int) -> dict[str, Any]:
+def _agent_snapshot_sync(run_id: int, agent_id: int) -> AgentDefinitionRead:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         snapshot = _json_object(run.snapshot_json)
         for item in cast(list[dict[str, Any]], snapshot.get("agents", [])):
             if int(item.get("id", 0)) == agent_id:
-                return item
+                return AgentDefinitionRead.model_validate(item)
     raise WorkflowNodeError("agent_snapshot_missing", f"运行快照中没有 Agent #{agent_id}")
 
 
-async def _snapshot_item(run_id: int, key: str, item_id: int) -> dict[str, Any]:
+async def _snapshot_item(run_id: int, key: str, item_id: int) -> WorkflowSnapshotItem:
     return await asyncio.to_thread(_snapshot_item_sync, run_id, key, item_id)
 
 
-def _snapshot_item_sync(run_id: int, key: str, item_id: int) -> dict[str, Any]:
+def _snapshot_item_sync(run_id: int, key: str, item_id: int) -> WorkflowSnapshotItem:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         snapshot = _json_object(run.snapshot_json)
         for item in cast(list[dict[str, Any]], snapshot.get(key, [])):
             if int(item.get("id", 0)) == item_id:
-                return item
+                return WorkflowSnapshotItem.model_validate(item)
     raise WorkflowNodeError("snapshot_item_missing", f"运行快照中没有 {key} #{item_id}")
 
 
-async def _plan_node(run_id: int, node_key: str) -> dict[str, Any]:
+async def _plan_node(run_id: int, node_key: str) -> WorkflowNodeWrite:
     return await asyncio.to_thread(_plan_node_sync, run_id, node_key)
 
 
-def _plan_node_sync(run_id: int, node_key: str) -> dict[str, Any]:
+def _plan_node_sync(run_id: int, node_key: str) -> WorkflowNodeWrite:
     with SessionLocal() as db:
         run = cast(models.WorkflowRun, db.get(models.WorkflowRun, run_id))
         plan = _json_object(run.plan_json)
-        return cast(dict[str, Any], cast(dict[str, Any], plan["nodes"])[node_key])
+        node = cast(dict[str, Any], cast(dict[str, Any], plan["nodes"])[node_key])
+        return WorkflowNodeWrite.model_validate(node)
 
 
 def _apply_mapping(mapping: dict[str, str] | None, context: dict[str, Any]) -> dict[str, Any]:

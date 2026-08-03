@@ -137,8 +137,8 @@ def agent_read(row: models.AgentDefinition) -> AgentDefinitionRead:
     )
 
 
-def agent_snapshot(row: models.AgentDefinition) -> dict[str, Any]:
-    return agent_read(row).model_dump(mode="json")
+def agent_snapshot(row: models.AgentDefinition) -> AgentDefinitionRead:
+    return agent_read(row)
 
 
 def agent_config_hash(payload: AgentDefinitionCreate | AgentDefinitionUpdate) -> str:

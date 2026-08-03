@@ -29,6 +29,7 @@ from app.schemas.studio import (
     GenerateRequest,
     OutlineImportRequest,
     ProviderSetup,
+    ProjectOverviewRead,
     SnapshotCreate,
     StudioProjectCreate,
 )
@@ -47,7 +48,7 @@ def db(tmp_path: Path) -> Generator[Session, None, None]:
 
 def create_project(
     db: Session, entry_mode: Literal["creative", "outline"] = "creative"
-) -> dict[str, object]:
+) -> ProjectOverviewRead:
     with db.begin():
         return studio.create_project(
             db,
@@ -65,22 +66,22 @@ def create_project(
 
 def test_project_flow_has_expected_defaults_and_dashboard(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
-    assert overview["state"]["stage"] == "idea"  # type: ignore[index]
-    assert overview["state"]["review_granularity"] == "chapter"  # type: ignore[index]
-    assert overview["state"]["generation_mode"] == "countdown"  # type: ignore[index]
-    assert overview["state"]["countdown_seconds"] == 10  # type: ignore[index]
-    assert overview["state"]["budget_warning_percent"] == 70  # type: ignore[index]
-    assert overview["state"]["budget_pause_percent"] == 110  # type: ignore[index]
-    assert studio.dashboard(db)[0]["id"] == project_id
+    assert overview.state.stage == "idea"
+    assert overview.state.review_granularity == "chapter"
+    assert overview.state.generation_mode == "countdown"
+    assert overview.state.countdown_seconds == 10
+    assert overview.state.budget_warning_percent == 70
+    assert overview.state.budget_pause_percent == 110
+    assert studio.dashboard(db)[0].id == project_id
 
 
 @pytest.mark.asyncio
 async def test_generate_response_shape_is_stable(db: Session) -> None:
     """重构返回类型不得改变生成接口的 JSON 形状。"""
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     result = await studio.generate(
         db,
@@ -89,8 +90,14 @@ async def test_generate_response_shape_is_stable(db: Session) -> None:
         GenerateRequest(idempotency_key="shape-world", use_demo_model=True),
     )
     body = jsonable_encoder(result)
+    job = db.get(models.GenerationJob, result.job.id)
+    artifact = db.get(models.CreativeArtifact, result.artifact.id if result.artifact else 0)
+    assert job is not None
+    assert artifact is not None
+    expected_job = studio._record(job)
+    expected_artifact = studio._artifact_record(artifact)
 
-    assert set(body) == {"job", "artifact", "artifacts", "idempotent_replay"}
+    assert list(body) == ["job", "artifact", "artifacts", "idempotent_replay"]
     assert set(body["job"]) >= {"id", "project_id", "kind", "status", "label"}
     assert set(body["artifact"]) >= {
         "id",
@@ -100,12 +107,20 @@ async def test_generate_response_shape_is_stable(db: Session) -> None:
         "status",
         "metadata",
     }
+    assert list(body["job"]) == list(expected_job)
+    assert list(body["artifact"]) == list(expected_artifact)
+    assert body["job"] == expected_job
+    for key, value in expected_artifact.items():
+        if key not in {"created_at", "updated_at"}:
+            assert body["artifact"][key] == value
+    assert body["artifact"]["created_at"].endswith("+00:00")
+    assert body["artifact"]["updated_at"].endswith("+00:00")
     assert body["artifact"] == body["artifacts"][0]
 
 
 def test_dashboard_and_project_overview_shapes_are_stable(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     dashboard = jsonable_encoder(studio.dashboard(db))
     refreshed = jsonable_encoder(studio.project_overview(db, project_id))
@@ -138,11 +153,11 @@ def test_dashboard_and_project_overview_shapes_are_stable(db: Session) -> None:
 
 
 def test_studio_any_dict_budget_does_not_regress() -> None:
-    """studio.py 的 dict[str, Any] 数量只允许下降（v2.2.8 基线为 84）。"""
+    """studio.py 的 dict[str, Any] 数量只允许下降（84 降至 77）。"""
     source = (
         Path(__file__).parent.parent / "app" / "services" / "studio.py"
     ).read_text(encoding="utf-8")
-    assert source.count("dict[str, Any]") <= 84
+    assert source.count("dict[str, Any]") <= 77
 
 
 def test_deepseek_setup_uses_current_v4_model_metadata(db: Session) -> None:
@@ -209,7 +224,7 @@ def test_deepseek_setup_rejects_retired_model_aliases() -> None:
 
 def test_delete_project_route_removes_project_from_dashboard(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     response = studio_api.delete_project(project_id, db)
 
@@ -237,24 +252,24 @@ def test_continuation_import_builds_editable_tree_and_permanent_original(db: Ses
                 target_volumes=2,
             ),
         )
-    assert overview["state"]["entry_mode"] == "continuation"
-    assert overview["state"]["stage"] == "continuation_analysis"
-    assert [item["key"] for item in overview["stages"]] == studio.CONTINUATION_STAGE_ORDER
-    assert [chapter["title"] for chapter in overview["tree"]["chapters"]] == [
+    assert overview.state.entry_mode == "continuation"
+    assert overview.state.stage == "continuation_analysis"
+    assert [item.key for item in overview.stages] == studio.CONTINUATION_STAGE_ORDER
+    assert [chapter.title for chapter in overview.tree.chapters] == [
         "第1章 雨夜",
         "第2章 来信",
     ]
     original = next(
-        item for item in overview["artifacts"] if item["kind"] == "continuation_original"
+        item for item in overview.artifacts if item.kind == "continuation_original"
     )
-    assert original["content"] == manuscript
-    assert original["metadata"]["readonly"] is True
-    assert overview["snapshots"][0]["permanent"] is True
+    assert original.content == manuscript
+    assert original.metadata["readonly"] is True
+    assert overview.snapshots[0].permanent is True
     with pytest.raises(DomainError, match="永久只读"):
         studio.update_artifact(
             db,
-            int(original["id"]),
-            ArtifactUpdate(content="不能覆盖", expected_revision=int(original["revision"])),
+            original.id,
+            ArtifactUpdate(content="不能覆盖", expected_revision=original.revision),
         )
 
 
@@ -370,7 +385,7 @@ async def test_generation_context_failure_marks_job_failed(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     def fail_context(*_args: object, **_kwargs: object) -> tuple[str, dict[str, object]]:
         raise RuntimeError("context build failed")
@@ -397,17 +412,17 @@ async def test_successful_generation_replays_all_artifacts_without_duplicates(
     db: Session,
 ) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     request = GenerateRequest(idempotency_key="stable-world", use_demo_model=True)
 
     first = await studio.generate(db, project_id, "world", request)
     artifact_count = db.scalar(select(func.count(models.CreativeArtifact.id)))
     replay = await studio.generate(db, project_id, "world", request)
 
-    assert first["idempotent_replay"] is False
-    assert replay["idempotent_replay"] is True
-    assert [item["id"] for item in replay["artifacts"]] == [
-        item["id"] for item in first["artifacts"]
+    assert first.idempotent_replay is False
+    assert replay.idempotent_replay is True
+    assert [item.id for item in replay.artifacts] == [
+        item.id for item in first.artifacts
     ]
     assert db.scalar(select(func.count(models.GenerationJob.id))) == 1
     assert db.scalar(select(func.count(models.CreativeArtifact.id))) == artifact_count
@@ -418,7 +433,7 @@ async def test_cancelled_generation_releases_active_scope(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     async def cancel_call(*_args: object, **_kwargs: object) -> object:
         raise asyncio.CancelledError
@@ -450,7 +465,7 @@ async def test_continuation_review_gates_build_future_chapters(db: Session) -> N
                 target_volumes=2,
             ),
         )
-    project_id = int(overview["project"]["id"])
+    project_id = overview.project.id
 
     for phase, next_stage in [
         ("continuation_analysis", "continuation_outline"),
@@ -460,23 +475,23 @@ async def test_continuation_review_gates_build_future_chapters(db: Session) -> N
         generated = await studio.generate(
             db, project_id, phase, GenerateRequest(idempotency_key=f"continuation-{phase}", use_demo_model=True)
         )
-        assert all(item["status"] == "pending" for item in generated["artifacts"])
-        assert studio.project_overview(db, project_id)["state"]["stage"] == phase
-        for artifact in generated["artifacts"]:
+        assert all(item.status == "pending" for item in generated.artifacts)
+        assert studio.project_overview(db, project_id).state.stage == phase
+        for artifact in generated.artifacts:
             studio.decide_artifact(
                 db,
-                int(artifact["id"]),
+                artifact.id,
                 ArtifactDecision(
-                    action="approve", expected_revision=int(artifact["revision"])
+                    action="approve", expected_revision=artifact.revision
                 ),
             )
         db.commit()
-        assert studio.project_overview(db, project_id)["state"]["stage"] == next_stage
+        assert studio.project_overview(db, project_id).state.stage == next_stage
 
     result = studio.project_overview(db, project_id)
-    assert len(result["tree"]["chapters"]) == 4
-    assert len(result["tree"]["volumes"]) == 2
-    assert result["state"]["config"]["plan_confirmed"] is True
+    assert len(result.tree.chapters) == 4
+    assert len(result.tree.volumes) == 2
+    assert result.state.config["plan_confirmed"] is True
 
 
 def test_continuation_current_chapter_approval_appends_without_overwrite(db: Session) -> None:
@@ -489,8 +504,8 @@ def test_continuation_current_chapter_approval_appends_without_overwrite(db: Ses
                 continuation_start="current",
             ),
         )
-    project_id = int(overview["project"]["id"])
-    chapter = db.get(models.Chapter, int(overview["tree"]["chapters"][0]["id"]))
+    project_id = overview.project.id
+    chapter = db.get(models.Chapter, overview.tree.chapters[0].id)
     assert chapter is not None
     artifact = models.CreativeArtifact(
         project_id=project_id,
@@ -525,7 +540,7 @@ def test_continuation_conflict_pause_requires_and_clears_author_decision(db: Ses
             db,
             ContinuationImportRequest(title="冲突续篇", text="## 第1章\n旧设定。"),
         )
-    project_id = int(overview["project"]["id"])
+    project_id = overview.project.id
     artifact = models.CreativeArtifact(
         project_id=project_id,
         kind="continuation_analysis",
@@ -554,12 +569,12 @@ def test_continuation_conflict_pause_requires_and_clears_author_decision(db: Ses
     db.commit()
 
     assert result["status"] == "rejected"
-    assert studio.project_overview(db, project_id)["state"]["config"]["conflict_paused"] is False
+    assert studio.project_overview(db, project_id).state.config["conflict_paused"] is False
 
 
 def test_outline_import_builds_volume_chapter_scene_tree(db: Session) -> None:
     overview = create_project(db, "outline")
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     text = "# 第一卷 潮声\n## 第一章 夜航\n场景一 防波堤\n雾中传来旧钟声。\n## 第二章 档案\n场景一 地库"
 
     preview = studio.parse_outline(text, "雾港回声")
@@ -568,15 +583,15 @@ def test_outline_import_builds_volume_chapter_scene_tree(db: Session) -> None:
         studio.import_outline(db, project_id, OutlineImportRequest(text=text))
 
     result = studio.project_overview(db, project_id)
-    assert result["state"]["stage"] == "drafting"
-    assert len(result["tree"]["volumes"]) == 1
-    assert len(result["tree"]["chapters"]) == 2
-    assert len(result["tree"]["scenes"]) == 2
+    assert result.state.stage == "drafting"
+    assert len(result.tree.volumes) == 1
+    assert len(result.tree.chapters) == 2
+    assert len(result.tree.scenes) == 2
 
 
 def test_incomplete_chapter_plan_blocks_tree_creation(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     plan = """## 章节规划师
 # 第一卷 矿井中的火种
 ## 第1章 深渊之下
@@ -600,7 +615,7 @@ def test_incomplete_chapter_plan_blocks_tree_creation(db: Session) -> None:
 
     assert exc_info.value.kind is ErrorKind.CONFLICT
     assert "4" in str(exc_info.value.detail)
-    assert studio.project_overview(db, project_id)["tree"]["chapters"] == []
+    assert studio.project_overview(db, project_id).tree.chapters == []
     assert studio._chapter_generation_ranges(80) == [
         (1, 10), (11, 20), (21, 30), (31, 40),
         (41, 50), (51, 60), (61, 70), (71, 80),
@@ -763,7 +778,7 @@ def test_chapter_generation_reserves_enough_output_for_detailed_batches() -> Non
 
 def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Session) -> None:
     overview = create_project(db, "outline")
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     with db.begin():
         state = studio._state(db, project_id)
         config = studio._json_object(state.config_json)
@@ -798,26 +813,27 @@ def test_chapter_tree_repair_reorders_gaps_and_merges_duplicate_volumes(db: Sess
         db, project_id, ChapterTreeRepairRequest(confirm=True)
     )
     repaired = result["overview"]
-    assert [volume["title"] for volume in repaired["tree"]["volumes"]] == [
+    assert isinstance(repaired, ProjectOverviewRead)
+    assert [volume.title for volume in repaired.tree.volumes] == [
         "第1卷 起势",
         "第2卷 对抗",
     ]
     assert [
-        chapter_plans.chapter_title_number(chapter["title"])
-        for chapter in repaired["tree"]["chapters"]
+        chapter_plans.chapter_title_number(chapter.title)
+        for chapter in repaired.tree.chapters
     ] == list(range(1, 11))
-    first_volume_id = int(repaired["tree"]["volumes"][0]["id"])
+    first_volume_id = repaired.tree.volumes[0].id
     assert [
-        chapter_plans.chapter_title_number(chapter["title"])
-        for chapter in repaired["tree"]["chapters"]
-        if int(chapter["volume_id"]) == first_volume_id
+        chapter_plans.chapter_title_number(chapter.title)
+        for chapter in repaired.tree.chapters
+        if chapter.volume_id == first_volume_id
     ] == [1, 2, 3, 4]
 
 
 @pytest.mark.asyncio
 async def test_editor_chat_requires_confirmation_then_runs_the_real_workflow(db: Session) -> None:
     overview = create_project(db, "outline")
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     with db.begin():
         state = studio._state(db, project_id)
         state.stage = "drafting"
@@ -843,22 +859,22 @@ async def test_editor_chat_requires_confirmation_then_runs_the_real_workflow(db:
         "use_demo_model": True,
     }
     assert not any(
-        item["kind"] == "drafting"
-        for item in studio.project_overview(db, project_id)["artifacts"]
+        item.kind == "drafting"
+        for item in studio.project_overview(db, project_id).artifacts
     )
 
     applied = await studio.decide_message_proposal(db, project_id, int(message["id"]), "apply")
 
     assert applied["proposal_status"] == "applied"
     latest = studio.project_overview(db, project_id)
-    assert any(item["kind"] == "drafting" for item in latest["artifacts"])
-    assert latest["jobs"][0]["kind"] == "drafting"
-    assert latest["jobs"][0]["status"] == "completed"
+    assert any(item.kind == "drafting" for item in latest.artifacts)
+    assert latest.jobs[0].kind == "drafting"
+    assert latest.jobs[0].status == "completed"
 
 
 def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     volume = models.Volume(project_id=project_id, title="第一卷", position=1)
     db.add(volume)
     db.flush()
@@ -902,7 +918,9 @@ def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session
     db.flush()
 
     assert result["repaired"] is True
-    assert [item["title"] for item in result["overview"]["tree"]["chapters"]] == [
+    repaired = result["overview"]
+    assert isinstance(repaired, ProjectOverviewRead)
+    assert [item.title for item in repaired.tree.chapters] == [
         "第1章",
         "第2章",
         "第3章",
@@ -923,7 +941,7 @@ def test_chapter_tree_repair_is_confirmed_snapshotted_and_reversible(db: Session
 
 def test_snapshot_retention_keeps_three_ordinary_and_all_special(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     with db.begin():
         for index in range(5):
             studio.create_snapshot(db, project_id, SnapshotCreate(label=f"自动 {index}"))
@@ -943,7 +961,7 @@ def test_snapshot_retention_keeps_three_ordinary_and_all_special(db: Session) ->
 
 def test_startup_marks_unfinished_generation_jobs_interrupted(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     job = models.GenerationJob(
         project_id=project_id,
         kind="drafting",
@@ -963,7 +981,7 @@ def test_startup_marks_unfinished_generation_jobs_interrupted(db: Session) -> No
 @pytest.mark.asyncio
 async def test_multi_agent_generation_requires_review_before_advancing(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
 
     generated = await studio.generate(
         db,
@@ -971,30 +989,30 @@ async def test_multi_agent_generation_requires_review_before_advancing(db: Sessi
         "world",
         GenerateRequest(idempotency_key="world-first", use_demo_model=True),
     )
-    artifacts = generated["artifacts"]
-    assert generated["job"]["status"] == "completed"
+    artifacts = generated.artifacts
+    assert generated.job.status == "completed"
     assert len(artifacts) == len(studio.PHASE_AGENTS["world"])
-    assert {item["metadata"]["agent_name"] for item in artifacts} == {
+    assert {item.metadata["agent_name"] for item in artifacts} == {
         name for name, _ in studio.PHASE_AGENTS["world"]
     }
-    assert all(item["status"] == "pending" for item in artifacts)
-    assert studio.project_overview(db, project_id)["state"]["stage"] == "idea"
+    assert all(item.status == "pending" for item in artifacts)
+    assert studio.project_overview(db, project_id).state.stage == "idea"
 
     for artifact in artifacts[:-1]:
         studio.decide_artifact(
             db,
-            int(artifact["id"]),
-            ArtifactDecision(action="approve", expected_revision=int(artifact["revision"])),
+            artifact.id,
+            ArtifactDecision(action="approve", expected_revision=artifact.revision),
         )
-    assert studio.project_overview(db, project_id)["state"]["stage"] == "idea"
+    assert studio.project_overview(db, project_id).state.stage == "idea"
     artifact = artifacts[-1]
     studio.decide_artifact(
         db,
-        int(artifact["id"]),
-        ArtifactDecision(action="approve", expected_revision=int(artifact["revision"])),
+        artifact.id,
+        ArtifactDecision(action="approve", expected_revision=artifact.revision),
     )
     db.commit()
-    assert studio.project_overview(db, project_id)["state"]["stage"] == "characters"
+    assert studio.project_overview(db, project_id).state.stage == "characters"
 
 
 @pytest.mark.asyncio
@@ -1002,7 +1020,7 @@ async def test_multi_agent_failure_keeps_audit_but_no_business_output(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     original_model_call = studio._model_call
     calls = 0
 
@@ -1056,14 +1074,14 @@ async def test_multi_agent_failure_keeps_audit_but_no_business_output(
 @pytest.mark.asyncio
 async def test_regenerate_one_planning_item_supersedes_old_version(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     first = await studio.generate(
         db,
         project_id,
         "world",
         GenerateRequest(idempotency_key="world-version-1", use_demo_model=True),
     )
-    agent_name = str(first["artifacts"][0]["metadata"]["agent_name"])
+    agent_name = str(first.artifacts[0].metadata["agent_name"])
 
     replacement = await studio.generate(
         db,
@@ -1077,24 +1095,24 @@ async def test_regenerate_one_planning_item_supersedes_old_version(db: Session) 
         ),
     )
 
-    current = studio.project_overview(db, project_id)["artifacts"]
-    series = [item for item in current if item["metadata"].get("agent_name") == agent_name]
-    history = studio.artifact_versions(db, int(replacement["artifacts"][0]["id"]))
-    assert len(replacement["artifacts"]) == 1
-    assert {item["status"] for item in series} == {"pending"}
+    current = studio.project_overview(db, project_id).artifacts
+    series = [item for item in current if item.metadata.get("agent_name") == agent_name]
+    history = studio.artifact_versions(db, replacement.artifacts[0].id)
+    assert len(replacement.artifacts) == 1
+    assert {item.status for item in series} == {"pending"}
     assert {item["status"] for item in history} == {"pending", "superseded"}
 
 
 @pytest.mark.asyncio
 async def test_scene_review_creates_independent_pending_artifacts(db: Session) -> None:
     overview = create_project(db, "outline")
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     text = "# 第一卷\n## 第一章 夜航\n### 场景一 码头\n登船。\n### 场景二 船舱\n发现线索。"
     with db.begin():
         studio.import_outline(db, project_id, OutlineImportRequest(text=text))
         state = studio._state(db, project_id)
         state.review_granularity = "scene"
-    chapter_id = int(studio.project_overview(db, project_id)["tree"]["chapters"][0]["id"])
+    chapter_id = studio.project_overview(db, project_id).tree.chapters[0].id
 
     generated = await studio.generate(
         db,
@@ -1103,15 +1121,15 @@ async def test_scene_review_creates_independent_pending_artifacts(db: Session) -
         GenerateRequest(idempotency_key="scene-drafting", use_demo_model=True, chapter_id=chapter_id),
     )
 
-    assert len(generated["artifacts"]) == 2
-    assert {item["kind"] for item in generated["artifacts"]} == {"scene_draft"}
-    assert len({item["metadata"]["scene_id"] for item in generated["artifacts"]}) == 2
-    assert all(item["status"] == "pending" for item in generated["artifacts"])
+    assert len(generated.artifacts) == 2
+    assert {item.kind for item in generated.artifacts} == {"scene_draft"}
+    assert len({item.metadata["scene_id"] for item in generated.artifacts}) == 2
+    assert all(item.status == "pending" for item in generated.artifacts)
 
 
 def test_approving_agent_draft_writes_chapter_and_creates_snapshot(db: Session) -> None:
     overview = create_project(db, "outline")
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     with db.begin():
         studio.import_outline(
             db,
@@ -1159,7 +1177,7 @@ def test_approving_agent_draft_writes_chapter_and_creates_snapshot(db: Session) 
 
 def test_major_conflict_requires_author_resolution(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     artifact = models.CreativeArtifact(
         project_id=project_id,
         kind="world",
@@ -1194,7 +1212,7 @@ def test_major_conflict_requires_author_resolution(db: Session) -> None:
 @pytest.mark.asyncio
 async def test_style_reference_is_reviewable_and_versioned(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     extracted = await studio.extract_style_reference(
         db,
         project_id,
@@ -1221,7 +1239,7 @@ async def test_style_reference_is_reviewable_and_versioned(db: Session) -> None:
 @pytest.mark.asyncio
 async def test_full_planning_approval_gate_builds_writing_tree(db: Session) -> None:
     overview = create_project(db)
-    project_id = int(overview["project"]["id"])  # type: ignore[index]
+    project_id = overview.project.id
     phases = ["world", "characters", "plot", "volumes", "chapters"]
 
     for index, phase in enumerate(phases):
@@ -1239,18 +1257,18 @@ async def test_full_planning_approval_gate_builds_writing_tree(db: Session) -> N
                     "drafting",
                     GenerateRequest(idempotency_key="premature-drafting", use_demo_model=True, chapter_id=1),
                 )
-        for artifact in generated["artifacts"]:
+        for artifact in generated.artifacts:
             studio.decide_artifact(
                 db,
-                int(artifact["id"]),
+                artifact.id,
                 ArtifactDecision(
                     action="approve",
-                    expected_revision=int(artifact["revision"]),
+                    expected_revision=artifact.revision,
                 ),
             )
         db.commit()
 
     result = studio.project_overview(db, project_id)
-    assert result["state"]["stage"] == "drafting"
-    assert len(result["tree"]["chapters"]) == 4
-    assert len(result["tree"]["scenes"]) == 12
+    assert result.state.stage == "drafting"
+    assert len(result.tree.chapters) == 4
+    assert len(result.tree.scenes) == 12
