@@ -40,6 +40,7 @@ BackupArchiveSource = bytes | Path
 ARCHIVE_FILES = frozenset({"manifest.json", "data.json"})
 MAX_ARCHIVE_ENTRIES = 8
 MAX_COMPRESSION_RATIO = 250
+RATIO_CHECK_MIN_BYTES = 64 * 1024
 ENCRYPTED_BACKUP_MAGIC = b"NASBKP1\0"
 ENCRYPTED_BACKUP_SALT_BYTES = 16
 ENCRYPTED_BACKUP_NONCE_BYTES = 12
@@ -709,7 +710,10 @@ def _validate_zip_member(info: zipfile.ZipInfo) -> None:
     if info.flag_bits & 0x1:
         raise ValueError("不支持加密 ZIP")
     compressed = max(1, info.compress_size)
-    if info.file_size > 10 * 1024 * 1024 and info.file_size / compressed > MAX_COMPRESSION_RATIO:
+    if (
+        info.file_size >= RATIO_CHECK_MIN_BYTES
+        and info.file_size / compressed > MAX_COMPRESSION_RATIO
+    ):
         raise ValueError("备份 ZIP 压缩比异常")
 
 
