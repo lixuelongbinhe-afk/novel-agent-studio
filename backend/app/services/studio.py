@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -11,17 +11,12 @@ from sqlalchemy.orm import Session, load_only
 
 from app import models
 from app.services.errors import (
-    BudgetPausedError,
     ConflictError,
-    DomainError,
     InvalidInputError,
     NotFoundError,
-    UnavailableError,
     UpstreamFailedError,
 )
 from app.repositories import word_count
-from app.schemas import ModelDebugRequest, NormalizedContentPart, NormalizedMessage
-from app.schemas.context import ContextBuildRequest
 from app.schemas.studio import (
     ArtifactDecision,
     ArtifactUpdate,
@@ -29,7 +24,6 @@ from app.schemas.studio import (
     ContinuationImportRequest,
     ContinuationSettingsUpdate,
     DashboardProjectRead,
-    GenerateResult,
     GenerateRequest,
     ProviderSetup,
     ProjectOverviewRead,
@@ -38,7 +32,7 @@ from app.schemas.studio import (
     StudioStateUpdate,
 )
 from app.services import chapter_tree as _chapter_tree
-from app.services import context_builder, generation_jobs, model_execution
+from app.services import studio_generation as _studio_generation
 from app.services.chapter_plans import (
     chapter_title_number as _chapter_title_number,
     clean_outline_label as _clean_outline_label,
@@ -49,7 +43,6 @@ from app.services.credential_store import (
     has_provider_secret,
     set_provider_secret,
 )
-from app.services.usage_control import estimate_text_tokens
 
 
 STAGE_ORDER = [
@@ -167,6 +160,28 @@ import_outline = _chapter_tree.import_outline
 parse_outline = _chapter_tree.parse_outline
 repair_chapter_tree = _chapter_tree.repair_chapter_tree
 
+_apply_budget_after_task = _studio_generation._apply_budget_after_task
+_artifact_title = _studio_generation._artifact_title
+_chunk_text_by_tokens = _studio_generation._chunk_text_by_tokens
+_context_reason = _studio_generation._context_reason
+_continuation_corpus = _studio_generation._continuation_corpus
+_continuation_source_context = _studio_generation._continuation_source_context
+_effective_output_tokens = _studio_generation._effective_output_tokens
+_fit_text_to_token_budget = _studio_generation._fit_text_to_token_budget
+_generation_context = _studio_generation._generation_context
+_maybe_finish_drafting = _studio_generation._maybe_finish_drafting
+_model_call = _studio_generation._model_call
+_phase_output_tokens = _studio_generation._phase_output_tokens
+_phase_prompt = _studio_generation._phase_prompt
+_prefix_index_for_tokens = _studio_generation._prefix_index_for_tokens
+_provider_has_key = _studio_generation._provider_has_key
+_record_response_cost = _studio_generation._record_response_cost
+_require_generation_prerequisites = _studio_generation._require_generation_prerequisites
+_select_model = _studio_generation._select_model
+_studio_input_budget = _studio_generation._studio_input_budget
+_usage_summary = _studio_generation._usage_summary
+extract_style_reference = _studio_generation.extract_style_reference
+generate = _studio_generation.generate
 
 
 def create_project(db: Session, payload: StudioProjectCreate) -> ProjectOverviewRead:
@@ -235,10 +250,12 @@ def create_continuation_project(
         "target_words": payload.target_words,
         "target_chapters": payload.target_chapters,
         "target_volumes": payload.target_volumes,
-        "target_mode": "manual" if any(
+        "target_mode": "manual"
+        if any(
             value is not None
             for value in (payload.target_words, payload.target_chapters, payload.target_volumes)
-        ) else "ai",
+        )
+        else "ai",
         "continuation_start": payload.continuation_start,
         "direction_mode": payload.direction_mode,
         "user_outline": payload.user_outline.strip(),
@@ -313,7 +330,10 @@ def update_continuation_settings(
     config = _json_object(state.config_json)
     for key, value in payload.model_dump(exclude_none=True).items():
         config[key] = value.strip() if isinstance(value, str) else value
-    if any(key in payload.model_fields_set for key in ("target_words", "target_chapters", "target_volumes")):
+    if any(
+        key in payload.model_fields_set
+        for key in ("target_words", "target_chapters", "target_volumes")
+    ):
         config["target_mode"] = "manual"
     if payload.target_words is not None:
         _project(db, project_id).target_words = payload.target_words
@@ -366,9 +386,7 @@ def parse_manuscript(text: str, title: str = "导入小说") -> dict[str, Any]:
             continue
         body.append(raw_line)
     flush_chapter()
-    volumes = _merge_parsed_volumes(
-        [volume for volume in volumes if volume["chapters"]]
-    )
+    volumes = _merge_parsed_volumes([volume for volume in volumes if volume["chapters"]])
     if not volumes:
         volumes = [{"title": "第一卷", "chapters": [{"title": "第一章", "content": normalized}]}]
     chapter_count = sum(len(volume["chapters"]) for volume in volumes)
@@ -378,17 +396,21 @@ def parse_manuscript(text: str, title: str = "导入小说") -> dict[str, Any]:
         "volume_count": len(volumes),
         "chapter_count": chapter_count,
         "word_count": word_count(normalized),
-        "warnings": ["只识别到一个章节，请确认原文中的章节标题格式。"] if chapter_count == 1 else [],
+        "warnings": ["只识别到一个章节，请确认原文中的章节标题格式。"]
+        if chapter_count == 1
+        else [],
     }
 
 
 def _source_project_manuscript(db: Session, project_id: int) -> tuple[str, str]:
     source = _project(db, project_id)
-    volumes = list(db.scalars(
-        select(models.Volume)
-        .where(models.Volume.project_id == project_id, models.Volume.deleted_at.is_(None))
-        .order_by(models.Volume.position, models.Volume.id)
-    ).all())
+    volumes = list(
+        db.scalars(
+            select(models.Volume)
+            .where(models.Volume.project_id == project_id, models.Volume.deleted_at.is_(None))
+            .order_by(models.Volume.position, models.Volume.id)
+        ).all()
+    )
     blocks: list[str] = []
     for volume in volumes:
         blocks.append(f"# {volume.title}")
@@ -403,8 +425,6 @@ def _source_project_manuscript(db: Session, project_id: int) -> tuple[str, str]:
     if not text:
         raise ConflictError("所选项目没有可导入的正文")
     return text, source.title
-
-
 
 
 def dashboard(db: Session) -> list[DashboardProjectRead]:
@@ -554,31 +574,28 @@ def project_overview(db: Session, project_id: int) -> ProjectOverviewRead:
         "foreshadows": _count(db, models.Foreshadow, project_id),
         "style_guides": _count(db, models.StyleGuide, project_id),
     }
-    return ProjectOverviewRead.model_validate({
-        "project": _record(project),
-        "state": _state_record(state),
-        "stages": [
-            {"key": key, "label": STAGE_LABELS[key]}
-            for key in _stage_order(state)
-        ],
-        "artifacts": [_artifact_record(item) for item in artifacts],
-        "tree": {
-            "volumes": [_record(item) for item in volumes],
-            "chapters": [_record(item) for item in chapters],
-            "scenes": [_record(item) for item in scenes],
-        },
-        "jobs": [_record(item) for item in jobs],
-        "messages": [_message_record(item) for item in reversed(messages)],
-        "snapshots": [_snapshot_record(item) for item in snapshots],
-        "chapter_tree_repair": chapter_tree_repair_preview(db, project_id),
-        "library_counts": library_counts,
-        "usage": _usage_summary(db, project_id, state),
-    })
+    return ProjectOverviewRead.model_validate(
+        {
+            "project": _record(project),
+            "state": _state_record(state),
+            "stages": [{"key": key, "label": STAGE_LABELS[key]} for key in _stage_order(state)],
+            "artifacts": [_artifact_record(item) for item in artifacts],
+            "tree": {
+                "volumes": [_record(item) for item in volumes],
+                "chapters": [_record(item) for item in chapters],
+                "scenes": [_record(item) for item in scenes],
+            },
+            "jobs": [_record(item) for item in jobs],
+            "messages": [_message_record(item) for item in reversed(messages)],
+            "snapshots": [_snapshot_record(item) for item in snapshots],
+            "chapter_tree_repair": chapter_tree_repair_preview(db, project_id),
+            "library_counts": library_counts,
+            "usage": _usage_summary(db, project_id, state),
+        }
+    )
 
 
-def update_state(
-    db: Session, project_id: int, payload: StudioStateUpdate
-) -> dict[str, Any]:
+def update_state(db: Session, project_id: int, payload: StudioStateUpdate) -> dict[str, Any]:
     state = _state(db, project_id)
     for key, value in payload.model_dump(exclude_none=True).items():
         setattr(state, key, value)
@@ -587,9 +604,7 @@ def update_state(
     return _state_record(state)
 
 
-def update_artifact(
-    db: Session, artifact_id: int, payload: ArtifactUpdate
-) -> dict[str, Any]:
+def update_artifact(db: Session, artifact_id: int, payload: ArtifactUpdate) -> dict[str, Any]:
     current = _artifact(db, artifact_id)
     if _json_object(current.metadata_json).get("readonly"):
         raise ConflictError("原始导入副本为永久只读内容，不能修改")
@@ -609,9 +624,10 @@ def update_artifact(
         metadata_json=current.metadata_json,
     )
     replacement_metadata = _json_object(replacement.metadata_json)
-    if replacement.kind == "chapters" and str(
-        replacement_metadata.get("agent_name") or replacement.title
-    ) == "章节规划师":
+    if (
+        replacement.kind == "chapters"
+        and str(replacement_metadata.get("agent_name") or replacement.title) == "章节规划师"
+    ):
         state = _state(db, replacement.project_id)
         requested = max(
             1,
@@ -642,9 +658,7 @@ def artifact_versions(db: Session, artifact_id: int) -> list[dict[str, Any]]:
     current = _artifact(db, artifact_id)
     metadata = _json_object(current.metadata_json)
     stored_series_key = str(metadata.get("series_key") or "")
-    series_expression = func.json_extract(
-        models.CreativeArtifact.metadata_json, "$.series_key"
-    )
+    series_expression = func.json_extract(models.CreativeArtifact.metadata_json, "$.series_key")
     statement = select(models.CreativeArtifact).where(
         models.CreativeArtifact.project_id == current.project_id,
         models.CreativeArtifact.kind == current.kind,
@@ -665,9 +679,7 @@ def artifact_versions(db: Session, artifact_id: int) -> list[dict[str, Any]]:
     return [_artifact_record(item) for item in candidates]
 
 
-def decide_artifact(
-    db: Session, artifact_id: int, payload: ArtifactDecision
-) -> dict[str, Any]:
+def decide_artifact(db: Session, artifact_id: int, payload: ArtifactDecision) -> dict[str, Any]:
     artifact = _artifact(db, artifact_id)
     _require_revision(artifact, payload.expected_revision)
     artifact.notes = payload.note
@@ -703,353 +715,6 @@ def decide_artifact(
     if payload.action in {"approve", "reject"}:
         _refresh_continuation_conflict_pause(db, artifact.project_id)
     return _artifact_record(artifact)
-
-
-async def generate(
-    db: Session, project_id: int, phase: str, payload: GenerateRequest
-) -> GenerateResult:
-    if phase not in PHASE_AGENTS:
-        raise InvalidInputError("不支持的创作阶段")
-    project = _project(db, project_id)
-    state = _state(db, project_id)
-    _require_generation_prerequisites(db, project_id, phase, payload)
-    phase_agents = PHASE_AGENTS[phase]
-    if payload.agent_name is not None:
-        phase_agents = [item for item in phase_agents if item[0] == payload.agent_name]
-        if not phase_agents:
-            raise InvalidInputError("该阶段不存在指定的 Agent")
-    if state.budget_paused:
-        raise BudgetPausedError("项目预算已暂停，请先在费用面板确认继续")
-    profile, reason = _select_model(db, state, payload.use_demo_model)
-    completed_calls = 0
-    total_calls = 0
-    try:
-        lease = await generation_jobs.acquire_async(
-            db,
-            project_id=project_id,
-            phase=phase,
-            chapter_id=payload.chapter_id,
-            mode=payload.mode,
-            idempotency_key=payload.idempotency_key,
-            label=f"{STAGE_LABELS.get(phase, phase)} · {len(phase_agents)} 个 Agent",
-            model_name=profile.display_name if profile is not None else "内置演示模型",
-            model_reason=reason,
-        )
-    except generation_jobs.GenerationLeaseConflict as exc:
-        raise UnavailableError("生成任务租约暂时不可用，请稍后重试") from exc
-    job = lease.job
-    if lease.replayed:
-        replay_artifacts = _generation_job_artifacts(db, job)
-        artifact = replay_artifacts[0] if replay_artifacts else None
-        return GenerateResult.model_validate({
-            "job": _record(job),
-            "artifact": _artifact_record(artifact) if artifact is not None else None,
-            "artifacts": [_artifact_record(item) for item in replay_artifacts],
-            "idempotent_replay": True,
-        })
-
-    try:
-        phase_max_tokens = _phase_output_tokens(phase)
-        context, context_metadata = _generation_context(
-            db,
-            project_id,
-            payload.chapter_id,
-            profile=profile,
-            use_demo=payload.use_demo_model,
-            max_tokens=phase_max_tokens,
-            query=(
-                f"{STAGE_LABELS.get(phase, phase)}；{payload.instruction or '按已审核资料执行'}"
-            ),
-        )
-        if phase in {"continuation_analysis", "continuation_outline"}:
-            mapped_context, mapped_metadata = await _continuation_source_context(
-                db,
-                project_id,
-                phase,
-                profile,
-                use_demo=payload.use_demo_model,
-                max_tokens=phase_max_tokens,
-            )
-            context = _fit_text_to_token_budget(
-                f"{context}\n\n{mapped_context}",
-                _studio_input_budget(profile, payload.use_demo_model, phase_max_tokens),
-            )
-            context_metadata.update(mapped_metadata)
-        job.model_reason = f"{reason} {_context_reason(context_metadata)}"
-        db.commit()
-        outputs: list[str] = []
-        requested_chapters = max(
-            1,
-            min(
-                int(_json_object(state.config_json).get("chapter_count") or 12),
-                10_000,
-            ),
-        )
-        chapter_ranges = (
-            _chapter_generation_ranges(requested_chapters)
-            if phase == "chapters"
-            else [(1, 1)]
-        )
-        total_calls = len(phase_agents) * len(chapter_ranges)
-        for index, (agent_name, responsibility) in enumerate(phase_agents):
-            agent_parts: list[str] = []
-            for range_start, range_end in chapter_ranges:
-                batch_payload = payload
-                collaborator_outputs = outputs
-                if phase == "chapters":
-                    batch_requirement = (
-                        f"本次只规划第 {range_start} 至第 {range_end} 章，共 "
-                        f"{range_end - range_start + 1} 章。必须逐章输出二级标题“## 第N章 标题”，"
-                        "不得省略、合并或输出范围外章节。"
-                    )
-                    instruction = "\n".join(
-                        item for item in [payload.instruction.strip(), batch_requirement] if item
-                    )
-                    batch_payload = payload.model_copy(update={"instruction": instruction})
-                    collaborator_outputs = [
-                        _chapter_plan_excerpt(item, range_start, range_end)
-                        for item in outputs
-                    ]
-                prompt = _phase_prompt(
-                    project,
-                    phase,
-                    agent_name,
-                    responsibility,
-                    context,
-                    batch_payload,
-                    collaborator_outputs,
-                )
-                response = await _model_call(
-                    db,
-                    project_id,
-                    prompt,
-                    profile,
-                    use_demo=payload.use_demo_model,
-                    max_tokens=phase_max_tokens,
-                )
-                if response.error is not None:
-                    raise RuntimeError(f"{response.error.code}: {response.error.message}")
-                response_text = response.text.strip()
-                _record_response_cost(state, response)
-                if phase == "chapters" and agent_name == "章节规划师":
-                    missing = _missing_chapter_numbers(
-                        response_text, range_start, range_end
-                    )
-                    if missing:
-                        repair_prompt = (
-                            f"{prompt}\n\n上一次输出缺少以下章节：{_format_number_ranges(missing)}。"
-                            "请只补充这些缺失章节，每章必须使用二级标题“## 第N章 标题”，"
-                            "不要重写已经生成的章节。"
-                        )
-                        repair_response = await _model_call(
-                            db,
-                            project_id,
-                            repair_prompt,
-                            profile,
-                            use_demo=payload.use_demo_model,
-                            max_tokens=phase_max_tokens,
-                        )
-                        if repair_response.error is not None:
-                            raise RuntimeError(
-                                f"{repair_response.error.code}: {repair_response.error.message}"
-                            )
-                        _record_response_cost(state, repair_response)
-                        response_text = (
-                            response_text + "\n\n" + repair_response.text.strip()
-                        ).strip()
-                agent_parts.append(response_text)
-                completed_calls += 1
-                job.progress = min(90, int((completed_calls / total_calls) * 85) + 5)
-                db.commit()
-            agent_output = f"## {agent_name}\n\n" + "\n\n".join(agent_parts)
-            if phase == "chapters" and agent_name == "章节规划师":
-                validation = _chapter_plan_validation(
-                    agent_output,
-                    requested_chapters,
-                    _approved_volume_titles(db, project_id),
-                )
-                agent_output = str(validation["preview_markdown"])
-            outputs.append(agent_output)
-        metadata: dict[str, Any] = {
-            "agents": [name for name, _ in phase_agents],
-            "model": job.model_name,
-            "model_reason": reason,
-            "chapter_id": payload.chapter_id,
-            "mode": payload.mode,
-            "context": context_metadata,
-            "generation_idempotency_key": payload.idempotency_key,
-        }
-        artifact_kind = phase
-        if payload.mode not in {"new", "continue"}:
-            artifact_kind = "revision_proposal"
-            metadata["revision_mode"] = payload.mode
-            metadata["selected_text"] = payload.selected_text
-        artifacts: list[models.CreativeArtifact] = []
-        if phase in {
-            "world",
-            "characters",
-            "plot",
-            "volumes",
-            "chapters",
-            "continuation_analysis",
-            "continuation_outline",
-            "continuation_plan",
-        }:
-            for agent_index, ((agent_name, _), output) in enumerate(
-                zip(phase_agents, outputs, strict=True)
-            ):
-                item_metadata = dict(metadata)
-                item_metadata.update({
-                    "agent_name": agent_name,
-                    "agent_index": agent_index,
-                    "required_count": len(PHASE_AGENTS[phase]),
-                    "series_key": f"{phase}:{agent_name}",
-                })
-                if phase == "chapters" and agent_name == "章节规划师":
-                    validation = _chapter_plan_validation(
-                        output,
-                        requested_chapters,
-                        _approved_volume_titles(db, project_id),
-                    )
-                    item_metadata["chapter_plan_validation"] = {
-                        key: value
-                        for key, value in validation.items()
-                        if key not in {"volumes", "preview_markdown"}
-                    }
-                    item_metadata["normalized_preview"] = True
-                _supersede_series(db, project_id, str(item_metadata["series_key"]))
-                artifacts.append(_new_artifact(project_id, artifact_kind, agent_name, output, item_metadata, agent_index))
-        elif phase == "drafting" and state.review_granularity == "scene":
-            chapter = db.get(models.Chapter, int(payload.chapter_id or 0))
-            scenes = db.scalars(
-                select(models.Scene).where(
-                    models.Scene.chapter_id == int(payload.chapter_id or 0),
-                    models.Scene.deleted_at.is_(None),
-                ).order_by(models.Scene.position)
-            ).all()
-            if chapter is None or not scenes:
-                raise ConflictError("场景级审核需要该章节先建立场景大纲")
-            combined = "\n\n".join(outputs)
-            previous_scene = ""
-            for scene_index, scene in enumerate(scenes):
-                scene_metadata = dict(metadata)
-                scene_metadata.update({"scene_id": scene.id, "scene_index": scene_index, "series_key": f"scene:{scene.id}"})
-                scene_prompt = (
-                    f"请只写小说《{project.title}》中“{chapter.title}”的场景正文。\n"
-                    f"场景：{scene.title}\n场景要求：{scene.synopsis or '按章节大纲完成本场景。'}\n"
-                    f"前一场景结尾：{previous_scene[-1200:] or '这是本章首场。'}\n\n"
-                    f"项目上下文：\n{context}\n\n同章编辑建议：\n{combined}\n\n"
-                    "输出可直接进入小说的正文，不要输出分析、标题或创作说明。"
-                )
-                scene_response = await _model_call(
-                    db,
-                    project_id,
-                    scene_prompt,
-                    profile,
-                    use_demo=payload.use_demo_model,
-                    max_tokens=3600,
-                )
-                if scene_response.error is not None:
-                    raise RuntimeError(
-                        f"{scene_response.error.code}: {scene_response.error.message}"
-                    )
-                _record_response_cost(state, scene_response)
-                content = scene_response.text.strip()
-                previous_scene = content
-                artifacts.append(_new_artifact(project_id, "scene_draft", scene.title, content, scene_metadata, scene_index))
-            for artifact in artifacts:
-                _supersede_series(
-                    db,
-                    project_id,
-                    str(_json_object(artifact.metadata_json)["series_key"]),
-                )
-        else:
-            metadata["series_key"] = f"{artifact_kind}:{payload.chapter_id or 0}:{payload.mode}"
-            _supersede_series(db, project_id, str(metadata["series_key"]))
-            content = outputs[-1] if phase == "drafting" else "\n\n".join(outputs)
-            artifacts.append(
-                _new_artifact(
-                    project_id,
-                    artifact_kind,
-                    _artifact_title(phase, payload),
-                    content,
-                    metadata,
-                    0,
-                )
-            )
-        for artifact in artifacts:
-            _mark_conflicts(artifact)
-            db.add(artifact)
-        if state.entry_mode == "continuation" and any(
-            _json_object(artifact.metadata_json).get("requires_author_decision")
-            for artifact in artifacts
-        ):
-            state_config = _json_object(state.config_json)
-            state_config["conflict_paused"] = True
-            state.config_json = _dump(state_config)
-            state.revision += 1
-        db.flush()
-        generation_jobs.complete(db, job, result_artifact_id=artifacts[0].id)
-        _apply_budget_after_task(state)
-        db.commit()
-        return GenerateResult.model_validate({
-            "job": _record(job),
-            "artifact": _artifact_record(artifacts[0]),
-            "artifacts": [_artifact_record(item) for item in artifacts],
-            "idempotent_replay": False,
-        })
-    except asyncio.CancelledError:
-        generation_jobs.fail(
-            db,
-            job.id,
-            _generation_failure_message(
-                "生成任务已取消", completed_calls, total_calls
-            ),
-            cancelled=True,
-        )
-        raise
-    except DomainError as exc:
-        generation_jobs.fail(
-            db,
-            job.id,
-            _generation_failure_message(
-                str(exc.detail), completed_calls, total_calls
-            ),
-        )
-        raise
-    except Exception as exc:
-        message = _generation_failure_message(
-            str(exc), completed_calls, total_calls
-        )
-        generation_jobs.fail(db, job.id, message)
-        raise UpstreamFailedError(message) from exc
-
-
-def _generation_job_artifacts(
-    db: Session, job: models.GenerationJob
-) -> list[models.CreativeArtifact]:
-    candidates = db.scalars(
-        select(models.CreativeArtifact)
-        .where(
-            models.CreativeArtifact.project_id == job.project_id,
-            models.CreativeArtifact.deleted_at.is_(None),
-        )
-        .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id)
-    ).all()
-    matches = [
-        item
-        for item in candidates
-        if _json_object(item.metadata_json).get("generation_idempotency_key")
-        == job.idempotency_key
-    ]
-    if matches:
-        return matches
-    fallback = db.get(models.CreativeArtifact, job.result_artifact_id or 0)
-    return [fallback] if fallback is not None else []
-
-
-def _generation_failure_message(reason: str, completed: int, total: int) -> str:
-    return generation_jobs.failure_message(reason, completed, total)
 
 
 async def chat(db: Session, project_id: int, payload: ChatRequest) -> dict[str, Any]:
@@ -1172,13 +837,7 @@ async def decide_message_proposal(
     return _message_record(message)
 
 
-
-
-
-
-def create_snapshot(
-    db: Session, project_id: int, payload: SnapshotCreate
-) -> dict[str, Any]:
+def create_snapshot(db: Session, project_id: int, payload: SnapshotCreate) -> dict[str, Any]:
     _project(db, project_id)
     snapshot = models.ProjectSnapshot(
         project_id=project_id,
@@ -1205,9 +864,7 @@ def create_snapshot(
     return _snapshot_record(snapshot)
 
 
-def restore_snapshot(
-    db: Session, project_id: int, snapshot_id: int
-) -> ProjectOverviewRead:
+def restore_snapshot(db: Session, project_id: int, snapshot_id: int) -> ProjectOverviewRead:
     snapshot = db.get(models.ProjectSnapshot, snapshot_id)
     if snapshot is None or snapshot.project_id != project_id:
         raise NotFoundError("项目快照不存在")
@@ -1244,9 +901,13 @@ def restore_snapshot(
         if key in state_data:
             setattr(state, key, state_data[key])
     state.revision += 1
-    volume_ids = db.scalars(select(models.Volume.id).where(models.Volume.project_id == project_id)).all()
+    volume_ids = db.scalars(
+        select(models.Volume.id).where(models.Volume.project_id == project_id)
+    ).all()
     db.execute(delete(models.Volume).where(models.Volume.id.in_(volume_ids or [-1])))
-    db.execute(delete(models.CreativeArtifact).where(models.CreativeArtifact.project_id == project_id))
+    db.execute(
+        delete(models.CreativeArtifact).where(models.CreativeArtifact.project_id == project_id)
+    )
     _restore_tree(db, project_id, cast(dict[str, Any], payload.get("tree") or {}))
     for item in cast(list[dict[str, Any]], payload.get("artifacts") or []):
         db.add(
@@ -1416,12 +1077,14 @@ def _advance_stage(db: Session, artifact: models.CreativeArtifact) -> None:
             _ensure_continuation_tree_from_plan(db, artifact.project_id)
     if phase == "scene_draft":
         chapter_id = int(_json_object(artifact.metadata_json).get("chapter_id") or 0)
-        candidates = db.scalars(select(models.CreativeArtifact).where(
-            models.CreativeArtifact.project_id == artifact.project_id,
-            models.CreativeArtifact.kind == "scene_draft",
-            models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
-            models.CreativeArtifact.deleted_at.is_(None),
-        )).all()
+        candidates = db.scalars(
+            select(models.CreativeArtifact).where(
+                models.CreativeArtifact.project_id == artifact.project_id,
+                models.CreativeArtifact.kind == "scene_draft",
+                models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
+                models.CreativeArtifact.deleted_at.is_(None),
+            )
+        ).all()
         remaining = sum(
             1
             for item in candidates
@@ -1491,10 +1154,12 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
             scene.revision += 1
             db.flush()
             scene_contents = db.scalars(
-                select(models.Scene.content).where(
+                select(models.Scene.content)
+                .where(
                     models.Scene.chapter_id == chapter.id,
                     models.Scene.deleted_at.is_(None),
-                ).order_by(models.Scene.position)
+                )
+                .order_by(models.Scene.position)
             ).all()
             chapter.content = "\n\n".join(item for item in scene_contents if item)
             chapter.word_count = word_count(chapter.content)
@@ -1506,9 +1171,7 @@ def _apply_artifact(db: Session, artifact: models.CreativeArtifact) -> None:
         _ensure_chapter_tree_from_plan(db, artifact.project_id)
 
 
-def _update_chapter_memory(
-    db: Session, project_id: int, chapter: models.Chapter
-) -> None:
+def _update_chapter_memory(db: Session, project_id: int, chapter: models.Chapter) -> None:
     summary = db.scalar(
         select(models.ChapterSummary).where(models.ChapterSummary.chapter_id == chapter.id)
     )
@@ -1530,9 +1193,7 @@ def _update_chapter_memory(
         summary.revision += 1
 
 
-def _maybe_special_snapshot(
-    db: Session, project_id: int, chapter: models.Chapter
-) -> None:
+def _maybe_special_snapshot(db: Session, project_id: int, chapter: models.Chapter) -> None:
     markers = ("真相", "死亡", "牺牲", "背叛", "决战", "身份揭晓", "重大转折", "再也无法")
     hit = next((marker for marker in markers if marker in chapter.content), None)
     if hit:
@@ -1552,7 +1213,7 @@ def _new_artifact(
     kind: str,
     title: str,
     content: str,
-    metadata: dict[str, Any],
+    metadata: Mapping[str, object],
     position_offset: int,
 ) -> models.CreativeArtifact:
     return models.CreativeArtifact(
@@ -1597,6 +1258,7 @@ def _phase_complete(db: Session, project_id: int, phase: str) -> bool:
             models.CreativeArtifact.deleted_at.is_(None),
         )
     ).all()
+
     def handled(item: models.CreativeArtifact) -> bool:
         metadata = _json_object(item.metadata_json)
         return item.status == "approved" or (
@@ -1642,655 +1304,12 @@ def _supersede_series(db: Session, project_id: int, series_key: str) -> None:
             models.CreativeArtifact.project_id == project_id,
             models.CreativeArtifact.status != "superseded",
             models.CreativeArtifact.deleted_at.is_(None),
-            func.json_extract(
-                models.CreativeArtifact.metadata_json, "$.series_key"
-            )
-            == series_key,
+            func.json_extract(models.CreativeArtifact.metadata_json, "$.series_key") == series_key,
         )
     ).all()
     for item in artifacts:
         item.status = "superseded"
         item.revision += 1
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _require_generation_prerequisites(
-    db: Session,
-    project_id: int,
-    phase: str,
-    payload: GenerateRequest,
-) -> None:
-    state = _state(db, project_id)
-    order = _stage_order(state)
-    if phase not in order or state.stage not in order:
-        raise ConflictError("当前项目模式不支持该创作阶段")
-    config = _json_object(state.config_json)
-    if state.entry_mode == "continuation" and config.get("conflict_paused"):
-        raise ConflictError("发现重大连续性冲突，必须由作者确认处理后才能继续")
-    phase_index = order.index(phase)
-    current_index = order.index(state.stage)
-    if phase_index > current_index and not (state.stage == "idea" and phase == "world"):
-        raise ConflictError(f"请先完成并批准“{STAGE_LABELS[state.stage]}”阶段")
-    if phase == "drafting":
-        if not payload.chapter_id:
-            raise InvalidInputError("正文生成必须选择章节")
-        if state.entry_mode == "continuation" and config.get("continuation_start") == "choose":
-            raise ConflictError("请先选择接着写当前章或从下一章开始")
-        planning = (
-            ["continuation_analysis", "continuation_outline", "continuation_plan"]
-            if state.entry_mode == "continuation"
-            else ["world", "characters", "plot", "volumes", "chapters"]
-        )
-        if state.entry_mode in {"creative", "continuation"} and not all(
-            _phase_complete(db, project_id, item) for item in planning
-        ):
-            raise ConflictError("所有规划成果分别批准后才能开始正文")
-        pending_planning = int(db.scalar(select(func.count(models.CreativeArtifact.id)).where(
-            models.CreativeArtifact.project_id == project_id,
-            models.CreativeArtifact.kind.in_(planning),
-            models.CreativeArtifact.status.in_(["pending", "changes_requested"]),
-        )) or 0)
-        if pending_planning:
-            raise ConflictError("仍有规划成果待审核，不能开始正文")
-    if phase == "review":
-        volume_ids = select(models.Volume.id).where(models.Volume.project_id == project_id)
-        empty_chapters = int(db.scalar(select(func.count(models.Chapter.id)).where(
-            models.Chapter.volume_id.in_(volume_ids),
-            models.Chapter.word_count == 0,
-        )) or 0)
-        if empty_chapters:
-            raise ConflictError("仍有章节未完成，不能开始全文审阅")
-
-
-def _maybe_finish_drafting(db: Session, project_id: int) -> None:
-    volume_ids = select(models.Volume.id).where(models.Volume.project_id == project_id)
-    empty = int(db.scalar(select(func.count(models.Chapter.id)).where(
-        models.Chapter.volume_id.in_(volume_ids),
-        models.Chapter.word_count == 0,
-        models.Chapter.deleted_at.is_(None),
-    )) or 0)
-    if empty == 0:
-        state = _state(db, project_id)
-        state.stage = "review"
-        state.revision += 1
-
-
-async def extract_style_reference(
-    db: Session,
-    project_id: int,
-    text: str,
-    filename: str,
-    use_demo_model: bool,
-) -> dict[str, Any]:
-    project = _project(db, project_id)
-    state = _state(db, project_id)
-    if state.budget_paused:
-        raise BudgetPausedError("项目预算已暂停，请先在费用面板确认继续")
-    profile, reason = _select_model(db, state, use_demo_model)
-    input_budget = max(512, _studio_input_budget(profile, use_demo_model, 2200) - 600)
-    chunks = _chunk_text_by_tokens(text, input_budget)
-    partials: list[str] = []
-    for index, chunk in enumerate(chunks):
-        prompt = (
-            "分析以下作者合法提供的参考文本分片，只提取可复用的抽象文风特征，"
-            "不续写、不模仿具体句子。输出叙事视角、句式长度、节奏、描写密度、"
-            "对白特点、常用意象和应避免事项。\n\n"
-            f"项目：{project.title}\n文件：{filename}\n"
-            f"分片：{index + 1}/{len(chunks)}\n\n参考文本：\n{chunk}"
-        )
-        partial = await _model_call(
-            db,
-            project_id,
-            prompt,
-            profile,
-            use_demo=use_demo_model,
-            max_tokens=1200 if len(chunks) > 1 else 2200,
-        )
-        if partial.error is not None:
-            raise UpstreamFailedError(partial.error.message)
-        if len(chunks) == 1:
-            response = partial
-            break
-        partials.append(partial.text)
-        _record_response_cost(state, partial)
-    else:
-        synthesis = _fit_text_to_token_budget(
-            "\n\n".join(
-                f"## 分片 {index + 1}\n{value}" for index, value in enumerate(partials)
-            ),
-            input_budget,
-        )
-        response = await _model_call(
-            db,
-            project_id,
-            (
-                "合并以下分片分析，输出一份去重、统一、可审核的文风档案。必须包含"
-                "叙事视角、句式长度、节奏、描写密度、对白特点、常用意象、应避免事项"
-                "和可执行文风规则。\n\n" + synthesis
-            ),
-            profile,
-            use_demo=use_demo_model,
-            max_tokens=2200,
-        )
-    if response.error is not None:
-        raise UpstreamFailedError(response.error.message)
-    metadata = {
-        "agent_name": "参考文风分析",
-        "filename": filename,
-        "model": profile.display_name if profile else "内置演示模型",
-        "model_reason": reason,
-        "series_key": "world:style-reference",
-        "reference_characters": len(text),
-        "context_chunks": len(chunks),
-        "context_strategy": "chunked_style_analysis" if len(chunks) > 1 else "direct",
-    }
-    _supersede_series(db, project_id, str(metadata["series_key"]))
-    artifact = _new_artifact(project_id, "world", f"参考文风分析 · {filename}", response.text, metadata, 90)
-    _mark_conflicts(artifact)
-    db.add(artifact)
-    _record_response_cost(state, response)
-    _apply_budget_after_task(state)
-    db.commit()
-    return _artifact_record(artifact)
-
-
-def _select_model(
-    db: Session, state: models.StudioProjectState, use_demo: bool
-) -> tuple[models.ModelProfile | None, str]:
-    if use_demo:
-        return None, "用户选择了内置演示模型；不会访问付费 API。"
-    profiles = db.scalars(
-        select(models.ModelProfile)
-        .join(models.ProviderAccount, models.ProviderAccount.id == models.ModelProfile.provider_account_id)
-        .where(
-            models.ModelProfile.enabled.is_(True),
-            models.ModelProfile.deleted_at.is_(None),
-            models.ProviderAccount.enabled.is_(True),
-            models.ProviderAccount.deleted_at.is_(None),
-            models.ProviderAccount.provider_type.not_in(["mock", "ollama", "ollama_native"]),
-        )
-    ).all()
-    profiles = [profile for profile in profiles if _provider_has_key(db, profile.provider_account_id)]
-    if not profiles:
-        raise ConflictError("尚未配置可用 API，请先前往“模型与 API”添加密钥")
-    strategy = state.routing_strategy
-    if strategy == "quality":
-        chosen = max(profiles, key=lambda item: item.context_window)
-        reason = "质量优先：选择了已配置模型中上下文容量最高的模型。"
-    elif strategy == "speed":
-        chosen = min(profiles, key=lambda item: _latency(db, item.provider_account_id))
-        reason = "速度优先：选择了最近健康记录中延迟最低的模型。"
-    elif strategy == "cost":
-        chosen = min(profiles, key=lambda item: _price_score(db, item.id))
-        reason = "成本优先：选择了当前已知输入与输出单价最低的模型。"
-    else:
-        chosen = max(
-            profiles,
-            key=lambda item: (item.context_window / max(_price_score(db, item.id), 0.01))
-            / max(_latency(db, item.provider_account_id), 100),
-        )
-        reason = "均衡模式：综合上下文容量、已知价格和最近延迟自动选择。"
-    return chosen, reason
-
-
-def _provider_has_key(db: Session, provider_id: int) -> bool:
-    provider = db.get(models.ProviderAccount, provider_id)
-    if provider is None:
-        return False
-    if provider.credential_env_var:
-        import os
-
-        if os.getenv(provider.credential_env_var):
-            return True
-    try:
-        return has_provider_secret(provider_id)
-    except OSError:
-        return False
-
-
-async def _model_call(
-    db: Session,
-    project_id: int,
-    prompt: str,
-    profile: models.ModelProfile | None,
-    *,
-    use_demo: bool,
-    max_tokens: int = 2200,
-) -> Any:
-    output_tokens = _effective_output_tokens(profile, use_demo, max_tokens)
-    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
-    original_prompt = prompt
-    compression_warnings: list[str] = []
-    response: Any = None
-    for attempt in range(5):
-        attempt_budget = max(128, input_budget // (2**attempt))
-        fitted_prompt = _fit_text_to_token_budget(original_prompt, attempt_budget)
-        if fitted_prompt != original_prompt:
-            compression_warnings.append(
-                f"上下文已自动压缩至约 {estimate_text_tokens(fitted_prompt)} Token。"
-            )
-        payload = ModelDebugRequest(
-            model="mock-novel-v1" if use_demo or profile is None else profile.name,
-            model_profile_id=None if use_demo or profile is None else profile.id,
-            project_id=project_id,
-            messages=[
-                NormalizedMessage(
-                    role="user",
-                    content=[NormalizedContentPart(type="text", text=fitted_prompt)],
-                )
-            ],
-            max_tokens=output_tokens,
-            temperature=0.75,
-            max_retries=5,
-            allow_degradation=True,
-        )
-        response = await model_execution.execute_model(db, payload)
-        error = getattr(response, "error", None)
-        if error is None or getattr(error, "code", "") != "context_too_long":
-            break
-        if attempt < 4:
-            compression_warnings.append(
-                "Provider 返回上下文超限，已进一步压缩并自动重试。"
-            )
-    if response is not None and compression_warnings:
-        response.warnings = list(
-            dict.fromkeys([*getattr(response, "warnings", []), *compression_warnings])
-        )
-    return response
-
-
-def _effective_output_tokens(
-    profile: models.ModelProfile | None, use_demo: bool, requested: int
-) -> int:
-    window = 8_192 if use_demo or profile is None else max(512, profile.context_window)
-    proportional_limit = max(256, int(window * 0.4))
-    return max(1, min(requested, proportional_limit, max(1, window - 256)))
-
-
-def _studio_input_budget(
-    profile: models.ModelProfile | None, use_demo: bool, max_tokens: int
-) -> int:
-    window = 8_192 if use_demo or profile is None else max(512, profile.context_window)
-    output_tokens = _effective_output_tokens(profile, use_demo, max_tokens)
-    safety = 384 if window >= 1_024 else 64
-    return max(128, window - output_tokens - safety)
-
-
-def _fit_text_to_token_budget(text: str, token_budget: int) -> str:
-    if token_budget <= 0 or not text:
-        return ""
-    if estimate_text_tokens(text) <= token_budget:
-        return text
-    marker = "\n\n[上下文已自动压缩：省略中间低优先级内容]\n\n"
-    if estimate_text_tokens(marker) >= token_budget:
-        return text[: _prefix_index_for_tokens(text, token_budget)].rstrip()
-    low = 0
-    high = len(text)
-    best = marker.strip()
-    while low <= high:
-        keep = (low + high) // 2
-        head_count = int(keep * 0.68)
-        tail_count = keep - head_count
-        candidate = text[:head_count].rstrip() + marker + (
-            text[-tail_count:].lstrip() if tail_count else ""
-        )
-        if estimate_text_tokens(candidate) <= token_budget:
-            best = candidate
-            low = keep + 1
-        else:
-            high = keep - 1
-    return best
-
-
-def _prefix_index_for_tokens(text: str, token_budget: int) -> int:
-    low = 0
-    high = len(text)
-    best = 0
-    while low <= high:
-        middle = (low + high) // 2
-        if estimate_text_tokens(text[:middle]) <= token_budget:
-            best = middle
-            low = middle + 1
-        else:
-            high = middle - 1
-    return best
-
-
-def _chunk_text_by_tokens(text: str, token_budget: int) -> list[str]:
-    if token_budget < 128:
-        raise ValueError("分片 Token 预算不能低于 128")
-    remaining = text.strip()
-    if not remaining:
-        return [""]
-    chunks: list[str] = []
-    while estimate_text_tokens(remaining) > token_budget:
-        cut = _prefix_index_for_tokens(remaining, token_budget)
-        if cut <= 0:
-            cut = 1
-        line_cut = remaining.rfind("\n", max(0, cut // 2), cut)
-        if line_cut > 0:
-            cut = line_cut
-        chunk = remaining[:cut].strip()
-        if not chunk:
-            chunk = remaining[:cut]
-        chunks.append(chunk)
-        remaining = remaining[cut:].lstrip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks
-
-
-def _phase_output_tokens(phase: str) -> int:
-    if phase == "drafting":
-        return 3_600
-    if phase == "chapters":
-        return 5_200
-    return 2_200
-
-
-def _phase_prompt(
-    project: models.Project,
-    phase: str,
-    agent_name: str,
-    responsibility: str,
-    context: str,
-    payload: GenerateRequest,
-    upstream: list[str],
-) -> str:
-    format_hint = ""
-    if phase == "chapters":
-        format_hint = (
-            "必须使用可解析的 Markdown 层级：# 第N卷 卷名、## 第N章 章名、"
-            "### 场景N 场景名；每个标题下写目标、冲突、转折和结果。\n"
-        )
-    elif phase in {
-        "world",
-        "characters",
-        "plot",
-        "volumes",
-        "continuation_analysis",
-        "continuation_outline",
-        "continuation_plan",
-    }:
-        format_hint = "使用清晰的 Markdown 小节逐项输出，确保每项可以独立修改。\n"
-    if phase == "continuation_plan" and agent_name == "未来卷章规划":
-        format_hint = (
-            "必须使用可解析的 Markdown 层级：# 第N卷 卷名、## 第N章 章名、"
-            "### 场景N 场景名；只规划原文之后的未来章节。\n"
-        )
-    if phase == "drafting":
-        format_hint = (
-            "只输出可直接写入小说的正文，不要输出分析、标题、Markdown 标记或创作说明。"
-            + ("从当前章节最后一句自然接续，不要重写已有段落。\n" if payload.mode == "continue" else "\n")
-        )
-    return (
-        f"你是多智能体小说工作室中的“{agent_name}”。{responsibility}\n"
-        "请输出可供作者逐项审核和直接修改的中文内容。信息要具体，不要讲解工作方法。"
-        "不得擅自推翻已批准内容；发现冲突时明确标注冲突级别和建议。\n\n"
-        f"{format_hint}"
-        f"小说：{project.title}\n创意：{project.summary}\n阶段：{STAGE_LABELS.get(phase, phase)}\n"
-        f"作者补充要求：{payload.instruction or '无'}\n"
-        f"自动检索的项目上下文：\n{context}\n\n"
-        f"同阶段上游 Agent 输出：\n{chr(10).join(upstream[-2:]) if upstream else '无'}\n\n"
-        f"选中文本：\n{payload.selected_text or '无'}"
-    )
-
-
-def _generation_context(
-    db: Session,
-    project_id: int,
-    chapter_id: int | None,
-    *,
-    profile: models.ModelProfile | None,
-    use_demo: bool,
-    max_tokens: int,
-    query: str,
-) -> tuple[str, dict[str, Any]]:
-    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
-    context_budget = max(128, min(6_000, input_budget - min(800, input_budget // 4)))
-    artifacts = db.scalars(
-        select(models.CreativeArtifact)
-        .where(
-            models.CreativeArtifact.project_id == project_id,
-            models.CreativeArtifact.status == "approved",
-            models.CreativeArtifact.deleted_at.is_(None),
-        )
-        .order_by(models.CreativeArtifact.position, models.CreativeArtifact.id.desc())
-    ).all()
-    approved = {
-        item.title: _fit_text_to_token_budget(item.content, 1_200)
-        for item in artifacts[-12:]
-        if item.kind != "continuation_original"
-    }
-    request = ContextBuildRequest(
-        project_id=project_id,
-        chapter_id=chapter_id,
-        model_profile_id=(None if use_demo or profile is None else profile.id),
-        model_context_window=(
-            8_192 if use_demo or profile is None else profile.context_window
-        ),
-        query=query[:200_000],
-        upstream_outputs={"approved_artifacts": approved},
-        reserved_output_tokens=_effective_output_tokens(profile, use_demo, max_tokens),
-        token_budget_override=context_budget,
-        persist_snapshot=False,
-    )
-    built = context_builder.build_context(db, request)
-    if not built.blocked and built.context_text.strip():
-        return built.context_text, {
-            "strategy": "retrieval",
-            "model_window": request.model_context_window,
-            "token_budget": built.token_budget,
-            "included_tokens": built.included_tokens,
-            "included_items": len(built.included),
-            "excluded_items": len(built.excluded),
-            "truncations": len(built.truncations),
-        }
-
-    blocks = [
-        f"[{item.title}]\n{_fit_text_to_token_budget(item.content, 900)}"
-        for item in artifacts[-8:]
-        if item.kind != "continuation_original"
-    ]
-    state = _state(db, project_id)
-    if state.entry_mode == "continuation":
-        summaries = db.execute(
-            select(models.Chapter.title, models.ChapterSummary.summary)
-            .join(models.ChapterSummary, models.ChapterSummary.chapter_id == models.Chapter.id)
-            .join(models.Volume, models.Volume.id == models.Chapter.volume_id)
-            .where(
-                models.Volume.project_id == project_id,
-                models.Chapter.deleted_at.is_(None),
-                models.ChapterSummary.deleted_at.is_(None),
-            )
-            .order_by(models.Volume.position, models.Chapter.position)
-        ).all()
-        if summaries:
-            summary_text = "\n".join(
-                f"- {title}: {summary}" for title, summary in summaries
-            )
-            blocks.append("[导入原文章节索引]\n" + summary_text)
-    if chapter_id:
-        chapter = db.get(models.Chapter, chapter_id)
-        if chapter is not None:
-            blocks.append(f"[当前章节：{chapter.title}]\n{chapter.content}")
-    entities = db.scalars(
-        select(models.StoryEntity)
-        .where(
-            models.StoryEntity.project_id == project_id,
-            models.StoryEntity.deleted_at.is_(None),
-        )
-        .limit(30)
-    ).all()
-    if entities:
-        blocks.append("[人物与资料]\n" + "\n".join(f"- {item.name}: {item.description[:300]}" for item in entities))
-    fallback = _fit_text_to_token_budget(
-        "\n\n".join(blocks) or "尚无已批准资料。", context_budget
-    )
-    return fallback, {
-        "strategy": "compressed_fallback",
-        "model_window": request.model_context_window,
-        "token_budget": context_budget,
-        "included_tokens": estimate_text_tokens(fallback),
-        "included_items": len(blocks),
-        "excluded_items": len(built.excluded),
-        "truncations": max(1, len(built.truncations)),
-        "conflicts": built.conflicts,
-    }
-
-
-async def _continuation_source_context(
-    db: Session,
-    project_id: int,
-    phase: str,
-    profile: models.ModelProfile | None,
-    *,
-    use_demo: bool,
-    max_tokens: int,
-) -> tuple[str, dict[str, Any]]:
-    input_budget = _studio_input_budget(profile, use_demo, max_tokens)
-    chunk_budget = max(512, input_budget - min(900, input_budget // 3))
-    corpus = _continuation_corpus(
-        db,
-        project_id,
-        phase,
-        total_budget=chunk_budget * 32,
-    )
-    chunks = _chunk_text_by_tokens(corpus, chunk_budget)
-    if len(chunks) == 1:
-        return "[导入原文分层索引]\n" + chunks[0], {
-            "source_strategy": "hierarchical_index",
-            "source_chunks": 1,
-        }
-
-    map_outputs: list[str] = []
-    for index, chunk in enumerate(chunks):
-        task = (
-            "从本分片提取卷章结构、世界规则、人物关系与状态、时间线、伏笔、"
-            "文风和未完成剧情线。保留章节名称与证据位置，简洁输出。"
-            if phase == "continuation_analysis"
-            else "根据本分片补建已有分卷、章节和场景的目标、冲突、转折、结果与承接关系。"
-        )
-        response = await _model_call(
-            db,
-            project_id,
-            (
-                f"你正在对半成品小说执行分片预处理。{task}\n"
-                f"分片 {index + 1}/{len(chunks)}：\n\n{chunk}"
-            ),
-            profile,
-            use_demo=use_demo,
-            max_tokens=min(1_200, max_tokens),
-        )
-        if response.error is not None:
-            raise RuntimeError(f"{response.error.code}: {response.error.message}")
-        map_outputs.append(response.text.strip())
-        _record_response_cost(_state(db, project_id), response)
-    aggregate = "\n\n".join(
-        f"## 分片 {index + 1}\n{content}"
-        for index, content in enumerate(map_outputs)
-    )
-    fitted = _fit_text_to_token_budget(aggregate, max(512, input_budget - 700))
-    return "[全书分片分析汇总]\n" + fitted, {
-        "source_strategy": "map_reduce",
-        "source_chunks": len(chunks),
-        "source_summary_tokens": estimate_text_tokens(fitted),
-    }
-
-
-def _continuation_corpus(
-    db: Session,
-    project_id: int,
-    phase: str,
-    *,
-    total_budget: int,
-) -> str:
-    rows = db.execute(
-        select(
-            models.Volume.title,
-            models.Chapter.title,
-            models.Chapter.content,
-            models.ChapterSummary.summary,
-        )
-        .join(models.Chapter, models.Chapter.volume_id == models.Volume.id)
-        .outerjoin(
-            models.ChapterSummary,
-            (models.ChapterSummary.chapter_id == models.Chapter.id)
-            & models.ChapterSummary.deleted_at.is_(None),
-        )
-        .where(
-            models.Volume.project_id == project_id,
-            models.Volume.deleted_at.is_(None),
-            models.Chapter.deleted_at.is_(None),
-        )
-        .order_by(models.Volume.position, models.Chapter.position, models.Chapter.id)
-    ).all()
-    if not rows:
-        return "尚无导入章节。"
-    per_chapter = max(24, total_budget // len(rows))
-    blocks: list[str] = []
-    for volume_title, chapter_title, content, summary in rows:
-        source = str(summary or "") if phase == "continuation_outline" else str(content or "")
-        block = f"# {volume_title} / {chapter_title}\n{source}"
-        blocks.append(_fit_text_to_token_budget(block, per_chapter))
-    return "\n\n".join(blocks)
-
-
-def _context_reason(metadata: dict[str, Any]) -> str:
-    strategy = str(metadata.get("strategy") or "retrieval")
-    included = int(metadata.get("included_tokens") or 0)
-    chunks = int(metadata.get("source_chunks") or 0)
-    text = f"上下文：{strategy}，约 {included:,} Token"
-    if chunks > 1:
-        text += f"，原文分为 {chunks} 片汇总"
-    if int(metadata.get("truncations") or 0) > 0:
-        text += "，已按预算压缩"
-    return text + "。"
 
 
 def _chat_proposal(
@@ -2386,68 +1405,6 @@ def _context_scope(payload: ChatRequest) -> str:
     return ",".join(parts)
 
 
-def _artifact_title(phase: str, payload: GenerateRequest) -> str:
-    if payload.mode == "local_revision":
-        return "局部修改提案"
-    if payload.mode == "full_rewrite":
-        return "全文重写提案"
-    if payload.mode == "variants":
-        return "多方案对比"
-    return STAGE_LABELS.get(phase, phase)
-
-
-def _record_response_cost(state: models.StudioProjectState, response: Any) -> None:
-    control = response.control or {}
-    amount = 0.0
-    for attempt in control.get("attempts", []):
-        cost = attempt.get("cost") if isinstance(attempt, dict) else None
-        if isinstance(cost, dict) and isinstance(cost.get("amount"), (int, float)):
-            amount += float(cost["amount"])
-    state.budget_spent += amount
-    state.revision += 1
-
-
-def _apply_budget_after_task(state: models.StudioProjectState) -> None:
-    if state.budget_limit and state.budget_spent >= state.budget_limit * (state.budget_pause_percent / 100):
-        state.budget_paused = True
-
-
-def _usage_summary(
-    db: Session, project_id: int, state: models.StudioProjectState
-) -> dict[str, Any]:
-    invocations = int(
-        db.scalar(
-            select(func.count(models.ModelInvocation.id)).where(
-                models.ModelInvocation.project_id == project_id
-            )
-        )
-        or 0
-    )
-    tokens = int(
-        db.scalar(
-            select(func.coalesce(func.sum(models.ModelInvocation.total_tokens), 0)).where(
-                models.ModelInvocation.project_id == project_id
-            )
-        )
-        or 0
-    )
-    percent = (
-        state.budget_spent / state.budget_limit * 100
-        if state.budget_limit and state.budget_limit > 0
-        else 0
-    )
-    return {
-        "invocations": invocations,
-        "tokens": tokens,
-        "spent": state.budget_spent,
-        "limit": state.budget_limit,
-        "currency": state.budget_currency,
-        "percent": round(percent, 2),
-        "warning": percent >= state.budget_warning_percent,
-        "paused": state.budget_paused,
-    }
-
-
 def _snapshot_payload(db: Session, project_id: int) -> dict[str, Any]:
     overview = project_overview(db, project_id).model_dump(mode="json")
     return {
@@ -2459,8 +1416,6 @@ def _snapshot_payload(db: Session, project_id: int) -> dict[str, Any]:
         "artifacts": overview["artifacts"],
         "tree": overview["tree"],
     }
-
-
 
 
 def _provider_record(
@@ -2501,7 +1456,9 @@ def _price_score(db: Session, model_id: int) -> float:
 
 def _latency(db: Session, provider_id: int) -> int:
     health = db.scalar(
-        select(models.ProviderHealth).where(models.ProviderHealth.provider_account_id == provider_id)
+        select(models.ProviderHealth).where(
+            models.ProviderHealth.provider_account_id == provider_id
+        )
     )
     return int(health.last_latency_ms or 9999) if health else 9999
 
@@ -2533,7 +1490,9 @@ def _artifact_record(artifact: models.CreativeArtifact) -> dict[str, Any]:
 
 def _message_record(message: models.StudioMessage) -> dict[str, Any]:
     result = _record(message)
-    result["proposal"] = _json_object(message.proposal_json) if message.proposal_json != "null" else None
+    result["proposal"] = (
+        _json_object(message.proposal_json) if message.proposal_json != "null" else None
+    )
     return result
 
 
