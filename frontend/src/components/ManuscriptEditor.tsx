@@ -44,7 +44,7 @@ export function ManuscriptEditor({
   useEffect(() => {
     if (!editor) return;
     const next = toEditorHtml(value);
-    if (editor.getHTML() !== next) editor.commands.setContent(next, false);
+    if (editor.getHTML() !== next) editor.commands.setContent(next, { emitUpdate: false });
   }, [editor, value]);
 
   return (

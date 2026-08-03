@@ -4,6 +4,6 @@ auditConfig:
   ignoreGhsas:
     - GHSA-qwww-vcr4-c8h2
 overrides:
-  esbuild: 0.25.12
-  postcss: 8.5.23
-  vite: 6.4.3
+  esbuild: 0.28.1
+  postcss: 8.5.25
+  vite: 8.2.0
