@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -29,6 +29,7 @@ from app.core.security import (
 from app.database import SessionLocal, checkpoint_sqlite
 from app.migrations import upgrade_database
 from app.services.gateway_http import shared_http_client
+from app.services.errors import DomainError, ErrorKind
 from app.services.studio import mark_interrupted_generation_jobs
 from app.services.studio_worker import studio_worker
 from app.services.storage_management import cleanup_storage
@@ -37,6 +38,20 @@ from app.services.workflow_runtime import event_bus, workflow_run_manager
 from app.services.workflows import mark_interrupted_runs
 
 settings = get_settings()
+
+_STATUS_BY_KIND: dict[ErrorKind, int] = {
+    ErrorKind.BAD_REQUEST: 400,
+    ErrorKind.NOT_FOUND: 404,
+    ErrorKind.INVALID_INPUT: 422,
+    ErrorKind.CONFLICT: 409,
+    ErrorKind.PRECONDITION: 409,
+    ErrorKind.PAYLOAD_TOO_LARGE: 413,
+    ErrorKind.BUDGET_PAUSED: 409,
+    ErrorKind.RATE_LIMITED: 429,
+    ErrorKind.INTERNAL_ERROR: 500,
+    ErrorKind.UPSTREAM_FAILED: 502,
+    ErrorKind.UNAVAILABLE: 503,
+}
 
 
 def _frontend_dist() -> Path | None:
@@ -91,6 +106,16 @@ app = FastAPI(
     openapi_url=None if settings.production else "/openapi.json",
 )
 app.state.frontend_bundled = frontend_dist is not None
+
+
+@app.exception_handler(DomainError)
+async def handle_domain_error(_request: Request, exc: DomainError) -> JSONResponse:
+    return JSONResponse(
+        status_code=_STATUS_BY_KIND[exc.kind],
+        content={"detail": exc.detail, "kind": exc.kind.value, **exc.context},
+    )
+
+
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(LocalOriginMiddleware, allowed_origins=settings.cors_origin_list)
 app.add_middleware(

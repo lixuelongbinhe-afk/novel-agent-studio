@@ -1,3 +1,9 @@
+import json
+
+from starlette.requests import Request
+from starlette.types import Scope
+
+from app.main import handle_domain_error
 from app.services.errors import ConflictError, DomainError, ErrorKind, NotFoundError
 
 
@@ -19,3 +25,18 @@ def test_domain_error_context_is_not_shared_between_instances() -> None:
 
     assert second.context == {}
     assert second.kind is ErrorKind.NOT_FOUND
+
+
+async def test_api_boundary_translates_domain_error_without_changing_detail() -> None:
+    scope: Scope = {"type": "http"}
+    response = await handle_domain_error(
+        Request(scope),
+        ConflictError("内容已更新", context={"resource": "chapter"}),
+    )
+
+    assert response.status_code == 409
+    assert json.loads(bytes(response.body)) == {
+        "detail": "内容已更新",
+        "kind": "conflict",
+        "resource": "chapter",
+    }
