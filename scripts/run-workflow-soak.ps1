@@ -28,7 +28,7 @@ try {
                 tests/test_database_writer.py `
                 tests/test_workflow_streaming.py `
                 tests/test_workflow_scheduler.py `
-                tests/test_phase5_workflows.py `
+                tests/test_workflow_runtime.py `
                 -k "eight_streaming or cancel or bounded or shutdown or forced_process"
             if ($LASTEXITCODE -ne 0) {
                 throw "Soak iteration $iterations failed with exit code $LASTEXITCODE"
