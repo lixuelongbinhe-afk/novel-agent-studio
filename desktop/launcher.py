@@ -20,7 +20,7 @@ from typing import Any
 
 APP_NAME = "Novel Agent Studio"
 APP_FOLDER = "NovelAgentStudioV2"
-VERSION = "2.2.8"
+VERSION = "2.2.9"
 HOST = "127.0.0.1"
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0

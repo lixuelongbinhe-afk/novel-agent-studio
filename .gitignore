@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .idea/
+.codex/
 node_modules/
 dist/
 work/
