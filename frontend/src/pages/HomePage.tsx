@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
   BookOpenText,
@@ -17,6 +18,13 @@ import { useNavigate } from "react-router-dom";
 import { studioApi } from "../api/studio";
 import { ProjectDialogForm } from "../components/ProjectDialogForm";
 import { useUiStore } from "../stores/ui";
+import {
+  dialogBackdrop,
+  dialogCard,
+  fadeInUp,
+  MAX_STAGGER_ITEMS,
+  staggerContainer
+} from "../utils/motion";
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -79,7 +87,7 @@ export function HomePage() {
         <span>书名</span><span>创作阶段</span><span>完成字数</span><span>待审核</span><span>最后编辑</span><span />
       </div>
       {deleteError ? <div className="form-error project-delete-error" role="alert">{deleteError}</div> : null}
-      <div className="project-list">
+      <motion.div className="project-list" variants={staggerContainer} initial="initial" animate="animate">
         {isLoading ? <div className="loading-line">读取项目中...</div> : null}
         {!isLoading && projects.length === 0 ? (
           <button type="button" className="empty-projects" onClick={() => setDialogOpen(true)}>
@@ -87,8 +95,13 @@ export function HomePage() {
             <strong>新建第一本小说</strong>
           </button>
         ) : null}
-        {projects.map((project) => (
-          <article key={project.id} className="project-row" onDoubleClick={() => openProject(project.id)}>
+        {projects.map((project, index) => (
+          <motion.article
+            key={project.id}
+            className="project-row"
+            variants={index < MAX_STAGGER_ITEMS ? fadeInUp : undefined}
+            onDoubleClick={() => openProject(project.id)}
+          >
             <button type="button" className="project-name" onClick={() => openProject(project.id)}>
               <span className="book-glyph"><BookOpenText size={17} /></span>
               <span><strong>{project.title}</strong><small>{project.summary}</small></span>
@@ -108,37 +121,41 @@ export function HomePage() {
                 }
               }}><Trash2 size={15} /></button>
             </div>
-          </article>
+          </motion.article>
         ))}
-      </div>
+      </motion.div>
 
-      {dialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setDialogOpen(false)}>
-          <section className="modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div><h2>新建小说</h2><span>快速创建或填写详细设置</span></div>
-              <button type="button" className="icon-button subtle" onClick={() => setDialogOpen(false)} title="关闭"><X size={17} /></button>
-            </header>
-            <ProjectDialogForm
-              onCancel={() => setDialogOpen(false)}
-              onSuccess={(overview) => {
-                setProject(overview.project.id);
-                setDialogOpen(false);
-                navigate(`/studio/${overview.project.id}`);
-              }}
-            />
-          </section>
-        </div>
-      ) : null}
-      {continuationOpen ? (
-        <ContinuationImportDialog
-          projects={projects}
-          pending={createContinuation.isPending}
-          error={createContinuation.error instanceof Error ? createContinuation.error.message : ""}
-          onClose={() => setContinuationOpen(false)}
-          onSubmit={(file, payload) => createContinuation.mutate({ file, payload })}
-        />
-      ) : null}
+      <AnimatePresence>
+        {dialogOpen ? (
+          <motion.div className="modal-backdrop" role="presentation" onMouseDown={() => setDialogOpen(false)} {...dialogBackdrop}>
+            <motion.section className="modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
+              <header>
+                <div><h2>新建小说</h2><span>快速创建或填写详细设置</span></div>
+                <button type="button" className="icon-button subtle" onClick={() => setDialogOpen(false)} title="关闭"><X size={17} /></button>
+              </header>
+              <ProjectDialogForm
+                onCancel={() => setDialogOpen(false)}
+                onSuccess={(overview) => {
+                  setProject(overview.project.id);
+                  setDialogOpen(false);
+                  navigate(`/studio/${overview.project.id}`);
+                }}
+              />
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {continuationOpen ? (
+          <ContinuationImportDialog
+            projects={projects}
+            pending={createContinuation.isPending}
+            error={createContinuation.error instanceof Error ? createContinuation.error.message : ""}
+            onClose={() => setContinuationOpen(false)}
+            onSubmit={(file, payload) => createContinuation.mutate({ file, payload })}
+          />
+        ) : null}
+      </AnimatePresence>
     </section>
   );
 }
@@ -187,8 +204,8 @@ function ContinuationImportDialog({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal continuation-import-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+    <motion.div className="modal-backdrop" role="presentation" onMouseDown={onClose} {...dialogBackdrop}>
+      <motion.section className="modal continuation-import-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
         <header>
           <div><h2>导入半成品续写</h2><span>原文永久保留，解析结果逐项审核</span></div>
           <button type="button" className="icon-button subtle" onClick={onClose} title="关闭"><X size={17} /></button>
@@ -215,8 +232,8 @@ function ContinuationImportDialog({
           {error ? <div className="form-error">{error}</div> : null}
           <footer><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={!title.trim() || !sourceReady || pending}>{pending ? "导入解析中..." : "导入并创建项目"}</button></footer>
         </form>
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }
 

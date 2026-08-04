@@ -101,9 +101,17 @@ button.nas-brand-mark:hover { background: #3b4547; }
 .approve-button { background: #31503e; color: #bde3ca; }
 .text-button { background: none; color: #b9c2bd; padding: 7px; }
 .primary-button:disabled, .secondary-button:disabled, button:disabled { opacity: .45; cursor: default; }
+button:active,
+.primary-button:active,
+.secondary-button:active,
+.icon-button:active { filter: brightness(.92); }
 .toolbar-actions, .row-actions { display: flex; align-items: center; gap: 6px; }
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.route-motion { height: 100%; }
+.spinner-container { min-height: 200px; display: flex; align-items: center; justify-content: center; }
+.spinner { width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; }
 
 .page-toolbar { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); }
 .page-toolbar-actions { display: flex; align-items: center; gap: 8px; }

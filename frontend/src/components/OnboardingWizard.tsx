@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import { studioApi } from "../api/studio";
+import { dialogBackdrop, dialogCard } from "../utils/motion";
 import { ProjectDialogForm } from "./ProjectDialogForm";
 import { ProviderDialogForm } from "./ProviderDialogForm";
 
@@ -28,16 +29,12 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
   return (
     <motion.div
       className="onboarding-overlay"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      {...dialogBackdrop}
       role="presentation"
     >
       <motion.section
         className="wizard-card"
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.18 }}
+        {...dialogCard}
         role="dialog"
         aria-modal="true"
         aria-labelledby="onboarding-title"

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   ArchiveRestore,
@@ -46,6 +47,7 @@ import {
   StudioRightRail,
   type StudioRightTab
 } from "../features/studio/components/StudioRightRail";
+import { dialogBackdrop, dialogCard } from "../utils/motion";
 
 const phaseDescriptions: Record<string, string> = {
   idea: "创意简报",
@@ -515,27 +517,29 @@ export function StudioPage() {
         </aside>
       </div>
 
-      {editing ? (
-        <div className="modal-backdrop" onMouseDown={() => setEditing(null)}>
-          <section className="modal artifact-editor" onMouseDown={(event) => event.stopPropagation()}>
-            <header><div><h2>审核、批注与版本比较</h2><span>保存后生成版本 {Math.max(...versions.map((item) => item.version_number), editing.version_number) + 1}</span></div><button className="icon-button subtle" aria-label="关闭审核编辑器" onClick={() => setEditing(null)}><X size={17} /></button></header>
-            <div className="version-toolbar"><GitCompareArrows size={15} /><span>对比版本</span><select value={compareVersionId ?? ""} onChange={(event) => setCompareVersionId(Number(event.target.value))}>{versions.map((item) => <option key={item.id} value={item.id}>版本 {item.version_number} · {statusLabel(item.status)}</option>)}</select>{compareVersionId ? <button type="button" className="secondary-button" onClick={() => { const old = versions.find((item) => item.id === compareVersionId); if (old) { setEditTitle(old.title); setEditText(old.content); setEditNotes(old.notes); } }}><RotateCcw size={14} />恢复到编辑区</button> : null}</div>
-            <div className="version-compare-grid">
-              <section><header><strong>当前编辑</strong><span>{editText.replace(/\s/g, "").length} 字</span></header><label><span>标题</span><input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label><textarea value={editText} onChange={(event) => setEditText(event.target.value)} /></section>
-              <section><header><strong>历史版本</strong><span>只读</span></header><label><span>标题</span><input readOnly value={versions.find((item) => item.id === compareVersionId)?.title ?? ""} /></label><textarea readOnly value={versions.find((item) => item.id === compareVersionId)?.content ?? ""} /></section>
-            </div>
-            <label className="artifact-notes"><span>审核批注</span><textarea rows={3} value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="记录修改理由、待核问题或给下一轮 Agent 的意见" /></label>
-            <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="secondary-button" disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => decide.mutate({ artifact: editing, action: "request_changes" })}>要求修改</button><button className="primary-button" disabled={saveArtifact.isPending || !hasUnsavedArtifactEdits} onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button><button className="approve-button" title={hasUnsavedArtifactEdits ? "请先保存当前编辑" : "通过并写入"} disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => approveArtifact(editing)}><Check size={15} />{["drafting", "revision_proposal", "scene_draft"].includes(editing.kind) ? "通过并写入正文" : "通过审核"}</button></footer>
-          </section>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {editing ? (
+          <motion.div key="artifact-editor" className="modal-backdrop" onMouseDown={() => setEditing(null)} {...dialogBackdrop}>
+            <motion.section className="modal artifact-editor" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
+              <header><div><h2>审核、批注与版本比较</h2><span>保存后生成版本 {Math.max(...versions.map((item) => item.version_number), editing.version_number) + 1}</span></div><button className="icon-button subtle" aria-label="关闭审核编辑器" onClick={() => setEditing(null)}><X size={17} /></button></header>
+              <div className="version-toolbar"><GitCompareArrows size={15} /><span>对比版本</span><select value={compareVersionId ?? ""} onChange={(event) => setCompareVersionId(Number(event.target.value))}>{versions.map((item) => <option key={item.id} value={item.id}>版本 {item.version_number} · {statusLabel(item.status)}</option>)}</select>{compareVersionId ? <button type="button" className="secondary-button" onClick={() => { const old = versions.find((item) => item.id === compareVersionId); if (old) { setEditTitle(old.title); setEditText(old.content); setEditNotes(old.notes); } }}><RotateCcw size={14} />恢复到编辑区</button> : null}</div>
+              <div className="version-compare-grid">
+                <section><header><strong>当前编辑</strong><span>{editText.replace(/\s/g, "").length} 字</span></header><label><span>标题</span><input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label><textarea value={editText} onChange={(event) => setEditText(event.target.value)} /></section>
+                <section><header><strong>历史版本</strong><span>只读</span></header><label><span>标题</span><input readOnly value={versions.find((item) => item.id === compareVersionId)?.title ?? ""} /></label><textarea readOnly value={versions.find((item) => item.id === compareVersionId)?.content ?? ""} /></section>
+              </div>
+              <label className="artifact-notes"><span>审核批注</span><textarea rows={3} value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="记录修改理由、待核问题或给下一轮 Agent 的意见" /></label>
+              <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="secondary-button" disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => decide.mutate({ artifact: editing, action: "request_changes" })}>要求修改</button><button className="primary-button" disabled={saveArtifact.isPending || !hasUnsavedArtifactEdits} onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button><button className="approve-button" title={hasUnsavedArtifactEdits ? "请先保存当前编辑" : "通过并写入"} disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => approveArtifact(editing)}><Check size={15} />{["drafting", "revision_proposal", "scene_draft"].includes(editing.kind) ? "通过并写入正文" : "通过审核"}</button></footer>
+            </motion.section>
+          </motion.div>
+        ) : null}
 
-      {conflictArtifact ? <div className="modal-backdrop" onMouseDown={() => setConflictArtifact(null)}><section className="modal conflict-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>发现重大设定冲突</h2><span>{conflictArtifact.title}</span></div><button className="icon-button subtle" onClick={() => setConflictArtifact(null)}><X size={17} /></button></header><div><AlertTriangle size={22} /><p>系统不会替你决定。请选择本次写回采用哪一边，或先进入编辑器手工合并。</p></div><footer><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_canon" }); }}>保留既有设定</button><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); openEdit(artifact); }}>手工合并</button><button className="primary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_prose" }); }}>保留当前正文</button></footer></section></div> : null}
+        {conflictArtifact ? <motion.div key="conflict-dialog" className="modal-backdrop" onMouseDown={() => setConflictArtifact(null)} {...dialogBackdrop}><motion.section className="modal conflict-dialog" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>发现重大设定冲突</h2><span>{conflictArtifact.title}</span></div><button className="icon-button subtle" onClick={() => setConflictArtifact(null)}><X size={17} /></button></header><div><AlertTriangle size={22} /><p>系统不会替你决定。请选择本次写回采用哪一边，或先进入编辑器手工合并。</p></div><footer><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_canon" }); }}>保留既有设定</button><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); openEdit(artifact); }}>手工合并</button><button className="primary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_prose" }); }}>保留当前正文</button></footer></motion.section></motion.div> : null}
 
-      {outlinePreview ? (
-        <OutlinePreviewDialog preview={outlinePreview} onClose={() => setOutlinePreview(null)} onImport={() => importOutline.mutate()} importing={importOutline.isPending} />
-      ) : null}
-      {snapshotsOpen ? <SnapshotDialog overview={overview} onClose={() => setSnapshotsOpen(false)} onRefresh={refresh} onNotice={setNotice} /> : null}
+        {outlinePreview ? (
+          <OutlinePreviewDialog key="outline-preview" preview={outlinePreview} onClose={() => setOutlinePreview(null)} onImport={() => importOutline.mutate()} importing={importOutline.isPending} />
+        ) : null}
+        {snapshotsOpen ? <SnapshotDialog key="snapshots" overview={overview} onClose={() => setSnapshotsOpen(false)} onRefresh={refresh} onNotice={setNotice} /> : null}
+      </AnimatePresence>
     </section>
   );
 }
@@ -643,7 +647,7 @@ function ContinuationSettingsPanel({ overview, onSave, saving }: { overview: Stu
 }
 
 function OutlinePreviewDialog({ preview, onClose, onImport, importing }: { preview: OutlinePreview; onClose: () => void; onImport: () => void; importing: boolean }) {
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal outline-preview-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>大纲结构预览</h2><span>{preview.volume_count} 卷 · {preview.chapter_count} 章 · {preview.scene_count} 场景</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="outline-tree-preview">{preview.volumes.map((volume, index) => <section key={`${volume.title}-${index}`}><strong>{volume.title}</strong>{volume.chapters.map((chapter, chapterIndex) => <div key={`${chapter.title}-${chapterIndex}`}><span>{chapter.title}</span><small>{chapter.scenes.length} 场景</small></div>)}</section>)}</div>{preview.warnings.map((warning) => <div className="preview-warning" key={warning}>{warning}</div>)}<footer><button className="secondary-button" onClick={onClose}>返回修改</button><button className="primary-button" disabled={importing} onClick={onImport}>{importing ? "导入中..." : "确认导入"}</button></footer></section></div>;
+  return <motion.div className="modal-backdrop" onMouseDown={onClose} {...dialogBackdrop}><motion.section className="modal outline-preview-modal" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>大纲结构预览</h2><span>{preview.volume_count} 卷 · {preview.chapter_count} 章 · {preview.scene_count} 场景</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="outline-tree-preview">{preview.volumes.map((volume, index) => <section key={`${volume.title}-${index}`}><strong>{volume.title}</strong>{volume.chapters.map((chapter, chapterIndex) => <div key={`${chapter.title}-${chapterIndex}`}><span>{chapter.title}</span><small>{chapter.scenes.length} 场景</small></div>)}</section>)}</div>{preview.warnings.map((warning) => <div className="preview-warning" key={warning}>{warning}</div>)}<footer><button className="secondary-button" onClick={onClose}>返回修改</button><button className="primary-button" disabled={importing} onClick={onImport}>{importing ? "导入中..." : "确认导入"}</button></footer></motion.section></motion.div>;
 }
 
 function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: StudioOverview; onClose: () => void; onRefresh: () => Promise<unknown>; onNotice: (value: string) => void }) {
@@ -651,7 +655,7 @@ function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: 
   const create = useMutation({ mutationFn: () => studioApi.createSnapshot(overview.project.id, label || "手动快照", "作者手动创建", true), onSuccess: async () => { setLabel(""); await onRefresh(); }, onError: (reason: Error) => onNotice(reason.message) });
   const restore = useMutation({ mutationFn: (id: number) => studioApi.restoreSnapshot(overview.project.id, id), onSuccess: onRefresh, onError: (reason: Error) => onNotice(reason.message) });
   const exportFile = useMutation({ mutationFn: (kind: "book_text" | "book_markdown" | "book_pdf") => api.downloadReleaseExport(kind, overview.project.id), onSuccess: saveDownloadedFile, onError: (reason: Error) => onNotice(reason.message) });
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_text")}><FileText size={16} />TXT</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_markdown")}><Download size={16} />Markdown</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_pdf")}><FileCheck2 size={16} />PDF</button></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></section></div>;
+  return <motion.div className="modal-backdrop" onMouseDown={onClose} {...dialogBackdrop}><motion.section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_text")}><FileText size={16} />TXT</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_markdown")}><Download size={16} />Markdown</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_pdf")}><FileCheck2 size={16} />PDF</button></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></motion.section></motion.div>;
 }
 
 function statusLabel(status: Artifact["status"]) { return ({ pending: "待审核", approved: "已通过", changes_requested: "需修改", rejected: "已拒绝", superseded: "旧版本" })[status]; }

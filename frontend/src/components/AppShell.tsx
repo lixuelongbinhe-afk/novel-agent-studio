@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArchiveRestore,
   BookOpenText,
@@ -17,13 +18,15 @@ import {
   Sparkles,
   Workflow
 } from "lucide-react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { studioApi } from "../api/studio";
 import { useUiStore } from "../stores/ui";
+import { routeTransition } from "../utils/motion";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 export function AppShell() {
   const location = useLocation();
+  const outlet = useOutlet();
   const { data: projects = [] } = useQuery({ queryKey: ["studio-projects"], queryFn: studioApi.dashboard });
   const { data: providers = [], isSuccess: providersLoaded } = useQuery({
     queryKey: ["studio-providers"],
@@ -55,7 +58,9 @@ export function AppShell() {
 
   return (
     <div className={`nas-shell ${sidebarCollapsed ? "is-collapsed" : ""}`}>
-      {showWizard ? <OnboardingWizard onComplete={() => setShowWizard(false)} /> : null}
+      <AnimatePresence>
+        {showWizard ? <OnboardingWizard onComplete={() => setShowWizard(false)} /> : null}
+      </AnimatePresence>
       <aside className="nas-sidebar">
         <div className="nas-brand">
           {sidebarCollapsed ? (
@@ -171,7 +176,13 @@ export function AppShell() {
             {current?.pending_reviews ? <span className="attention">{current.pending_reviews} 项待审核</span> : null}
           </div>
         </header>
-        <main className="nas-main"><Outlet /></main>
+        <main className="nas-main">
+          <AnimatePresence mode="wait">
+            <motion.div className="route-motion" key={location.pathname} {...routeTransition}>
+              {outlet}
+            </motion.div>
+          </AnimatePresence>
+        </main>
       </div>
     </div>
   );

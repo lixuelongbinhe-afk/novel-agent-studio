@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Braces,
   CheckCircle2,
@@ -15,6 +16,7 @@ import {
 import { Link } from "react-router-dom";
 import { StudioProvider, studioApi } from "../api/studio";
 import { ProviderDialogForm } from "../components/ProviderDialogForm";
+import { dialogBackdrop, dialogCard } from "../utils/motion";
 
 export function ModelsPage() {
   const queryClient = useQueryClient();
@@ -141,28 +143,32 @@ export function ModelsPage() {
         })}
       </div>
 
-      {dialogOpen ? (
-        <div className="dialog-backdrop" role="presentation">
-          <section className="dialog provider-dialog" role="dialog" aria-modal="true">
-            <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
-            <ProviderDialogForm
-              onSuccess={() => setDialogOpen(false)}
-              onCancel={() => setDialogOpen(false)}
-            />
-          </section>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {dialogOpen ? (
+          <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
+            <motion.section className="dialog provider-dialog" role="dialog" aria-modal="true" {...dialogCard}>
+              <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
+              <ProviderDialogForm
+                onSuccess={() => setDialogOpen(false)}
+                onCancel={() => setDialogOpen(false)}
+              />
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
-      {editingKey ? (
-        <div className="dialog-backdrop" role="presentation">
-          <form className="dialog small-dialog" onSubmit={(event) => { event.preventDefault(); updateKey.mutate(); }}>
-            <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
-            <label><span>新的 API Key</span><input required autoFocus type="password" autoComplete="new-password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} /></label>
-            {error ? <div className="form-error">{error}</div> : null}
-            <footer><button type="button" className="secondary-button" onClick={() => setEditingKey(null)}>取消</button><button type="submit" className="primary-button" disabled={updateKey.isPending}><KeyRound size={16} /> 更新</button></footer>
-          </form>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {editingKey ? (
+          <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
+            <motion.form className="dialog small-dialog" onSubmit={(event) => { event.preventDefault(); updateKey.mutate(); }} {...dialogCard}>
+              <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
+              <label><span>新的 API Key</span><input required autoFocus type="password" autoComplete="new-password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} /></label>
+              {error ? <div className="form-error">{error}</div> : null}
+              <footer><button type="button" className="secondary-button" onClick={() => setEditingKey(null)}>取消</button><button type="submit" className="primary-button" disabled={updateKey.isPending}><KeyRound size={16} /> 更新</button></footer>
+            </motion.form>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </section>
   );
 }

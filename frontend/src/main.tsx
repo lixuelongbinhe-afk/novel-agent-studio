@@ -5,6 +5,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import "./styles.css";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppShell } from "./components/AppShell";
+import { Spinner } from "./components/Spinner";
 import { localApiTokenReady } from "./api/localAuth";
 
 const HomePage = lazy(() => import("./pages/HomePage").then((module) => ({ default: module.HomePage })));
@@ -21,7 +22,7 @@ const AgentWorkflowPage = lazy(() => import("./pages/AgentWorkflowPage").then((m
 const ModelCenterPage = lazy(() => import("./pages/ModelCenterPage").then((module) => ({ default: module.ModelCenterPage })));
 
 function deferred(element: React.ReactNode) {
-  return <Suspense fallback={<div className="route-loading">正在打开...</div>}>{element}</Suspense>;
+  return <Suspense fallback={<Spinner />}>{element}</Suspense>;
 }
 
 const queryClient = new QueryClient({
