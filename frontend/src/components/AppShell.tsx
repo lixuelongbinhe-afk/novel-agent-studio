@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArchiveRestore,
@@ -20,10 +20,16 @@ import {
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { studioApi } from "../api/studio";
 import { useUiStore } from "../stores/ui";
+import { OnboardingWizard } from "./OnboardingWizard";
 
 export function AppShell() {
   const location = useLocation();
   const { data: projects = [] } = useQuery({ queryKey: ["studio-projects"], queryFn: studioApi.dashboard });
+  const { data: providers = [], isSuccess: providersLoaded } = useQuery({
+    queryKey: ["studio-providers"],
+    queryFn: studioApi.providers
+  });
+  const [showWizard, setShowWizard] = useState(false);
   const selectedProjectId = useUiStore((state) => state.selectedProjectId);
   const setProject = useUiStore((state) => state.setProject);
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
@@ -34,11 +40,22 @@ export function AppShell() {
     if (!selectedProjectId && projects[0]) setProject(projects[0].id);
   }, [projects, selectedProjectId, setProject]);
 
+  useEffect(() => {
+    if (
+      providersLoaded &&
+      !localStorage.getItem("onboarding-done") &&
+      providers.length === 0
+    ) {
+      setShowWizard(true);
+    }
+  }, [providers.length, providersLoaded]);
+
   const studioPath = current ? `/studio/${current.id}` : "/";
   const studioActive = location.pathname.startsWith("/studio/");
 
   return (
     <div className={`nas-shell ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+      {showWizard ? <OnboardingWizard onComplete={() => setShowWizard(false)} /> : null}
       <aside className="nas-sidebar">
         <div className="nas-brand">
           {sidebarCollapsed ? (

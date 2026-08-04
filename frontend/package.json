@@ -21,6 +21,7 @@
     "@tiptap/react": "3.29.2",
     "@tiptap/starter-kit": "3.29.2",
     "@xyflow/react": "12.11.2",
+    "framer-motion": "^12.43.0",
     "lucide-react": "1.28.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

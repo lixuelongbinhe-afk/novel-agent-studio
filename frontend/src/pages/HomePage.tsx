@@ -6,10 +6,8 @@ import {
   CheckSquare2,
   Clock3,
   ClipboardPaste,
-  FileInput,
   FileUp,
   FolderOpen,
-  Lightbulb,
   MoreHorizontal,
   Plus,
   Trash2,
@@ -17,23 +15,8 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { studioApi } from "../api/studio";
+import { ProjectDialogForm } from "../components/ProjectDialogForm";
 import { useUiStore } from "../stores/ui";
-
-const emptyForm = {
-  title: "",
-  idea: "",
-  entry_mode: "creative" as "creative" | "outline",
-  target_words: 100000,
-  genre: "",
-  theme: "",
-  era: "",
-  audience: "",
-  chapter_count: 80,
-  chapter_words: 2500,
-  style_description: "",
-  point_of_view: "第三人称限知",
-  prohibited_content: ""
-};
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -46,22 +29,8 @@ export function HomePage() {
   });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [continuationOpen, setContinuationOpen] = useState(false);
-  const [details, setDetails] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-  const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
 
-  const create = useMutation({
-    mutationFn: () => studioApi.createProject(form),
-    onSuccess: async (overview) => {
-      setProject(overview.project.id);
-      setDialogOpen(false);
-      setForm(emptyForm);
-      await queryClient.invalidateQueries({ queryKey: ["studio-projects"] });
-      navigate(`/studio/${overview.project.id}`);
-    },
-    onError: (reason: Error) => setError(reason.message)
-  });
   const remove = useMutation({
     mutationFn: studioApi.deleteProject,
     onSuccess: async (_, deletedProjectId) => {
@@ -87,12 +56,6 @@ export function HomePage() {
   function openProject(id: number) {
     setProject(id);
     navigate(`/studio/${id}`);
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    create.mutate();
   }
 
   return (
@@ -153,43 +116,17 @@ export function HomePage() {
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setDialogOpen(false)}>
           <section className="modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
             <header>
-              <div><h2>新建小说</h2><span>{details ? "详细创建" : "快速创建"}</span></div>
+              <div><h2>新建小说</h2><span>快速创建或填写详细设置</span></div>
               <button type="button" className="icon-button subtle" onClick={() => setDialogOpen(false)} title="关闭"><X size={17} /></button>
             </header>
-            <form onSubmit={submit}>
-              <div className="mode-switch">
-                <button type="button" className={form.entry_mode === "creative" ? "active" : ""} onClick={() => setForm({ ...form, entry_mode: "creative" })}>
-                  <Lightbulb size={15} /> 从创意开始
-                </button>
-                <button type="button" className={form.entry_mode === "outline" ? "active" : ""} onClick={() => setForm({ ...form, entry_mode: "outline" })}>
-                  <FileInput size={15} /> 导入大纲
-                </button>
-              </div>
-              <label><span>书名</span><input autoFocus value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label>
-              <label><span>{form.entry_mode === "creative" ? "题材与创意" : "大纲说明"}</span><textarea rows={5} value={form.idea} onChange={(event) => setForm({ ...form, idea: event.target.value })} /></label>
-              {details ? (
-                <div className="detail-form-grid">
-                  <label><span>题材</span><input value={form.genre} onChange={(event) => setForm({ ...form, genre: event.target.value })} /></label>
-                  <label><span>主题</span><input value={form.theme} onChange={(event) => setForm({ ...form, theme: event.target.value })} /></label>
-                  <label><span>时代</span><input value={form.era} onChange={(event) => setForm({ ...form, era: event.target.value })} /></label>
-                  <label><span>读者</span><input value={form.audience} onChange={(event) => setForm({ ...form, audience: event.target.value })} /></label>
-                  <label><span>目标字数</span><input type="number" value={form.target_words} onChange={(event) => setForm({ ...form, target_words: Number(event.target.value) })} /></label>
-                  <label><span>章节数量</span><input type="number" value={form.chapter_count} onChange={(event) => setForm({ ...form, chapter_count: Number(event.target.value) })} /></label>
-                  <label><span>每章字数</span><input type="number" value={form.chapter_words} onChange={(event) => setForm({ ...form, chapter_words: Number(event.target.value) })} /></label>
-                  <label><span>叙事视角</span><input value={form.point_of_view} onChange={(event) => setForm({ ...form, point_of_view: event.target.value })} /></label>
-                  <label className="span-2"><span>文风</span><textarea rows={3} value={form.style_description} onChange={(event) => setForm({ ...form, style_description: event.target.value })} /></label>
-                  <label className="span-2"><span>禁用内容</span><textarea rows={2} value={form.prohibited_content} onChange={(event) => setForm({ ...form, prohibited_content: event.target.value })} /></label>
-                </div>
-              ) : null}
-              {error ? <div className="form-error">{error}</div> : null}
-              <footer>
-                <button type="button" className="text-button" onClick={() => setDetails(!details)}>{details ? "使用快速创建" : "填写详细设置"}</button>
-                <button type="button" className="secondary-button" onClick={() => setDialogOpen(false)}>取消</button>
-                <button type="submit" className="primary-button" disabled={!form.title.trim() || !form.idea.trim() || create.isPending}>
-                  {create.isPending ? "创建中..." : "创建项目"}
-                </button>
-              </footer>
-            </form>
+            <ProjectDialogForm
+              onCancel={() => setDialogOpen(false)}
+              onSuccess={(overview) => {
+                setProject(overview.project.id);
+                setDialogOpen(false);
+                navigate(`/studio/${overview.project.id}`);
+              }}
+            />
           </section>
         </div>
       ) : null}

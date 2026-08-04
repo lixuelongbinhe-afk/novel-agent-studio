@@ -1,6 +1,58 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function markOnboardingDone(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("onboarding-done", "true"));
+}
+
+async function clearOnboardingRecords(page: Page) {
+  const projectResponse = await page.request.get("/api/studio/projects");
+  if (projectResponse.ok()) {
+    const projects = await projectResponse.json() as Array<{ id: number }>;
+    for (const project of projects) await page.request.delete(`/api/studio/projects/${project.id}`);
+  }
+  const providerResponse = await page.request.get("/api/studio/providers");
+  if (providerResponse.ok()) {
+    const providers = await providerResponse.json() as Array<{ id: number }>;
+    for (const provider of providers) await page.request.delete(`/api/studio/providers/${provider.id}`);
+  }
+}
+
+test("first-run onboarding creates a provider and project, then persists completion", async ({ page }) => {
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "欢迎使用 Novel Agent Studio" })).toBeVisible();
+    await page.getByRole("button", { name: "开始配置" }).click();
+    await page.getByRole("button", { name: "OpenAI 兼容服务" }).click();
+    await page.getByLabel("显示名称").fill("E2E 本地模型");
+    await page.getByLabel("模型名称").fill("e2e-chat");
+    await page.getByLabel("API 地址").fill("http://127.0.0.1:8020/v1");
+    await page.getByRole("button", { name: "读取环境变量" }).click();
+    await page.getByLabel("环境变量名").fill("E2E_CUSTOM_API_KEY");
+    await page.getByRole("button", { name: /保存服务/ }).click();
+
+    await expect(page.getByRole("heading", { name: "创建第一本小说" })).toBeVisible();
+    await expect(page.getByLabel("模型服务")).toContainText("E2E 本地模型 · e2e-chat");
+    await page.getByLabel("书名").fill("首启向导验收小说");
+    await page.getByLabel("题材与创意").fill("一名修复师在机械城市中追踪遗失的记忆。");
+    await page.getByRole("button", { name: "创建项目" }).click();
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
+    await expect(page.getByText("首启向导验收小说", { exact: true }).first()).toBeVisible();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("onboarding-done"))).toBe("true");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "欢迎使用 Novel Agent Studio" })).toHaveCount(0);
+    await expect(page.getByText("首启向导验收小说", { exact: true }).first()).toBeVisible();
+  } finally {
+    await clearOnboardingRecords(page);
+  }
+});
 
 test("all implemented workspaces are reachable from real routes", async ({ page }) => {
+  await markOnboardingDone(page);
   const routes: Array<[string, RegExp]> = [
     ["/approvals", /还没有项目/],
     ["/workspace", /先创建一个小说项目/],
@@ -20,6 +72,7 @@ test("all implemented workspaces are reachable from real routes", async ({ page 
 });
 
 test("collapsed sidebar keeps only in-bounds brand and status expand targets", async ({ page }) => {
+  await markOnboardingDone(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
@@ -52,6 +105,7 @@ test("collapsed sidebar keeps only in-bounds brand and status expand targets", a
 });
 
 test("V2 creation flow renders and generates a review item", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -139,6 +193,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
 });
 
 test("approved Agent draft is written into the chapter editor", async ({ page }) => {
+  await markOnboardingDone(page);
   const api = "http://127.0.0.1:8010/api/studio";
   const createdResponse = await page.request.post(`${api}/projects`, {
     data: {
@@ -194,6 +249,7 @@ test("approved Agent draft is written into the chapter editor", async ({ page })
 });
 
 test("imports a half-finished novel into the reviewed continuation workflow", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -227,6 +283,7 @@ test("imports a half-finished novel into the reviewed continuation workflow", as
 });
 
 test("long chat replies scroll inside the right rail without covering the workspace", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   const api = "http://127.0.0.1:8010/api/studio";
   const createdResponse = await page.request.post(`${api}/projects`, {
@@ -284,6 +341,7 @@ test("long chat replies scroll inside the right rail without covering the worksp
 });
 
 test("deleting a project removes it from the persisted dashboard", async ({ page }) => {
+  await markOnboardingDone(page);
   const api = "http://127.0.0.1:8010/api/studio";
   const title = `删除功能验证-${Date.now()}`;
   const createdResponse = await page.request.post(`${api}/projects`, {

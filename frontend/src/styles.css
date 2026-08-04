@@ -180,11 +180,34 @@ label > span { display: block; margin-bottom: 6px; color: #b7bbb9; font-size: 12
 .provider-test.ok { color: var(--green); }
 .provider-test.failed { color: var(--red); }
 .provider-dialog { width: min(650px, 100%); }
+.provider-dialog-form > label,
+.provider-dialog-form > .preset-grid,
+.provider-dialog-form > .form-grid,
+.provider-dialog-form > .segmented-control,
+.provider-dialog-form > .form-error { margin: 14px 18px 0; }
+.provider-dialog-form > footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 14px 18px; margin-top: 14px; border-top: 1px solid var(--border); }
 .small-dialog { width: min(430px, 100%); }
 .preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 16px 18px 0; }
 .preset-grid button { min-height: 34px; padding: 5px; border: 1px solid var(--border); border-radius: 5px; background: #191a1a; color: var(--muted); cursor: pointer; }
 .preset-grid button.selected { border-color: #6b756f; background: #343a37; color: #fff; }
 .segmented-control.compact { width: 280px; }
+
+.onboarding-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.6); }
+.wizard-card { width: min(560px, 90%); max-height: 80vh; overflow-y: auto; padding: 32px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel-2); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+.wizard-progress { display: flex; gap: 12px; margin-bottom: 24px; color: var(--muted); font-size: 14px; }
+.wizard-progress div { flex: 1; padding-bottom: 8px; border-bottom: 2px solid var(--border); }
+.wizard-progress div.active { border-color: var(--accent); color: var(--text); font-weight: 500; }
+.wizard-card h2 { margin-bottom: 8px; font-size: 20px; }
+.wizard-card h2 + p { margin-bottom: 22px; color: var(--muted); line-height: 1.6; }
+.wizard-card .provider-dialog-form > label,
+.wizard-card .provider-dialog-form > .preset-grid,
+.wizard-card .provider-dialog-form > .form-grid,
+.wizard-card .provider-dialog-form > .segmented-control,
+.wizard-card .provider-dialog-form > .form-error { margin-right: 0; margin-left: 0; }
+.wizard-card .provider-dialog-form > footer { padding-right: 0; padding-left: 0; }
+.wizard-card .project-dialog-form > label { display: block; margin-bottom: 13px; }
+.wizard-card .project-dialog-form > footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.wizard-card .project-dialog-form > footer .text-button { margin-right: auto; }
 
 .studio-page { height: 100%; min-height: 650px; display: grid; grid-template-rows: auto 54px minmax(0, 1fr); overflow: hidden; }
 .studio-toolbar { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
