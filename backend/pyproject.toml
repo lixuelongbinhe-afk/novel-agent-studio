@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "novel-agent-studio-backend"
-version = "2.2.9"
+version = "2.2.10"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
@@ -23,7 +23,7 @@ dependencies = [
   "python-docx>=1.2.0",
   "pypdf>=6.14.2",
   "reportlab>=5.0.0",
-  "cryptography>=49.0.0",
+  "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
