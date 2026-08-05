@@ -31,10 +31,15 @@ export function ModelsPage() {
   const [results, setResults] = useState<Record<number, { ok: boolean; message: string }>>({});
   const [error, setError] = useState("");
 
-  const connected = useMemo(
-    () => providers.filter((provider) => !["mock", "ollama", "ollama_native"].includes(provider.provider_type)),
-    [providers]
-  );
+  const connected = useMemo(() => providers.filter((provider) => provider.provider_type !== "mock"), [providers]);
+  const providerGroups = useMemo(() => {
+    const local = connected.filter((provider) => ["ollama", "ollama_native"].includes(provider.provider_type) || /localhost|127\.0\.0\.1/i.test(provider.base_url));
+    const cloud = connected.filter((provider) => !local.includes(provider));
+    return [
+      { label: "本地服务", items: local },
+      { label: "云端服务", items: cloud }
+    ].filter((group) => group.items.length > 0);
+  }, [connected]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["studio-providers"] });
   const remove = useMutation({
@@ -91,6 +96,9 @@ export function ModelsPage() {
       </div>
 
       <div className="provider-list">
+        <div className="provider-list-head" aria-hidden="true">
+          <span>服务</span><span>默认模型</span><span>凭据</span><span>健康状态</span><span>操作</span>
+        </div>
         {isLoading ? <div className="loading-line">正在读取服务...</div> : null}
         {!isLoading && connected.length === 0 ? (
           <button type="button" className="empty-providers" onClick={() => setDialogOpen(true)}>
@@ -99,14 +107,16 @@ export function ModelsPage() {
             <span>DeepSeek、OpenAI、Anthropic、Gemini、xAI 或 OpenRouter</span>
           </button>
         ) : null}
-        {connected.map((provider) => {
-          const result = results[provider.id];
-          return (
-            <article className="provider-row" key={provider.id}>
-              <div className="provider-icon"><PlugZap size={18} /></div>
+        {providerGroups.map((group) => (
+          <section className="provider-group" key={group.label}>
+            <header>{group.label}<span>{group.items.length}</span></header>
+            {group.items.map((provider) => {
+              const result = results[provider.id];
+              return (
+              <article className="provider-row" key={provider.id}>
               <div className="provider-identity">
-                <strong>{provider.name}</strong>
-                <span>{provider.base_url}</span>
+                <span className="provider-name"><i className={`health-dot ${result?.ok ? "ok" : result ? "failed" : "idle"}`} /><strong>{provider.name}</strong></span>
+                <span title={provider.base_url}>{provider.base_url}</span>
               </div>
               <div className="provider-model">
                 <span>默认模型</span>
@@ -120,34 +130,35 @@ export function ModelsPage() {
               </div>
               <div className={`provider-test ${result?.ok ? "ok" : result ? "failed" : ""}`}>
                 {result?.ok ? <CheckCircle2 size={14} /> : null}
-                <span>{result?.message ?? "尚未测试"}</span>
+                <span>{result?.message ?? "待测试"}</span>
               </div>
-              <div className="row-actions">
-                <button type="button" className="icon-button" title="测试连接" onClick={() => testProvider(provider)}>
-                  {testingId === provider.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+              <div className="provider-actions">
+                <button type="button" title="更新 API Key" onClick={() => setEditingKey(provider)}>
+                  <KeyRound size={13} />设置
                 </button>
-                <button type="button" className="icon-button" title="更新 API Key" onClick={() => setEditingKey(provider)}>
-                  <KeyRound size={16} />
+                <button type="button" title="测试连接" onClick={() => testProvider(provider)}>
+                  {testingId === provider.id ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}测试
                 </button>
                 <button
                   type="button"
-                  className="icon-button danger"
+                  className="danger"
                   title="删除服务"
                   onClick={() => window.confirm(`删除 ${provider.name}？`) && remove.mutate(provider.id)}
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={13} />删除
                 </button>
               </div>
             </article>
-          );
-        })}
+            );})}
+          </section>
+        ))}
       </div>
 
       <AnimatePresence>
         {dialogOpen ? (
           <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
             <motion.section className="dialog provider-dialog" role="dialog" aria-modal="true" {...dialogCard}>
-              <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
+              <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" aria-label="关闭添加模型服务" title="关闭" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
               <ProviderDialogForm
                 onSuccess={() => setDialogOpen(false)}
                 onCancel={() => setDialogOpen(false)}
@@ -161,7 +172,7 @@ export function ModelsPage() {
         {editingKey ? (
           <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
             <motion.form className="dialog small-dialog" onSubmit={(event) => { event.preventDefault(); updateKey.mutate(); }} {...dialogCard}>
-              <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
+              <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" aria-label="关闭更新 API Key" title="关闭" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
               <label><span>新的 API Key</span><input required autoFocus type="password" autoComplete="new-password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} /></label>
               {error ? <div className="form-error">{error}</div> : null}
               <footer><button type="button" className="secondary-button" onClick={() => setEditingKey(null)}>取消</button><button type="submit" className="primary-button" disabled={updateKey.isPending}><KeyRound size={16} /> 更新</button></footer>

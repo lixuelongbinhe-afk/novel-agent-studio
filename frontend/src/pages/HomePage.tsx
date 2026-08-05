@@ -11,6 +11,7 @@ import {
   FolderOpen,
   MoreHorizontal,
   Plus,
+  Search,
   Trash2,
   X
 } from "lucide-react";
@@ -38,6 +39,8 @@ export function HomePage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [continuationOpen, setContinuationOpen] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<"recent" | "all">("recent");
 
   const remove = useMutation({
     mutationFn: studioApi.deleteProject,
@@ -66,6 +69,10 @@ export function HomePage() {
     navigate(`/studio/${id}`);
   }
 
+  const visibleProjects = projects
+    .filter((project) => `${project.title}${project.summary}${project.stage_label}`.toLowerCase().includes(query.trim().toLowerCase()))
+    .slice(0, view === "recent" ? 8 : projects.length);
+
   return (
     <section className="projects-page">
       <header className="page-toolbar">
@@ -74,6 +81,10 @@ export function HomePage() {
           <span>{projects.length} 本小说</span>
         </div>
         <div className="page-toolbar-actions">
+          <label className="toolbar-search">
+            <Search size={14} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
+          </label>
           <button type="button" className="secondary-button" onClick={() => setContinuationOpen(true)}>
             <FileUp size={16} /> 导入半成品续写
           </button>
@@ -83,8 +94,13 @@ export function HomePage() {
         </div>
       </header>
 
+      <nav className="project-view-tabs" aria-label="项目视图">
+        <button type="button" className={view === "recent" ? "active" : ""} onClick={() => setView("recent")}>最近打开</button>
+        <button type="button" className={view === "all" ? "active" : ""} onClick={() => setView("all")}>全部项目</button>
+      </nav>
+
       <div className="project-list-head" aria-hidden="true">
-        <span>书名</span><span>创作阶段</span><span>完成字数</span><span>待审核</span><span>最后编辑</span><span />
+        <span>项目名称</span><span>创作阶段</span><span>章节进度</span><span>完成字数<i className="sr-only">待审核</i></span><span>最后编辑</span><span>操作</span>
       </div>
       {deleteError ? <div className="form-error project-delete-error" role="alert">{deleteError}</div> : null}
       <motion.div className="project-list" variants={staggerContainer} initial="initial" animate="animate">
@@ -95,7 +111,10 @@ export function HomePage() {
             <strong>新建第一本小说</strong>
           </button>
         ) : null}
-        {projects.map((project, index) => (
+        {!isLoading && projects.length > 0 && visibleProjects.length === 0 ? <div className="search-empty">没有匹配“{query}”的项目</div> : null}
+        {visibleProjects.map((project, index) => {
+          const progress = project.target_words > 0 ? Math.min(100, Math.round((project.completed_words / project.target_words) * 100)) : 0;
+          return (
           <motion.article
             key={project.id}
             className="project-row"
@@ -107,13 +126,11 @@ export function HomePage() {
               <span><strong>{project.title}</strong><small>{project.summary}</small></span>
             </button>
             <span className="stage-cell">{project.stage_label}</span>
-            <span className="metric-cell">{project.completed_words.toLocaleString()} <small>/ {project.target_words.toLocaleString()}</small></span>
-            <span className={project.pending_reviews ? "review-count active" : "review-count"}>
-              <CheckSquare2 size={14} /> {project.pending_reviews}
-            </span>
+            <span className="project-progress"><b>{progress}%</b><i><span style={{ width: `${progress}%` }} /></i></span>
+            <span className="metric-cell">{project.completed_words.toLocaleString()} <small>字</small>{project.pending_reviews ? <em><CheckSquare2 size={12} />{project.pending_reviews} 待审核</em> : null}</span>
             <span className="time-cell"><Clock3 size={13} /> {formatTime(project.updated_at)}</span>
             <div className="row-actions">
-              <button type="button" className="icon-button subtle" title="打开" onClick={() => openProject(project.id)}><ArrowRight size={16} /></button>
+              <button type="button" className="text-row-action" title="继续写作" onClick={() => openProject(project.id)}>继续写作<ArrowRight size={14} /></button>
               <button type="button" className="icon-button subtle danger" title="删除" onClick={() => {
                 if (window.confirm(`删除“${project.title}”？`)) {
                   setDeleteError("");
@@ -122,7 +139,7 @@ export function HomePage() {
               }}><Trash2 size={15} /></button>
             </div>
           </motion.article>
-        ))}
+        );})}
       </motion.div>
 
       <AnimatePresence>

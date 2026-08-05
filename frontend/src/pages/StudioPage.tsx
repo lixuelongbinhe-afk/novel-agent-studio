@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   ArchiveRestore,
+  Bot,
   BookOpenText,
   Check,
   CheckCircle2,
@@ -18,6 +19,8 @@ import {
   GitCompareArrows,
   LoaderCircle,
   MoreHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
   Pencil,
   Plus,
@@ -27,6 +30,7 @@ import {
   Save,
   Settings2,
   Sparkles,
+  SquareTerminal,
   SplitSquareVertical,
   Trash2,
   Undo2,
@@ -42,12 +46,20 @@ import {
   studioApi
 } from "../api/studio";
 import { api, saveDownloadedFile } from "../api/client";
+import agentNetworkOrb from "../assets/agent-network-orb.png";
 import { useUiStore } from "../stores/ui";
 import {
   StudioRightRail,
   type StudioRightTab
 } from "../features/studio/components/StudioRightRail";
-import { dialogBackdrop, dialogCard } from "../utils/motion";
+import {
+  consoleTransition,
+  dialogBackdrop,
+  dialogCard,
+  inspectorTransition,
+  stageTransition,
+  toastTransition
+} from "../utils/motion";
 
 const phaseDescriptions: Record<string, string> = {
   idea: "创意简报",
@@ -90,6 +102,9 @@ export function StudioPage() {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [notice, setNotice] = useState("");
+  const [consoleOpen, setConsoleOpen] = useState(true);
+  const rightPanelOpen = useUiStore((state) => state.rightPanelOpen);
+  const toggleRightPanel = useUiStore((state) => state.toggleRightPanel);
   const generationKeys = useRef(new WeakMap<object, string>());
 
   const { data: overview, isLoading, error } = useQuery({
@@ -359,44 +374,45 @@ export function StudioPage() {
 
   return (
     <section className="studio-page">
-      {notice ? <button className="toast" type="button" onClick={() => setNotice("")}><span>{notice}</span><X size={14} /></button> : null}
-      <header className="studio-toolbar">
-        <div className="project-heading">
-          <h1>{overview.project.title}</h1>
-          <span>{overview.state.stage_label}</span>
+      <AnimatePresence initial={false}>
+        {notice ? <motion.button className="toast" type="button" onClick={() => setNotice("")} {...toastTransition}><span>{notice}</span><X size={14} /></motion.button> : null}
+      </AnimatePresence>
+      <div className="studio-top-chrome">
+        <h1 className="sr-only">{overview.project.title}</h1>
+        <div className="phase-strip" aria-label="创作阶段">
+          <div className="phase-track">
+            {overview.stages.map((item, index) => {
+              const currentIndex = overview.stages.findIndex((entry) => entry.key === overview.state.stage);
+              const complete = index < currentIndex || overview.artifacts.some((artifact) => artifact.kind === item.key && artifact.status === "approved");
+              return (
+                <button key={item.key} type="button" className={`${phase === item.key ? "active" : ""} ${complete ? "complete" : ""}`} onClick={() => setSelectedPhase(item.key)}>
+                  <span>{complete ? <Check size={12} /> : index + 1}</span><b>{item.label}</b>
+                </button>
+              );
+            })}
+          </div>
+          <div className="phase-actions">
+            <label className="compact-select"><span>路由</span><select value={overview.state.routing_strategy} onChange={(event) => updateState.mutate({ routing_strategy: event.target.value })}>
+              <option value="balanced">均衡</option><option value="quality">质量</option><option value="cost">成本</option><option value="speed">速度</option>
+            </select></label>
+            <label className="compact-select"><span>审核</span><select value={overview.state.review_granularity} onChange={(event) => updateState.mutate({ review_granularity: event.target.value })}>
+              <option value="chapter">章级</option><option value="scene">场景级</option>
+            </select></label>
+            <label className="compact-select"><span>续写</span><select value={overview.state.generation_mode} onChange={(event) => updateState.mutate({ generation_mode: event.target.value })}>
+              <option value="manual">手动</option><option value="automatic">自动</option><option value="countdown">倒计时</option>
+            </select></label>
+            {overview.state.generation_mode === "countdown" ? <label className="countdown-setting" title="批准当前章后，等待多少秒开始下一章"><Clock3 size={13} /><input type="number" min="0" max="3600" value={overview.state.countdown_seconds} onChange={(event) => updateState.mutate({ countdown_seconds: Number(event.target.value) })} /><span>秒</span></label> : null}
+            <button className={rightPanelOpen ? "icon-button active" : "icon-button"} type="button" title={rightPanelOpen ? "关闭审阅面板" : "打开审阅面板"} onClick={toggleRightPanel}>{rightPanelOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
+            <button className="icon-button" type="button" title="快照与导出" onClick={() => setSnapshotsOpen(true)}><History size={16} /></button>
+          </div>
         </div>
-        <div className="toolbar-controls">
-          <label className="compact-select"><span>路由</span><select value={overview.state.routing_strategy} onChange={(event) => updateState.mutate({ routing_strategy: event.target.value })}>
-            <option value="balanced">均衡</option><option value="quality">质量</option><option value="cost">成本</option><option value="speed">速度</option>
-          </select></label>
-          <label className="compact-select"><span>审核</span><select value={overview.state.review_granularity} onChange={(event) => updateState.mutate({ review_granularity: event.target.value })}>
-            <option value="chapter">章级</option><option value="scene">场景级</option>
-          </select></label>
-          <label className="compact-select"><span>续写</span><select value={overview.state.generation_mode} onChange={(event) => updateState.mutate({ generation_mode: event.target.value })}>
-            <option value="manual">手动</option><option value="automatic">自动</option><option value="countdown">倒计时</option>
-          </select></label>
-          {overview.state.generation_mode === "countdown" ? <label className="countdown-setting" title="批准当前章后，等待多少秒开始下一章"><Clock3 size={13} /><input type="number" min="0" max="3600" value={overview.state.countdown_seconds} onChange={(event) => updateState.mutate({ countdown_seconds: Number(event.target.value) })} /><span>秒</span></label> : null}
-          <button className="icon-button" type="button" title="快照与导出" onClick={() => setSnapshotsOpen(true)}><History size={16} /></button>
-        </div>
-      </header>
-
-      {continuation ? <div className="continuation-banner"><Clock3 size={15} /><span><strong>{continuation.seconds} 秒</strong>后开始下一章</span><button type="button" onClick={() => setContinuation(null)}><Pause size={14} />暂停</button><button type="button" onClick={() => { const chapterId = continuation.chapterId; setContinuation(null); generate.mutate({ phase: "drafting", chapterId }); }}><Play size={14} />立即开始</button></div> : null}
-      {isContinuationProject && Boolean(continuationConfig.conflict_paused) ? <div className="continuation-conflict-banner"><AlertTriangle size={16} /><span><strong>续写已暂停</strong>存在重大设定或时间线冲突，请在“待审核项目”中选择处理方案。</span><button type="button" onClick={() => setRightTab("reviews")}>前往审核</button></div> : null}
-
-      <div className="phase-strip" aria-label="创作阶段">
-        {overview.stages.map((item, index) => {
-          const currentIndex = overview.stages.findIndex((entry) => entry.key === overview.state.stage);
-          const complete = index < currentIndex || overview.artifacts.some((artifact) => artifact.kind === item.key && artifact.status === "approved");
-          return (
-            <button key={item.key} type="button" className={`${phase === item.key ? "active" : ""} ${complete ? "complete" : ""}`} onClick={() => setSelectedPhase(item.key)}>
-              <span>{complete ? <Check size={12} /> : index + 1}</span><b>{item.label}</b>
-            </button>
-          );
-        })}
+        {continuation ? <div className="continuation-banner"><Clock3 size={15} /><span><strong>{continuation.seconds} 秒</strong>后开始下一章</span><button type="button" onClick={() => setContinuation(null)}><Pause size={14} />暂停</button><button type="button" onClick={() => { const chapterId = continuation.chapterId; setContinuation(null); generate.mutate({ phase: "drafting", chapterId }); }}><Play size={14} />立即开始</button></div> : null}
+        {isContinuationProject && Boolean(continuationConfig.conflict_paused) ? <div className="continuation-conflict-banner"><AlertTriangle size={16} /><span><strong>续写已暂停</strong>存在重大设定或时间线冲突，请在“待审核项目”中选择处理方案。</span><button type="button" onClick={() => setRightTab("reviews")}>前往审核</button></div> : null}
       </div>
 
-      <div className="studio-workarea">
-        <main className="stage-workspace">
+      <div className={`studio-workarea ${rightPanelOpen ? "rail-open" : "rail-closed"}`}>
+        <AnimatePresence mode="wait" initial={false}>
+        <motion.main className="stage-workspace" key={phase} {...stageTransition}>
           {["drafting", "review"].includes(phase) ? (
             <div className="writing-stage-shell">
               {isContinuationProject && phase === "drafting" && continuationConfig.continuation_start === "choose" ? (
@@ -493,9 +509,17 @@ export function StudioPage() {
               </div>
             </>
           )}
-        </main>
+        </motion.main>
+        </AnimatePresence>
 
-        <aside className="context-rail">
+        <motion.aside
+          className="context-rail"
+          initial={false}
+          animate={rightPanelOpen ? "open" : "closed"}
+          variants={inspectorTransition}
+          aria-hidden={!rightPanelOpen}
+        >
+          <header className="rail-window-head"><span>审阅与协作</span><button type="button" className="icon-button subtle" title="关闭审阅面板" onClick={toggleRightPanel}><PanelRightClose size={14} /></button></header>
           <StudioRightRail
             overview={overview}
             activeTab={rightTab}
@@ -514,7 +538,8 @@ export function StudioPage() {
             onReviewApprove={approveArtifact}
             onBudgetUpdate={(value) => updateState.mutate(value)}
           />
-        </aside>
+        </motion.aside>
+        <StudioAgentConsole overview={overview} open={consoleOpen} onToggle={() => setConsoleOpen((value) => !value)} onOpenProgress={() => { setRightTab("progress"); if (!rightPanelOpen) toggleRightPanel(); }} />
       </div>
 
       <AnimatePresence>
@@ -542,6 +567,31 @@ export function StudioPage() {
       </AnimatePresence>
     </section>
   );
+}
+
+function StudioAgentConsole({ overview, open, onToggle, onOpenProgress }: { overview: StudioOverview; open: boolean; onToggle: () => void; onOpenProgress: () => void }) {
+  const running = overview.jobs.filter((job) => ["queued", "running"].includes(job.status));
+  const recent = overview.jobs.slice(0, 4);
+  return <section className={open ? "agent-console is-open" : "agent-console"}>
+    <header>
+      <button type="button" className="agent-console-title" onClick={onToggle} aria-expanded={open}>
+        <SquareTerminal size={15} /><strong>Agent 控制台</strong><span>{running.length ? `${running.length} 个任务运行中` : "等待任务"}</span><ChevronDown size={14} />
+      </button>
+      <div><span>{overview.usage.tokens.toLocaleString()} tokens</span><span>{overview.usage.currency} {overview.usage.spent.toFixed(4)}</span><button type="button" onClick={onOpenProgress}>查看全部</button></div>
+    </header>
+    <AnimatePresence initial={false}>
+    {open ? <motion.div key="agent-console-body" className="agent-console-body" {...consoleTransition}>
+      <div className="agent-pipeline">
+        {recent.length ? recent.map((job) => <button type="button" key={job.id} onClick={onOpenProgress} className={`agent-step ${job.status}`}>
+          {job.status === "completed" ? <CheckCircle2 size={15} /> : job.status === "failed" ? <AlertTriangle size={15} /> : <LoaderCircle className={job.status === "running" ? "spin" : ""} size={15} />}
+          <div className="agent-step-copy"><strong>{job.label}</strong><small>{job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : `${job.progress}% · ${job.model_name}`}</small></div>
+          <span className="agent-step-progress" aria-hidden="true"><motion.i initial={{ scaleX: 0 }} animate={{ scaleX: Math.max(0.04, job.progress / 100) }} transition={{ duration: 0.45, ease: "easeOut" }} /></span>
+        </button>) : <div className="agent-console-idle"><img className="agent-network-orb" src={agentNetworkOrb} alt="" /><span><strong>Agent 编排已就绪</strong><small>创作任务将在这里形成可观察的节点链路；进度、耗时与费用会实时更新。</small><button type="button" onClick={onOpenProgress}>查看任务与运行记录</button></span></div>}
+      </div>
+      {recent.length ? <div className="agent-console-log">{recent.slice(0, 3).map((job) => <span key={job.id}><time>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><b>{job.label}</b>{job.status === "failed" ? "执行失败，业务产出未写入" : job.status === "completed" ? "节点完成" : `正在执行 · ${job.progress}%`}</span>)}</div> : null}
+    </motion.div> : null}
+    </AnimatePresence>
+  </section>;
 }
 
 function ChapterPlanValidationBadge({ artifact }: { artifact: Artifact }) {

@@ -3,25 +3,31 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArchiveRestore,
+  BadgeCheck,
   BookOpenText,
   Boxes,
   Braces,
   BrainCircuit,
   ChevronLeft,
   CircleDot,
+  Command,
   FolderKanban,
   Library,
+  Maximize2,
+  Moon,
   PackageCheck,
   PanelLeftClose,
+  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
+  Sun,
   Workflow
 } from "lucide-react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { studioApi } from "../api/studio";
 import { useUiStore } from "../stores/ui";
-import { routeTransition } from "../utils/motion";
+import { dialogBackdrop, dialogCard, routeTransition } from "../utils/motion";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 export function AppShell() {
@@ -33,10 +39,16 @@ export function AppShell() {
     queryFn: studioApi.providers
   });
   const [showWizard, setShowWizard] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
   const selectedProjectId = useUiStore((state) => state.selectedProjectId);
   const setProject = useUiStore((state) => state.setProject);
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
+  const theme = useUiStore((state) => state.theme);
+  const toggleTheme = useUiStore((state) => state.toggleTheme);
+  const focusMode = useUiStore((state) => state.focusMode);
+  const toggleFocusMode = useUiStore((state) => state.toggleFocusMode);
   const current = projects.find((project) => project.id === selectedProjectId) ?? projects[0];
 
   useEffect(() => {
@@ -53,13 +65,57 @@ export function AppShell() {
     }
   }, [providers.length, providersLoaded]);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((value) => !value);
+      }
+      if (event.key === "Escape") setCommandOpen(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   const studioPath = current ? `/studio/${current.id}` : "/";
   const studioActive = location.pathname.startsWith("/studio/");
+  const commandEntries = [
+    { to: "/", label: "项目", detail: "查看与继续最近小说" },
+    { to: studioPath, label: "创作流程", detail: "打开当前小说工作台" },
+    { to: "/workspace", label: "写作台", detail: "卷章与场景编辑" },
+    { to: "/approvals", label: "待审核", detail: "Diff、批注与写回" },
+    { to: "/workflows", label: "Agent 工作流", detail: "运行与事件记录" },
+    { to: "/models", label: "模型与 API", detail: "服务、凭据与连接测试" },
+    { to: "/library", label: "资料库", detail: "人物、地点、时间线与伏笔" }
+  ].filter((entry) => `${entry.label}${entry.detail}`.toLowerCase().includes(commandQuery.trim().toLowerCase()));
 
   return (
-    <div className={`nas-shell ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+    <div className={`nas-shell ${sidebarCollapsed ? "is-collapsed" : ""} ${focusMode ? "is-focus-mode" : ""}`}>
       <AnimatePresence>
         {showWizard ? <OnboardingWizard onComplete={() => setShowWizard(false)} /> : null}
+        {commandOpen ? (
+          <motion.div className="command-backdrop" role="presentation" onMouseDown={() => setCommandOpen(false)} {...dialogBackdrop}>
+            <motion.section className="command-palette" role="dialog" aria-modal="true" aria-label="命令面板" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
+              <header>
+                <Search size={17} />
+                <input autoFocus value={commandQuery} onChange={(event) => setCommandQuery(event.target.value)} placeholder="搜索页面或命令" />
+                <kbd>Esc</kbd>
+              </header>
+              <div className="command-results">
+                {commandEntries.map((entry) => (
+                  <NavLink key={entry.label} to={entry.to} onClick={() => { setCommandOpen(false); setCommandQuery(""); }}>
+                    <Command size={15} /><span><strong>{entry.label}</strong><small>{entry.detail}</small></span>
+                  </NavLink>
+                ))}
+                {commandEntries.length === 0 ? <div className="command-empty">没有匹配命令</div> : null}
+              </div>
+            </motion.section>
+          </motion.div>
+        ) : null}
       </AnimatePresence>
       <aside className="nas-sidebar">
         <div className="nas-brand">
@@ -171,9 +227,17 @@ export function AppShell() {
             <span>{current?.title ?? "小说智能体工作室"}</span>
             {current ? <small>{current.stage_label}</small> : null}
           </div>
+          <button type="button" className="command-trigger" onClick={() => setCommandOpen(true)}>
+            <Search size={14} /><span>搜索命令或快速打开...</span><kbd>Ctrl K</kbd>
+          </button>
           <div className="topbar-meta">
+            <span className="autosave-state"><BadgeCheck size={14} />已自动保存</span>
             {current ? <span>{current.completed_words.toLocaleString()} 字</span> : null}
             {current?.pending_reviews ? <span className="attention">{current.pending_reviews} 项待审核</span> : null}
+            {studioActive ? <button type="button" className={focusMode ? "topbar-icon active" : "topbar-icon"} onClick={toggleFocusMode} title="专注模式"><Maximize2 size={15} /></button> : null}
+            <button type="button" className="topbar-icon" onClick={toggleTheme} title={theme === "dark" ? "切换浅色主题" : "切换深色主题"}>
+              {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
           </div>
         </header>
         <main className="nas-main">

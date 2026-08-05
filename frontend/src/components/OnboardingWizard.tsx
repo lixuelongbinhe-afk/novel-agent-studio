@@ -39,13 +39,16 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
         aria-modal="true"
         aria-labelledby="onboarding-title"
       >
-        <div className="wizard-progress" aria-label="首启配置进度">
-          <div className={effectiveStep >= 1 ? "active" : ""}>1. 欢迎</div>
-          <div className={effectiveStep >= 2 ? "active" : ""}>2. 配置模型</div>
-          <div className={effectiveStep >= 3 ? "active" : ""}>3. 新建项目</div>
-        </div>
-
-        <AnimatePresence mode="wait">
+        <div className="wizard-layout">
+          <aside className="wizard-progress" aria-label="首启配置进度">
+            <strong>开始使用</strong>
+            <div className={effectiveStep >= 1 ? "active" : ""}><b>1</b><span>欢迎<small>了解本地工作区</small></span></div>
+            <div className={effectiveStep >= 2 ? "active" : ""}><b>2</b><span>配置模型<small>连接首个 AI 服务</small></span></div>
+            <div className={effectiveStep >= 3 ? "active" : ""}><b>3</b><span>新建项目<small>创建第一本小说</small></span></div>
+            <footer>设置会保存在本机，之后可随时修改。</footer>
+          </aside>
+          <main className="wizard-main">
+          <AnimatePresence mode="wait">
           {effectiveStep === 1 ? (
             <motion.div key="welcome" {...stepMotion}>
               <h2 id="onboarding-title">欢迎使用 Novel Agent Studio</h2>
@@ -69,7 +72,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               <ProjectDialogForm onSuccess={handleFinish} onCancel={null} />
             </motion.div>
           ) : null}
-        </AnimatePresence>
+          </AnimatePresence>
+          </main>
+        </div>
       </motion.section>
     </motion.div>
   );

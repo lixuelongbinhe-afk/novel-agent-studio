@@ -1,8 +1,10 @@
 import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
+import { MotionConfig } from "framer-motion";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import "./styles.css";
+import "./design-v2.css";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppShell } from "./components/AppShell";
 import { Spinner } from "./components/Spinner";
@@ -52,14 +54,21 @@ const router = createBrowserRouter([
   }
 ]);
 
-document.documentElement.dataset.theme = "dark";
+try {
+  const persisted = JSON.parse(localStorage.getItem("novel-agent-studio-ui") ?? "null") as { state?: { theme?: "light" | "dark" } } | null;
+  document.documentElement.dataset.theme = persisted?.state?.theme ?? "dark";
+} catch {
+  document.documentElement.dataset.theme = "dark";
+}
 
 void localApiTokenReady.then(() => {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <AppErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
+          <MotionConfig reducedMotion="user">
+            <RouterProvider router={router} />
+          </MotionConfig>
         </QueryClientProvider>
       </AppErrorBoundary>
     </React.StrictMode>
