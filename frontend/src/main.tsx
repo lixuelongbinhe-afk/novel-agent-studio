@@ -3,12 +3,13 @@ import ReactDOM from "react-dom/client";
 import { MotionConfig } from "framer-motion";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import "./styles.css";
-import "./design-v2.css";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppShell } from "./components/AppShell";
 import { Spinner } from "./components/Spinner";
 import { localApiTokenReady } from "./api/localAuth";
+import "./styles.css";
+import "./design-v2.css";
+import "./apple-design.css";
 
 const HomePage = lazy(() => import("./pages/HomePage").then((module) => ({ default: module.HomePage })));
 const StudioPage = lazy(() => import("./pages/StudioPage").then((module) => ({ default: module.StudioPage })));

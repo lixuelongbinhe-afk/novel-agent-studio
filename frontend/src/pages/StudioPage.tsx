@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   Clock3,
   Download,
   FileCheck2,
@@ -33,6 +34,7 @@ import {
   SquareTerminal,
   SplitSquareVertical,
   Trash2,
+  EyeOff,
   Undo2,
   WandSparkles,
   X
@@ -103,6 +105,7 @@ export function StudioPage() {
   const [selectedText, setSelectedText] = useState("");
   const [notice, setNotice] = useState("");
   const [consoleOpen, setConsoleOpen] = useState(true);
+  const [consoleHidden, setConsoleHidden] = useState(false);
   const rightPanelOpen = useUiStore((state) => state.rightPanelOpen);
   const toggleRightPanel = useUiStore((state) => state.toggleRightPanel);
   const generationKeys = useRef(new WeakMap<object, string>());
@@ -539,7 +542,13 @@ export function StudioPage() {
             onBudgetUpdate={(value) => updateState.mutate(value)}
           />
         </motion.aside>
-        <StudioAgentConsole overview={overview} open={consoleOpen} onToggle={() => setConsoleOpen((value) => !value)} onOpenProgress={() => { setRightTab("progress"); if (!rightPanelOpen) toggleRightPanel(); }} />
+        {consoleHidden ? (
+          <button type="button" className="agent-console-restore" onClick={() => { setConsoleHidden(false); setConsoleOpen(true); }}>
+            <SquareTerminal size={13} /><span>显示 Agent 控制台</span><ChevronUp size={13} />
+          </button>
+        ) : (
+          <StudioAgentConsole overview={overview} open={consoleOpen} onToggle={() => setConsoleOpen((value) => !value)} onHide={() => setConsoleHidden(true)} onOpenProgress={() => { setRightTab("progress"); if (!rightPanelOpen) toggleRightPanel(); }} />
+        )}
       </div>
 
       <AnimatePresence>
@@ -569,7 +578,7 @@ export function StudioPage() {
   );
 }
 
-function StudioAgentConsole({ overview, open, onToggle, onOpenProgress }: { overview: StudioOverview; open: boolean; onToggle: () => void; onOpenProgress: () => void }) {
+function StudioAgentConsole({ overview, open, onToggle, onHide, onOpenProgress }: { overview: StudioOverview; open: boolean; onToggle: () => void; onHide: () => void; onOpenProgress: () => void }) {
   const running = overview.jobs.filter((job) => ["queued", "running"].includes(job.status));
   const recent = overview.jobs.slice(0, 4);
   return <section className={open ? "agent-console is-open" : "agent-console"}>
@@ -577,7 +586,7 @@ function StudioAgentConsole({ overview, open, onToggle, onOpenProgress }: { over
       <button type="button" className="agent-console-title" onClick={onToggle} aria-expanded={open}>
         <SquareTerminal size={15} /><strong>Agent 控制台</strong><span>{running.length ? `${running.length} 个任务运行中` : "等待任务"}</span><ChevronDown size={14} />
       </button>
-      <div><span>{overview.usage.tokens.toLocaleString()} tokens</span><span>{overview.usage.currency} {overview.usage.spent.toFixed(4)}</span><button type="button" onClick={onOpenProgress}>查看全部</button></div>
+      <div><span>{overview.usage.tokens.toLocaleString()} tokens</span><span>{overview.usage.currency} {overview.usage.spent.toFixed(4)}</span><button type="button" onClick={onOpenProgress}>查看全部</button><button type="button" className="agent-console-hide" onClick={onHide} title="隐藏控制台" aria-label="隐藏控制台"><EyeOff size={13} /></button></div>
     </header>
     <AnimatePresence initial={false}>
     {open ? <motion.div key="agent-console-body" className="agent-console-body" {...consoleTransition}>

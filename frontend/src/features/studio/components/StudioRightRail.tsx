@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   Bot,
@@ -56,33 +57,44 @@ export function StudioRightRail({
         <RailTab icon={LibraryBig} label="资料" active={activeTab === "library"} onClick={() => onTabChange("library")} />
         <RailTab icon={CircleDollarSign} label="费用" active={activeTab === "cost"} onClick={() => onTabChange("cost")} />
       </div>
-      {activeTab === "chat" ? (
-        <ChatPanel
-          overview={overview}
-          value={chatValue}
-          onChange={onChatChange}
-          onSend={onChatSend}
-          sending={chatSending}
-          onProposal={onProposal}
-        />
-      ) : null}
-      {activeTab === "reviews" ? (
-        <ReviewPanel
-          items={pending}
-          approving={approving}
-          onOpen={onReviewOpen}
-          onApprove={onReviewApprove}
-        />
-      ) : null}
-      {activeTab === "progress" ? <ProgressPanel overview={overview} /> : null}
-      {activeTab === "library" ? <LibraryPanel overview={overview} /> : null}
-      {activeTab === "cost" ? <CostPanel overview={overview} onUpdate={onBudgetUpdate} /> : null}
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={activeTab}
+          className="rail-panel-motion"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        >
+          {activeTab === "chat" ? (
+            <ChatPanel
+              overview={overview}
+              value={chatValue}
+              onChange={onChatChange}
+              onSend={onChatSend}
+              sending={chatSending}
+              onProposal={onProposal}
+            />
+          ) : null}
+          {activeTab === "reviews" ? (
+            <ReviewPanel
+              items={pending}
+              approving={approving}
+              onOpen={onReviewOpen}
+              onApprove={onReviewApprove}
+            />
+          ) : null}
+          {activeTab === "progress" ? <ProgressPanel overview={overview} /> : null}
+          {activeTab === "library" ? <LibraryPanel overview={overview} /> : null}
+          {activeTab === "cost" ? <CostPanel overview={overview} onUpdate={onBudgetUpdate} /> : null}
+        </motion.div>
+      </AnimatePresence>
     </>
   );
 }
 
 function RailTab({ icon: Icon, label, count, active, onClick }: { icon: typeof Bot; label: string; count?: number; active: boolean; onClick: () => void }) {
-  return <button type="button" className={active ? "active" : ""} onClick={onClick} title={label}><Icon size={15} /><span>{label}</span>{count ? <b>{count}</b> : null}</button>;
+  return <button type="button" role="tab" aria-selected={active} className={active ? "active" : ""} onClick={onClick} title={label}><Icon size={15} /><span>{label}</span>{count ? <b>{count}</b> : null}{active ? <motion.i className="rail-tab-indicator" layoutId="rail-tab-indicator" transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }} /> : null}</button>;
 }
 
 function ChatPanel({ overview, value, onChange, onSend, sending, onProposal }: { overview: StudioOverview; value: string; onChange: (value: string) => void; onSend: () => void; sending: boolean; onProposal: (messageId: number, action: "apply" | "reject") => void }) {
