@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel, model_validator
 
 
 AgentOutputMode = Literal["text", "json"]
@@ -129,6 +129,10 @@ class WorkflowNodeWrite(BaseModel):
     position_x: float = Field(default=0, ge=-1_000_000, le=1_000_000)
     position_y: float = Field(default=0, ge=-1_000_000, le=1_000_000)
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowSnapshotItem(RootModel[dict[str, JsonValue]]):
+    """运行快照中的动态资源记录。"""
 
 
 class WorkflowEdgeWrite(BaseModel):

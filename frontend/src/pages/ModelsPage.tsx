@@ -1,5 +1,6 @@
-import { FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Braces,
   CheckCircle2,
@@ -14,73 +15,8 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { StudioProvider, studioApi } from "../api/studio";
-
-type PresetKey =
-  | "deepseek"
-  | "openai"
-  | "anthropic"
-  | "gemini"
-  | "xai"
-  | "openrouter"
-  | "openai_compatible";
-
-const presets: Record<PresetKey, { label: string; baseUrl: string; model: string; env: string }> = {
-  deepseek: {
-    label: "DeepSeek",
-    baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-v4-flash",
-    env: "DEEPSEEK_API_KEY"
-  },
-  openai: {
-    label: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-5-mini",
-    env: "OPENAI_API_KEY"
-  },
-  anthropic: {
-    label: "Anthropic",
-    baseUrl: "https://api.anthropic.com",
-    model: "claude-sonnet-4-5",
-    env: "ANTHROPIC_API_KEY"
-  },
-  gemini: {
-    label: "Gemini",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    model: "gemini-2.5-flash",
-    env: "GEMINI_API_KEY"
-  },
-  xai: {
-    label: "xAI / Grok",
-    baseUrl: "https://api.x.ai/v1",
-    model: "grok-4",
-    env: "XAI_API_KEY"
-  },
-  openrouter: {
-    label: "OpenRouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    model: "openai/gpt-4.1-mini",
-    env: "OPENROUTER_API_KEY"
-  },
-  openai_compatible: {
-    label: "OpenAI 兼容服务",
-    baseUrl: "https://",
-    model: "",
-    env: "PROVIDER_API_KEY"
-  }
-};
-
-function initialForm(preset: PresetKey = "deepseek") {
-  const item = presets[preset];
-  return {
-    preset,
-    name: item.label,
-    base_url: item.baseUrl,
-    model: item.model,
-    api_key: "",
-    use_env: false,
-    env_var_name: item.env
-  };
-}
+import { ProviderDialogForm } from "../components/ProviderDialogForm";
+import { dialogBackdrop, dialogCard } from "../utils/motion";
 
 export function ModelsPage() {
   const queryClient = useQueryClient();
@@ -89,36 +25,23 @@ export function ModelsPage() {
     queryFn: studioApi.providers
   });
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState(initialForm());
   const [editingKey, setEditingKey] = useState<StudioProvider | null>(null);
   const [replacementKey, setReplacementKey] = useState("");
   const [testingId, setTestingId] = useState<number | null>(null);
   const [results, setResults] = useState<Record<number, { ok: boolean; message: string }>>({});
   const [error, setError] = useState("");
 
-  const connected = useMemo(
-    () => providers.filter((provider) => !["mock", "ollama", "ollama_native"].includes(provider.provider_type)),
-    [providers]
-  );
+  const connected = useMemo(() => providers.filter((provider) => provider.provider_type !== "mock"), [providers]);
+  const providerGroups = useMemo(() => {
+    const local = connected.filter((provider) => ["ollama", "ollama_native"].includes(provider.provider_type) || /localhost|127\.0\.0\.1/i.test(provider.base_url));
+    const cloud = connected.filter((provider) => !local.includes(provider));
+    return [
+      { label: "本地服务", items: local },
+      { label: "云端服务", items: cloud }
+    ].filter((group) => group.items.length > 0);
+  }, [connected]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["studio-providers"] });
-  const create = useMutation({
-    mutationFn: () => studioApi.setupProvider({
-      preset: form.preset,
-      name: form.name,
-      base_url: form.base_url,
-      model: form.model,
-      api_key: form.use_env ? null : form.api_key,
-      env_var_name: form.use_env ? form.env_var_name : null
-    }),
-    onSuccess: async () => {
-      setDialogOpen(false);
-      setForm(initialForm());
-      setError("");
-      await refresh();
-    },
-    onError: (reason: Error) => setError(reason.message)
-  });
   const remove = useMutation({
     mutationFn: studioApi.deleteProvider,
     onSuccess: refresh
@@ -132,16 +55,6 @@ export function ModelsPage() {
     },
     onError: (reason: Error) => setError(reason.message)
   });
-
-  function choosePreset(preset: PresetKey) {
-    setForm(initialForm(preset));
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    create.mutate();
-  }
 
   async function testProvider(provider: StudioProvider) {
     setTestingId(provider.id);
@@ -183,6 +96,9 @@ export function ModelsPage() {
       </div>
 
       <div className="provider-list">
+        <div className="provider-list-head" aria-hidden="true">
+          <span>服务</span><span>默认模型</span><span>凭据</span><span>健康状态</span><span>操作</span>
+        </div>
         {isLoading ? <div className="loading-line">正在读取服务...</div> : null}
         {!isLoading && connected.length === 0 ? (
           <button type="button" className="empty-providers" onClick={() => setDialogOpen(true)}>
@@ -191,14 +107,16 @@ export function ModelsPage() {
             <span>DeepSeek、OpenAI、Anthropic、Gemini、xAI 或 OpenRouter</span>
           </button>
         ) : null}
-        {connected.map((provider) => {
-          const result = results[provider.id];
-          return (
-            <article className="provider-row" key={provider.id}>
-              <div className="provider-icon"><PlugZap size={18} /></div>
+        {providerGroups.map((group) => (
+          <section className="provider-group" key={group.label}>
+            <header>{group.label}<span>{group.items.length}</span></header>
+            {group.items.map((provider) => {
+              const result = results[provider.id];
+              return (
+              <article className="provider-row" key={provider.id}>
               <div className="provider-identity">
-                <strong>{provider.name}</strong>
-                <span>{provider.base_url}</span>
+                <span className="provider-name"><i className={`health-dot ${result?.ok ? "ok" : result ? "failed" : "idle"}`} /><strong>{provider.name}</strong></span>
+                <span title={provider.base_url}>{provider.base_url}</span>
               </div>
               <div className="provider-model">
                 <span>默认模型</span>
@@ -212,80 +130,56 @@ export function ModelsPage() {
               </div>
               <div className={`provider-test ${result?.ok ? "ok" : result ? "failed" : ""}`}>
                 {result?.ok ? <CheckCircle2 size={14} /> : null}
-                <span>{result?.message ?? "尚未测试"}</span>
+                <span>{result?.message ?? "待测试"}</span>
               </div>
-              <div className="row-actions">
-                <button type="button" className="icon-button" title="测试连接" onClick={() => testProvider(provider)}>
-                  {testingId === provider.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+              <div className="provider-actions">
+                <button type="button" title="更新 API Key" onClick={() => setEditingKey(provider)}>
+                  <KeyRound size={13} />设置
                 </button>
-                <button type="button" className="icon-button" title="更新 API Key" onClick={() => setEditingKey(provider)}>
-                  <KeyRound size={16} />
+                <button type="button" title="测试连接" onClick={() => testProvider(provider)}>
+                  {testingId === provider.id ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}测试
                 </button>
                 <button
                   type="button"
-                  className="icon-button danger"
+                  className="danger"
                   title="删除服务"
                   onClick={() => window.confirm(`删除 ${provider.name}？`) && remove.mutate(provider.id)}
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={13} />删除
                 </button>
               </div>
             </article>
-          );
-        })}
+            );})}
+          </section>
+        ))}
       </div>
 
-      {dialogOpen ? (
-        <div className="dialog-backdrop" role="presentation">
-          <form className="dialog provider-dialog" onSubmit={submit}>
-            <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
-            <div className="preset-grid">
-              {(Object.keys(presets) as PresetKey[]).map((key) => (
-                <button key={key} type="button" className={form.preset === key ? "selected" : ""} onClick={() => choosePreset(key)}>
-                  {presets[key].label}
-                </button>
-              ))}
-            </div>
-            <div className="form-grid two-columns">
-              <label><span>显示名称</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-              <label>
-                <span>模型名称</span>
-                {form.preset === "deepseek" ? (
-                  <select required value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })}>
-                    <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
-                    <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
-                  </select>
-                ) : (
-                  <input required value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="输入供应商提供的模型 ID" />
-                )}
-              </label>
-              <label className="wide"><span>API 地址</span><input required value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} /></label>
-            </div>
-            <div className="segmented-control compact">
-              <button type="button" className={!form.use_env ? "active" : ""} onClick={() => setForm({ ...form, use_env: false })}>保存 API Key</button>
-              <button type="button" className={form.use_env ? "active" : ""} onClick={() => setForm({ ...form, use_env: true })}>读取环境变量</button>
-            </div>
-            {form.use_env ? (
-              <label><span>环境变量名</span><input required value={form.env_var_name} onChange={(event) => setForm({ ...form, env_var_name: event.target.value.toUpperCase() })} /></label>
-            ) : (
-              <label><span>API Key</span><input required type="password" autoComplete="new-password" value={form.api_key} onChange={(event) => setForm({ ...form, api_key: event.target.value })} placeholder="sk-..." /></label>
-            )}
-            {error ? <div className="form-error">{error}</div> : null}
-            <footer><button type="button" className="secondary-button" onClick={() => setDialogOpen(false)}>取消</button><button type="submit" className="primary-button" disabled={create.isPending}>{create.isPending ? <LoaderCircle className="spin" size={16} /> : <PlugZap size={16} />} 保存服务</button></footer>
-          </form>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {dialogOpen ? (
+          <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
+            <motion.section className="dialog provider-dialog" role="dialog" aria-modal="true" {...dialogCard}>
+              <header><div><h2>添加模型服务</h2><span>创建后即可分配给创作 Agent</span></div><button type="button" className="icon-button" aria-label="关闭添加模型服务" title="关闭" onClick={() => setDialogOpen(false)}><X size={17} /></button></header>
+              <ProviderDialogForm
+                onSuccess={() => setDialogOpen(false)}
+                onCancel={() => setDialogOpen(false)}
+              />
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
-      {editingKey ? (
-        <div className="dialog-backdrop" role="presentation">
-          <form className="dialog small-dialog" onSubmit={(event) => { event.preventDefault(); updateKey.mutate(); }}>
-            <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
-            <label><span>新的 API Key</span><input required autoFocus type="password" autoComplete="new-password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} /></label>
-            {error ? <div className="form-error">{error}</div> : null}
-            <footer><button type="button" className="secondary-button" onClick={() => setEditingKey(null)}>取消</button><button type="submit" className="primary-button" disabled={updateKey.isPending}><KeyRound size={16} /> 更新</button></footer>
-          </form>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {editingKey ? (
+          <motion.div className="dialog-backdrop" role="presentation" {...dialogBackdrop}>
+            <motion.form className="dialog small-dialog" onSubmit={(event) => { event.preventDefault(); updateKey.mutate(); }} {...dialogCard}>
+              <header><div><h2>更新 API Key</h2><span>{editingKey.name}</span></div><button type="button" className="icon-button" aria-label="关闭更新 API Key" title="关闭" onClick={() => setEditingKey(null)}><X size={17} /></button></header>
+              <label><span>新的 API Key</span><input required autoFocus type="password" autoComplete="new-password" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} /></label>
+              {error ? <div className="form-error">{error}</div> : null}
+              <footer><button type="button" className="secondary-button" onClick={() => setEditingKey(null)}>取消</button><button type="submit" className="primary-button" disabled={updateKey.isPending}><KeyRound size={16} /> 更新</button></footer>
+            </motion.form>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </section>
   );
 }

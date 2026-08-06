@@ -46,7 +46,7 @@ jobs:
           python -m pytest -q
           tests/test_database_writer.py
           tests/test_workflow_scheduler.py
-          tests/test_phase5_workflows.py
+          tests/test_workflow_runtime.py
           -k "bounded or eight_streaming or cancel or shutdown or forced_process"
         working-directory: backend
       - run: python -m pytest -q --junitxml=../artifacts/backend-junit.xml

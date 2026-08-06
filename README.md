@@ -1,18 +1,21 @@
 # Novel Agent Studio
 
-Novel Agent Studio（小说智能体工作室）v2.2.8 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
+![创建项目](docs/media/01-创建项目.png)
+![内容审核](docs/media/02-内容审核.png)
+
+Novel Agent Studio（小说智能体工作室）v2.2.11 是面向长篇小说创作的本地优先多 Agent 工作台。它同时支持“从创意或大纲创作新小说”和“导入半成品小说继续写作”，包含真实的 React 前端、FastAPI 后端、SQLite 数据库和 Windows 桌面程序，不是静态原型。
 
 ## Windows 直接使用
 
 安装版：
 
-1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载 `NovelAgentStudio-Setup-2.2.8.exe` 并双击运行。
+1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载 `NovelAgentStudio-Setup-2.2.11.exe` 并双击运行。
 2. 安装完成后，从开始菜单打开“小说智能体工作室”。
 3. 实际程序位于 `%LOCALAPPDATA%\Programs\NovelAgentStudio\NovelAgentStudio.exe`。
 
 免安装版：
 
-1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载并完整解压 `NovelAgentStudio-Portable-2.2.8.zip`，不要只拖出单个 EXE。
+1. 从 [GitHub Releases](https://github.com/lixuelongbinhe-afk/novel-agent-studio/releases/latest) 下载并完整解压 `NovelAgentStudio-Portable-2.2.11.zip`，不要只拖出单个 EXE。
 2. 双击解压目录中的 `NovelAgentStudio\NovelAgentStudio.exe`。
 
 从 v2.1.2 升级后，如果旧项目把“章节规划师”显示成正文且缺少后续章节，请打开项目并点击顶部的“修复章节结构”。程序会先创建永久特殊快照，再将错误占位章移入回收状态，并按项目设定补齐缺失章节。
@@ -80,7 +83,7 @@ DeepSeek 官方预设默认使用 `deepseek-v4-flash`，并可切换到 `deepsee
 
 ## 本地开发：首次初始化
 
-源码运行需要 Python 3.12、Node.js 20+ 和 pnpm 11。Windows 首次 clone 后，在仓库根目录执行：
+源码运行需要 Python 3.12、Node.js 24 和 pnpm 11。Windows 首次 clone 后，在仓库根目录执行：
 
 ```powershell
 py -3.12 -m venv backend\.venv
@@ -119,7 +122,7 @@ cd ..
 .\scripts\package-desktop.ps1
 ```
 
-正式打包要求当前提交带有 `v2.2.8` 标签且 Git 工作区干净。脚本会完整构建前端和 PyInstaller 程序，执行控制台自检及真实 GUI 生命周期自检，再生成安装包、便携 ZIP、SHA-256 文件和包内构建来源清单。开发中的本地试包可显式使用 `-AllowDirty -AllowUntagged`，该状态会记录在来源清单中。
+正式打包要求当前提交带有 `v2.2.11` 标签且 Git 工作区干净。脚本会完整构建前端和 PyInstaller 程序，执行控制台自检及真实 GUI 生命周期自检，再生成安装包、便携 ZIP、SHA-256 文件和包内构建来源清单。开发中的本地试包可显式使用 `-AllowDirty -AllowUntagged`，该状态会记录在来源清单中。
 
 ## 质量检查
 
@@ -136,8 +139,13 @@ pnpm run build
 pnpm run e2e
 ```
 
-最终发布记录见 `docs/FINAL_AUDIT.md`、`docs/SECURITY_AUDIT.md`、`docs/PERFORMANCE_AUDIT.md`、`docs/RELEASE_CHECKLIST.md` 和 `docs/KNOWN_LIMITATIONS.md`。
+发布状态与未关闭项见 `docs/FINAL_AUDIT.md`；安全、性能、发布门禁和已知限制的细节分别见 `docs/SECURITY_AUDIT.md`、`docs/PERFORMANCE_AUDIT.md`、`docs/RELEASE_CHECKLIST.md` 和 `docs/KNOWN_LIMITATIONS.md`。
 
 ## 安全边界
 
 本软件面向本机单用户。桌面端每次启动都会生成随机 API 会话令牌，前端自动使用 Bearer Token，并强制后端仅监听 loopback；这不是登录、TLS 或公网多租户认证，因此不应把端口转发到局域网或互联网。数据库默认未加密，完整备份可选择密码加密；本地构建在未配置证书时仍是未签名产物。完整边界和残余风险见 `docs/SECURITY_AUDIT.md`。
+
+## 许可
+
+本项目以 MIT 许可发布，详见 [LICENSE](LICENSE)。
+发布包未经过商业代码签名，请使用 `SHA256SUMS.txt` 校验来源。

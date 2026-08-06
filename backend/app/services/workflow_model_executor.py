@@ -14,6 +14,7 @@ from app.schemas import (
     NormalizedContentPart,
     NormalizedMessage,
 )
+from app.schemas.workflows import WorkflowNodeWrite, WorkflowSnapshotItem
 from app.services import model_execution
 from app.services.workflow_events import WorkflowEventBus
 from app.services.workflow_streaming import StreamOutputBuffer
@@ -24,8 +25,8 @@ from app.services.workflow_types import WorkflowNodeError
 class WorkflowModelExecutionHooks:
     session_factory: Callable[[], Session]
     event_bus: WorkflowEventBus
-    snapshot_item: Callable[[int, str, int], Awaitable[dict[str, Any]]]
-    plan_node: Callable[[int, str], Awaitable[dict[str, Any]]]
+    snapshot_item: Callable[[int, str, int], Awaitable[WorkflowSnapshotItem]]
+    plan_node: Callable[[int, str], Awaitable[WorkflowNodeWrite]]
     check_budget: Callable[[int, str, dict[str, Any], Any], Awaitable[None]]
     invocation_totals: Callable[[str], Awaitable[dict[str, Any]]]
     update_attempt_accounting: Callable[[int, dict[str, Any]], Awaitable[None]]
@@ -51,11 +52,11 @@ async def execute_agent_attempt(
     model_name = "route-selected"
     provider_id: int | None = None
     if profile_id is not None:
-        profile = await hooks.snapshot_item(run_id, "models", profile_id)
+        profile = (await hooks.snapshot_item(run_id, "models", profile_id)).root
         model_name = str(profile["name"])
-        provider_id = int(profile["provider_account_id"])
+        provider_id = cast(int, profile["provider_account_id"])
     plan_node = await hooks.plan_node(run_id, node_key)
-    config = cast(dict[str, Any], plan_node.get("config", {}))
+    config = plan_node.config
     messages = []
     if system_prompt:
         messages.append(

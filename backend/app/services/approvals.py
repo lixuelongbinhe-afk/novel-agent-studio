@@ -5,11 +5,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404, require_revision
 from app.schemas import (
     ApprovalCreate,
@@ -35,21 +38,21 @@ def create_approval(db: Session, payload: ApprovalCreate) -> models.ApprovalRequ
     project = get_or_404(db, models.Project, payload.project_id)
     run = cast(models.WorkflowRun, get_or_404(db, models.WorkflowRun, payload.workflow_run_id))
     if run.project_id != project.id:
-        raise HTTPException(status_code=422, detail="审批运行不属于所选项目")
+        raise InvalidInputError("审批运行不属于所选项目")
     if run.status in TERMINAL_RUN_STATUSES or run.cancel_requested:
-        raise HTTPException(status_code=409, detail="终态或已取消运行不能创建审批")
+        raise ConflictError("终态或已取消运行不能创建审批")
     node_run = cast(models.NodeRun, get_or_404(db, models.NodeRun, payload.node_run_id))
     if node_run.workflow_run_id != run.id or node_run.node_key != payload.node_key:
-        raise HTTPException(status_code=422, detail="审批节点与运行节点不匹配")
+        raise InvalidInputError("审批节点与运行节点不匹配")
     if payload.snapshot.approval_type != payload.approval_type:
-        raise HTTPException(status_code=422, detail="审批快照类型不匹配")
+        raise InvalidInputError("审批快照类型不匹配")
     if payload.parent_approval_id is not None:
         parent = cast(
             models.ApprovalRequest,
             get_or_404(db, models.ApprovalRequest, payload.parent_approval_id),
         )
         if parent.workflow_run_id != run.id or parent.node_key != payload.node_key:
-            raise HTTPException(status_code=422, detail="父审批不属于同一运行节点")
+            raise InvalidInputError("父审批不属于同一运行节点")
     snapshot_json = _dump(payload.snapshot.model_dump(mode="json"))
     snapshot_hash = _hash_json(payload.snapshot.model_dump(mode="json"))
     existing = db.scalar(
@@ -62,7 +65,7 @@ def create_approval(db: Session, payload: ApprovalCreate) -> models.ApprovalRequ
     if existing is not None:
         if existing.snapshot_hash == snapshot_hash:
             return existing
-        raise HTTPException(status_code=409, detail="审批快照 revision 已被其他内容占用")
+        raise ConflictError("审批快照 revision 已被其他内容占用")
     row = models.ApprovalRequest(
         project_id=project.id,
         workflow_run_id=run.id,
@@ -143,20 +146,20 @@ def decide_approval(
                 idempotent_replay=True,
             )
         if row.decision_idempotency_key == payload.idempotency_key:
-            raise HTTPException(status_code=409, detail="幂等键已用于不同审批决定")
+            raise ConflictError("幂等键已用于不同审批决定")
     _expire_row(row)
     if row.status != "pending" or row.superseded_by_id is not None:
-        raise HTTPException(status_code=409, detail=f"审批当前状态为 {row.status}，不能再次处理")
+        raise ConflictError(f"审批当前状态为 {row.status}，不能再次处理")
     require_revision(row, payload.expected_revision)
     run = cast(models.WorkflowRun, get_or_404(db, models.WorkflowRun, row.workflow_run_id))
     if run.cancel_requested or run.status in {"cancelled", "interrupted"}:
         _resolve(row, "cancelled", "cancel", "运行已取消", None, None)
-        raise HTTPException(status_code=409, detail="运行已取消，审批不可继续")
+        raise ConflictError("运行已取消，审批不可继续")
 
     replacement: models.ApprovalRequest | None = None
     if payload.action == "edit":
         if row.approval_type == "change_set":
-            raise HTTPException(status_code=422, detail="ChangeSet 请使用逐项编辑接口")
+            raise InvalidInputError("ChangeSet 请使用逐项编辑接口")
         replacement = supersede_with_value(
             db,
             row,
@@ -196,7 +199,7 @@ def supersede_with_value(
     round_number: int | None = None,
 ) -> models.ApprovalRequest:
     if row.status != "pending" or row.superseded_by_id is not None:
-        raise HTTPException(status_code=409, detail="只有当前 pending 审批可以被替代")
+        raise ConflictError("只有当前 pending 审批可以被替代")
     snapshot = approval_snapshot(row).model_copy(
         update={
             "value": value,
@@ -246,9 +249,9 @@ def create_revision_approval(
     note: str,
 ) -> models.ApprovalRequest:
     if previous.status != "changes_requested":
-        raise HTTPException(status_code=409, detail="只有 changes_requested 审批可创建修订")
+        raise ConflictError("只有 changes_requested 审批可创建修订")
     if previous.round_number >= 3:
-        raise HTTPException(status_code=409, detail="审批修订已达到最多 3 轮")
+        raise ConflictError("审批修订已达到最多 3 轮")
     snapshot = approval_snapshot(previous).model_copy(
         update={
             "value": value,

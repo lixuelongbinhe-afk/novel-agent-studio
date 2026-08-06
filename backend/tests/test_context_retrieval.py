@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -34,6 +33,7 @@ from app.services import (
     workflows,
 )
 from app.services.context_retrieval import CompositeRetriever, RetrievalCandidate, RetrievalQuery
+from app.services.errors import DomainError, ErrorKind
 
 
 @pytest.fixture
@@ -758,13 +758,13 @@ def test_context_memory_rejects_stale_revision_and_cross_project_entity(
             ChapterSummaryUpdate.model_validate(update),
         )
         assert changed.revision == summary.revision + 1
-        with pytest.raises(HTTPException) as stale:
+        with pytest.raises(DomainError) as stale:
             context_memory.update_chapter_summary(
                 db,
                 summary.id,
                 ChapterSummaryUpdate.model_validate(update),
             )
-        assert stale.value.status_code == 409
+        assert stale.value.kind is ErrorKind.CONFLICT
 
         other = models.Project(title="另一个项目")
         db.add(other)
@@ -778,7 +778,7 @@ def test_context_memory_rejects_stale_revision_and_cross_project_entity(
         )
         db.add(foreign_entity)
         db.flush()
-        with pytest.raises(HTTPException) as boundary:
+        with pytest.raises(DomainError) as boundary:
             context_memory.create_chapter_entity_link(
                 db,
                 ChapterEntityLinkCreate(
@@ -787,4 +787,4 @@ def test_context_memory_rejects_stale_revision_and_cross_project_entity(
                     link_type="manual",
                 ),
             )
-        assert boundary.value.status_code == 422
+        assert boundary.value.kind is ErrorKind.INVALID_INPUT

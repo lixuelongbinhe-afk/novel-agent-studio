@@ -6,7 +6,8 @@ import { useUiStore } from "../stores/ui";
 import { AppShell } from "./AppShell";
 
 const apiMocks = vi.hoisted(() => ({
-  dashboard: vi.fn()
+  dashboard: vi.fn(),
+  providers: vi.fn()
 }));
 
 vi.mock("../api/studio", () => ({
@@ -34,7 +35,9 @@ function renderShell(initialPath = "/") {
 describe("AppShell", () => {
   beforeEach(() => {
     localStorage.clear();
+    localStorage.setItem("onboarding-done", "true");
     useUiStore.setState({ selectedProjectId: null, sidebarCollapsed: false });
+    apiMocks.providers.mockReset().mockResolvedValue([]);
     apiMocks.dashboard.mockReset().mockResolvedValue([{
       id: 12,
       title: "侧栏测试小说",
@@ -47,6 +50,13 @@ describe("AppShell", () => {
       updated_at: new Date().toISOString(),
       entry_mode: "creative"
     }]);
+  });
+
+  it("shows onboarding only for a fresh profile without providers", async () => {
+    localStorage.removeItem("onboarding-done");
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "欢迎使用 Novel Agent Studio" })).toBeInTheDocument();
   });
 
   it("collapses to clickable brand and status targets without arrow controls", async () => {

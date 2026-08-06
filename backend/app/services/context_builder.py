@@ -5,11 +5,16 @@ import json
 from dataclasses import dataclass
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InternalError,
+    InvalidInputError,
+    NotFoundError,
+)
 from app.repositories import get_or_404
 from app.schemas.context import (
     ALL_CLASSIFICATIONS,
@@ -276,13 +281,13 @@ def build_context(
 def read_context_build(db: Session, build_id: int) -> ContextBuildRead:
     row = db.get(models.ContextBuild, build_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="ContextBuild not found")
+        raise NotFoundError("ContextBuild not found")
     value = _json_object(row.result_json)
     result = ContextBuildRead.model_validate(value)
     result.id = row.id
     result.created_at = row.created_at
     if result.build_hash != row.build_hash or result.context_text != row.context_text:
-        raise HTTPException(status_code=500, detail="上下文快照完整性校验失败")
+        raise InternalError("上下文快照完整性校验失败")
     return result
 
 
@@ -307,9 +312,9 @@ def _resolve_policy(
     else:
         row = cast(models.ContextPolicy, get_or_404(db, models.ContextPolicy, policy_id))
     if row.project_id != project_id:
-        raise HTTPException(status_code=422, detail="ContextPolicy 不属于当前项目")
+        raise InvalidInputError("ContextPolicy 不属于当前项目")
     if not row.enabled:
-        raise HTTPException(status_code=409, detail="ContextPolicy 已停用")
+        raise ConflictError("ContextPolicy 已停用")
     return row
 
 
@@ -342,7 +347,7 @@ def _resolve_target(
     for model_id in dict.fromkeys(model_ids):
         profile = cast(models.ModelProfile, get_or_404(db, models.ModelProfile, model_id))
         if not profile.enabled:
-            raise HTTPException(status_code=409, detail=f"ModelProfile #{model_id} 已停用")
+            raise ConflictError(f"ModelProfile #{model_id} 已停用")
         profiles.append(profile)
     by_provider: dict[int, list[int]] = {}
     for profile in profiles:
@@ -355,7 +360,7 @@ def _resolve_target(
             models.ProviderAccount, get_or_404(db, models.ProviderAccount, provider_id)
         )
         if not provider.enabled:
-            raise HTTPException(status_code=409, detail=f"Provider {provider.name} 已停用")
+            raise ConflictError(f"Provider {provider.name} 已停用")
         stored = db.scalar(
             select(models.ProviderDataPolicy).where(
                 models.ProviderDataPolicy.provider_account_id == provider.id,
@@ -612,7 +617,7 @@ def _validate_chapter(
         select(models.Volume.project_id).where(models.Volume.id == chapter.volume_id)
     )
     if owner != project_id:
-        raise HTTPException(status_code=422, detail="Chapter 不属于当前项目")
+        raise InvalidInputError("Chapter 不属于当前项目")
     return chapter
 
 
@@ -630,9 +635,9 @@ def _validate_scene(
         select(models.Volume.project_id).where(models.Volume.id == owner_chapter.volume_id)
     )
     if owner != project_id:
-        raise HTTPException(status_code=422, detail="Scene 不属于当前项目")
+        raise InvalidInputError("Scene 不属于当前项目")
     if chapter is not None and scene.chapter_id != chapter.id:
-        raise HTTPException(status_code=422, detail="Scene 不属于所选 Chapter")
+        raise InvalidInputError("Scene 不属于所选 Chapter")
     return scene
 
 
@@ -643,9 +648,9 @@ def _validate_agent(
         return None
     agent = cast(models.AgentDefinition, get_or_404(db, models.AgentDefinition, agent_id))
     if agent.project_id != project_id:
-        raise HTTPException(status_code=422, detail="Agent 不属于当前项目")
+        raise InvalidInputError("Agent 不属于当前项目")
     if not agent.enabled:
-        raise HTTPException(status_code=409, detail="Agent 已停用")
+        raise ConflictError("Agent 已停用")
     return agent
 
 

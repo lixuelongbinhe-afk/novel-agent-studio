@@ -6,12 +6,16 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from jsonschema import Draft202012Validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    BadRequestError,
+    ConflictError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404
 from app.schemas import (
     CapabilityProbeRead,
@@ -261,7 +265,7 @@ async def run_capability_probe(
         get_or_404(db, models.ProviderAccount, profile.provider_account_id),
     )
     if payload.level == "advanced" and not payload.confirm_advanced:
-        raise HTTPException(status_code=400, detail="高级探测需要明确确认")
+        raise BadRequestError("高级探测需要明确确认")
     _ensure_probe_cost_is_bounded(db, profile, provider, payload)
 
     max_requests = {"basic": 1, "standard": 3, "advanced": 4}[payload.level]
@@ -291,7 +295,7 @@ async def run_capability_probe(
         run.error_code = "capability_unsupported"
         run.completed_at = datetime.now(timezone.utc)
         db.flush()
-        raise HTTPException(status_code=400, detail="当前协议没有可用适配器") from exc
+        raise BadRequestError("当前协议没有可用适配器") from exc
 
     results: dict[str, CapabilityStatus] = {}
     try:
@@ -463,10 +467,7 @@ def _ensure_probe_cost_is_bounded(
         or pricing.output_per_million is None
         or pricing.request_fee is None
     ):
-        raise HTTPException(
-            status_code=409,
-            detail="能力探测前必须配置当前价格，未知费用不能按 0 处理",
-        )
+        raise ConflictError("能力探测前必须配置当前价格，未知费用不能按 0 处理")
     requests = {"basic": 1, "standard": 3, "advanced": 4}[payload.level]
     estimated = requests * (
         pricing.request_fee
@@ -474,10 +475,7 @@ def _ensure_probe_cost_is_bounded(
         + 64 / 1_000_000 * pricing.output_per_million
     )
     if estimated > payload.max_estimated_cost:
-        raise HTTPException(
-            status_code=409,
-            detail="能力探测的费用上限不足，请提高确认上限或调整探测级别",
-        )
+        raise ConflictError("能力探测的费用上限不足，请提高确认上限或调整探测级别")
 
 
 def _probe_text_request(model: str) -> NormalizedModelRequest:
@@ -611,5 +609,5 @@ def _probe_read(run: models.CapabilityProbeRun) -> CapabilityProbeRead:
 def _capability_name(value: str) -> str:
     normalized = value.strip().lower()
     if not normalized or len(normalized) > 80:
-        raise HTTPException(status_code=422, detail="能力名称无效")
+        raise InvalidInputError("能力名称无效")
     return normalized

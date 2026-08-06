@@ -4,11 +4,15 @@ import json
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+    NotFoundError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas import (
     AgentDefinitionCreate,
@@ -102,7 +106,7 @@ def create_workflow(db: Session, payload: WorkflowCreate) -> WorkflowRead:
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="同一项目中工作流名称不能重复")
+        raise ConflictError("同一项目中工作流名称不能重复")
     row = models.Workflow(
         project_id=payload.project_id,
         name=payload.name.strip(),
@@ -130,7 +134,7 @@ def update_workflow(db: Session, workflow_id: int, payload: WorkflowUpdate) -> W
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="同一项目中工作流名称不能重复")
+        raise ConflictError("同一项目中工作流名称不能重复")
     row.project_id = payload.project_id
     row.name = payload.name.strip()
     row.description = payload.description
@@ -151,7 +155,7 @@ def delete_workflow(db: Session, workflow_id: int, expected_revision: int) -> No
         )
     )
     if active_run is not None:
-        raise HTTPException(status_code=409, detail="工作流有运行中的任务，不能删除")
+        raise ConflictError("工作流有运行中的任务，不能删除")
     soft_delete(row)
     db.flush()
 
@@ -164,7 +168,7 @@ def validate_workflow(db: Session, workflow_id: int) -> WorkflowValidationRead:
 def create_run(db: Session, workflow_id: int, payload: WorkflowRunCreate) -> WorkflowRunRead:
     workflow = cast(models.Workflow, get_or_404(db, models.Workflow, workflow_id))
     if not workflow.enabled:
-        raise HTTPException(status_code=409, detail="工作流已停用")
+        raise ConflictError("工作流已停用")
     graph = workflow_read(db, workflow)
     plan = compile_graph(db, workflow.project_id, graph.nodes, graph.edges)
     snapshot = _build_snapshot(db, workflow, graph, plan, payload.input)
@@ -191,11 +195,11 @@ def create_run(db: Session, workflow_id: int, payload: WorkflowRunCreate) -> Wor
 def derive_run(db: Session, source_run_id: int, payload: WorkflowRunDerive) -> WorkflowRunRead:
     source = cast(models.WorkflowRun, get_or_404(db, models.WorkflowRun, source_run_id))
     if source.status not in TERMINAL_RUN_STATUSES:
-        raise HTTPException(status_code=409, detail="只能从已结束的运行派生")
+        raise ConflictError("只能从已结束的运行派生")
     plan = _json_object(source.plan_json)
     node_map = cast(dict[str, Any], plan.get("nodes", {}))
     if payload.node_key not in node_map:
-        raise HTTPException(status_code=404, detail="派生起点不存在")
+        raise NotFoundError("派生起点不存在")
     rerun = {payload.node_key}
     if payload.mode in {"retry_descendants", "clone_from_node"}:
         descendants = cast(dict[str, list[str]], plan.get("descendants", {}))
@@ -370,7 +374,7 @@ def export_manifest(db: Session, workflow_id: int) -> WorkflowManifest:
     agent_values: list[dict[str, Any]] = []
     for agent_id in agent_ids:
         row = cast(models.AgentDefinition, get_or_404(db, models.AgentDefinition, agent_id))
-        value = agents.agent_snapshot(row)
+        value = agents.agent_snapshot(row).model_dump(mode="json")
         for key in (
             "id",
             "revision",
@@ -398,7 +402,7 @@ def import_manifest(db: Session, payload: WorkflowManifestImport) -> WorkflowRea
     for raw in payload.manifest.agents:
         source_id = raw.get("source_id")
         if not isinstance(source_id, int):
-            raise HTTPException(status_code=422, detail="Manifest Agent 缺少 source_id")
+            raise InvalidInputError("Manifest Agent 缺少 source_id")
         value = dict(raw)
         value.pop("source_id", None)
         value["project_id"] = payload.project_id
@@ -415,10 +419,7 @@ def import_manifest(db: Session, payload: WorkflowManifestImport) -> WorkflowRea
             if source_id is None:
                 continue
             if source_id not in agent_map:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Manifest 节点 {node.key} 的 Agent 不存在",
-                )
+                raise InvalidInputError(f"Manifest 节点 {node.key} 的 Agent 不存在")
             config[key] = agent_map[cast(int, source_id)]
         nodes.append(node.model_copy(update={"config": config}))
     name = _unique_workflow_name(db, payload.project_id, payload.manifest.name)
@@ -832,13 +833,13 @@ def _validate_graph_storage(nodes: list[WorkflowNodeWrite], edges: list[Workflow
     node_keys = [node.key for node in nodes]
     edge_keys = [edge.key for edge in edges]
     if len(node_keys) != len(set(node_keys)):
-        raise HTTPException(status_code=422, detail="节点 key 不能重复")
+        raise InvalidInputError("节点 key 不能重复")
     if len(edge_keys) != len(set(edge_keys)):
-        raise HTTPException(status_code=422, detail="边 key 不能重复")
+        raise InvalidInputError("边 key 不能重复")
     known = set(node_keys)
     for edge in edges:
         if edge.source not in known or edge.target not in known:
-            raise HTTPException(status_code=422, detail=f"边 {edge.key} 引用了不存在的节点")
+            raise InvalidInputError(f"边 {edge.key} 引用了不存在的节点")
 
 
 def _create_node_runs(db: Session, run_id: int, plan: dict[str, Any]) -> None:
@@ -1014,7 +1015,9 @@ def _build_snapshot(
         "input": run_input,
         "workflow": graph.model_dump(mode="json"),
         "plan_hash": plan["hash"],
-        "agents": [agents.agent_snapshot(row) for row in agent_rows],
+        "agents": [
+            agents.agent_snapshot(row).model_dump(mode="json") for row in agent_rows
+        ],
         "models": profiles,
         "providers": providers,
         "protocols": protocols,

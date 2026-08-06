@@ -361,7 +361,12 @@ def test_model_center_presets_connection_sync_and_selected_debug() -> None:
     assert response.json()["error"] is None
 
 
-def test_provider_connection_reports_missing_env_without_leaking_secret() -> None:
+def test_provider_connection_reports_missing_env_without_leaking_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.credential_store.get_provider_secret", lambda _provider_id: None
+    )
     os.environ.pop("PHASE2_MISSING_API_KEY", None)
     provider = client.post(
         "/api/model-center/providers",

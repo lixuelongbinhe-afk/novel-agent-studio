@@ -7,7 +7,7 @@ import time
 from typing import Any, cast
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import create_engine, select
@@ -40,6 +40,7 @@ from app.services import (
     workflow_validation,
     workflows,
 )
+from app.services.errors import DomainError
 
 
 @pytest.fixture
@@ -316,7 +317,7 @@ def test_agent_versioning_and_safe_templates(
         unsafe = agent_payload(
             project.id, profile.id, name="不安全", prompt="{input.__class__}"
         )
-        with pytest.raises(HTTPException, match="无效"):
+        with pytest.raises(DomainError, match="无效"):
             agents.create_agent(db, unsafe)
 
         referenced = workflows.create_workflow(
@@ -340,7 +341,7 @@ def test_agent_versioning_and_safe_templates(
                 ],
             ),
         )
-        with pytest.raises(HTTPException, match="正被工作流引用"):
+        with pytest.raises(DomainError, match="正被工作流引用"):
             agents.delete_agent(db, updated.id, updated.revision)
         workflows.delete_workflow(db, referenced.id, referenced.revision)
         agents.delete_agent(db, updated.id, updated.revision)
@@ -888,3 +889,11 @@ def test_seed_creates_valid_parallel_mock_workflow_and_secret_free_snapshot(
         snapshot = workflows.read_run_snapshot(db, run.id).snapshot
         assert len(snapshot["agents"]) == 11
         assert all("credential_env_var" not in item for item in snapshot["providers"])
+
+
+def test_workflow_runtime_any_dict_budget_does_not_regress() -> None:
+    """快照类型化后的 dict[str, Any] 基线从 99 降至 93。"""
+    source = (
+        Path(__file__).parent.parent / "app" / "services" / "workflow_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert source.count("dict[str, Any]") <= 93

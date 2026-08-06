@@ -14,16 +14,19 @@ from app.schemas.studio import (
     ChatRequest,
     ContinuationImportRequest,
     ContinuationSettingsUpdate,
+    DashboardProjectRead,
+    GenerateResult,
     GenerateRequest,
     MessageProposalDecision,
     OutlineImportRequest,
     ProviderSecretUpdate,
     ProviderSetup,
+    ProjectOverviewRead,
     SnapshotCreate,
     StudioProjectCreate,
     StudioStateUpdate,
 )
-from app.services import document_import, studio
+from app.services import document_import, studio, studio_providers
 from app.services.studio_worker import studio_worker
 
 
@@ -31,14 +34,14 @@ router = APIRouter(prefix="/studio", tags=["studio-v2"])
 
 
 @router.get("/projects")
-def list_projects(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_projects(db: Session = Depends(get_db)) -> list[DashboardProjectRead]:
     return studio.dashboard(db)
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED)
 def create_project(
     payload: StudioProjectCreate, db: Session = Depends(get_db)
-) -> dict[str, Any]:
+) -> ProjectOverviewRead:
     with db.begin():
         return studio.create_project(db, payload)
 
@@ -46,7 +49,7 @@ def create_project(
 @router.post("/continuations", status_code=status.HTTP_201_CREATED)
 def create_continuation(
     payload: ContinuationImportRequest, db: Session = Depends(get_db)
-) -> dict[str, Any]:
+) -> ProjectOverviewRead:
     with db.begin():
         return studio.create_continuation_project(db, payload)
 
@@ -62,7 +65,7 @@ async def create_continuation_from_file(
     direction_mode: Literal["user", "ai", "switchable"] = Form("switchable"),
     user_outline: str = Form(""),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+) -> ProjectOverviewRead:
     text = await _read_document(file)
     payload = ContinuationImportRequest(
         title=title,
@@ -80,7 +83,9 @@ async def create_continuation_from_file(
 
 
 @router.get("/projects/{project_id}")
-def read_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+def read_project(
+    project_id: int, db: Session = Depends(get_db)
+) -> ProjectOverviewRead:
     return studio.project_overview(db, project_id)
 
 
@@ -146,7 +151,7 @@ async def generate_phase(
     phase: str,
     payload: GenerateRequest,
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+) -> GenerateResult:
     return await studio_worker.run(
         lambda: studio.generate(db, project_id, phase, payload)
     )
@@ -235,7 +240,7 @@ def restore_snapshot(
     project_id: int,
     snapshot_id: int,
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+) -> ProjectOverviewRead:
     with db.begin():
         return studio.restore_snapshot(db, project_id, snapshot_id)
 
@@ -259,7 +264,7 @@ def repair_chapter_tree(
 
 @router.get("/providers")
 def list_providers(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return studio.list_studio_providers(db)
+    return studio_providers.list_studio_providers(db)
 
 
 @router.post("/providers", status_code=status.HTTP_201_CREATED)
@@ -267,7 +272,7 @@ def setup_provider(
     payload: ProviderSetup, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     with db.begin():
-        return studio.setup_provider(db, payload)
+        return studio_providers.setup_provider(db, payload)
 
 
 @router.put("/providers/{provider_id}/secret")
@@ -276,13 +281,13 @@ def update_provider_secret(
     payload: ProviderSecretUpdate,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return studio.update_provider_secret(db, provider_id, payload.api_key)
+    return studio_providers.update_provider_secret(db, provider_id, payload.api_key)
 
 
 @router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_provider(provider_id: int, db: Session = Depends(get_db)) -> Response:
     with db.begin():
-        studio.delete_studio_provider(db, provider_id)
+        studio_providers.delete_studio_provider(db, provider_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -6,11 +6,15 @@ import os
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InternalError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas import (
     CredentialReferenceCreate,
@@ -74,7 +78,7 @@ def create_credential(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="Credential reference name already exists")
+        raise ConflictError("Credential reference name already exists")
     item = models.CredentialReference(**payload.model_dump())
     db.add(item)
     db.flush()
@@ -116,7 +120,7 @@ def delete_credential(db: Session, credential_id: int, expected_revision: int) -
         )
     )
     if in_use is not None:
-        raise HTTPException(status_code=409, detail="Credential reference is bound to an adapter")
+        raise ConflictError("Credential reference is bound to an adapter")
     soft_delete(item)
     db.flush()
 
@@ -147,7 +151,7 @@ def create_config(
         get_or_404(db, models.ProviderAccount, payload.provider_account_id),
     )
     if provider.provider_type != "generic_json_http":
-        raise HTTPException(status_code=422, detail="Provider protocol must be generic_json_http")
+        raise InvalidInputError("Provider protocol must be generic_json_http")
     duplicate = db.scalar(
         select(models.GenericHttpAdapterConfiguration).where(
             models.GenericHttpAdapterConfiguration.provider_account_id == provider.id,
@@ -155,7 +159,7 @@ def create_config(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="Provider already has a custom adapter")
+        raise ConflictError("Provider already has a custom adapter")
     _validate_credential_reference(db, payload.credential_reference_id)
     data = payload.model_dump()
     config = models.GenericHttpAdapterConfiguration(
@@ -244,13 +248,13 @@ async def approve_origin(
         get_or_404(db, models.ProviderAccount, config.provider_account_id),
     )
     if config.security_mode != "local_private":
-        raise HTTPException(status_code=422, detail="Origin approval is only used in local_private mode")
+        raise InvalidInputError("Origin approval is only used in local_private mode")
     try:
         origin, _ = await (guard or TargetGuard()).validate_for_approval(
             join_provider_url(provider, config)
         )
     except TargetSecurityError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise InvalidInputError(str(exc)) from exc
     config.approved_origin = origin
     config.approval_fingerprint = _approval_fingerprint(provider, config)
     config.tested_fingerprint = None
@@ -315,7 +319,7 @@ def runtime_for_provider(db: Session, provider_id: int) -> ProviderRuntime:
         )
     )
     if config is None:
-        raise HTTPException(status_code=422, detail="Custom adapter configuration is missing")
+        raise InvalidInputError("Custom adapter configuration is missing")
     return runtime_for_config(db, provider, config, require_enabled=True)
 
 
@@ -373,7 +377,7 @@ def export_manifest(db: Session, config_id: int) -> GenericAdapterManifest:
     )
     findings = find_secret_material(manifest.model_dump(mode="json"))
     if findings:
-        raise HTTPException(status_code=500, detail="Manifest secret scan failed")
+        raise InternalError("Manifest secret scan failed")
     return manifest
 
 
@@ -382,14 +386,11 @@ def import_manifest(
 ) -> ManifestImportRead:
     findings = find_secret_material(manifest.model_dump(mode="json"))
     if findings:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Manifest appears to contain credentials", "paths": findings},
-        )
+        raise InvalidInputError({"message": "Manifest appears to contain credentials", "paths": findings})
     try:
         canonical_origin(manifest.base_url)
     except TargetSecurityError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise InvalidInputError(str(exc)) from exc
     provider_name = _available_provider_name(db, manifest.provider_name)
     provider = models.ProviderAccount(
         name=provider_name,
@@ -450,7 +451,7 @@ def join_provider_url(
     provider: models.ProviderAccount, config: models.GenericHttpAdapterConfiguration
 ) -> str:
     if not provider.base_url:
-        raise HTTPException(status_code=422, detail="Provider Base URL is required")
+        raise InvalidInputError("Provider Base URL is required")
     return f"{provider.base_url.rstrip('/')}/{config.endpoint.lstrip('/')}"
 
 
@@ -536,10 +537,10 @@ def _require_enable_ready(
     config: models.GenericHttpAdapterConfiguration,
 ) -> None:
     if config.tested_fingerprint != _test_fingerprint(provider, config):
-        raise HTTPException(status_code=409, detail="Adapter must be tested after its last change")
+        raise ConflictError("Adapter must be tested after its last change")
     if config.security_mode == "local_private":
         if config.approval_fingerprint != _approval_fingerprint(provider, config):
-            raise HTTPException(status_code=409, detail="The exact local Origin must be approved")
+            raise ConflictError("The exact local Origin must be approved")
 
 
 def _validate_credential_reference(db: Session, credential_id: int | None) -> None:

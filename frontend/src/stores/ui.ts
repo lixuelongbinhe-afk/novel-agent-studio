@@ -8,12 +8,14 @@ type UiState = {
   sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
   theme: "light" | "dark";
+  focusMode: boolean;
   setProject: (id: number | null) => void;
   setChapter: (id: number) => void;
   setScene: (id: number | null) => void;
   toggleSidebar: () => void;
   toggleRightPanel: () => void;
   toggleTheme: () => void;
+  toggleFocusMode: () => void;
 };
 
 export const useUiStore = create<UiState>()(
@@ -22,15 +24,17 @@ export const useUiStore = create<UiState>()(
       selectedProjectId: null,
       selectedChapterId: null,
       selectedSceneId: null,
-      sidebarCollapsed: false,
+      sidebarCollapsed: true,
       rightPanelOpen: true,
       theme: "dark",
+      focusMode: false,
       setProject: (id) => set({ selectedProjectId: id, selectedChapterId: null, selectedSceneId: null }),
       setChapter: (id) => set({ selectedChapterId: id, selectedSceneId: null }),
       setScene: (id) => set({ selectedSceneId: id }),
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
-      toggleTheme: () => set({ theme: "dark" })
+      toggleTheme: () => set((state) => ({ theme: state.theme === "dark" ? "light" : "dark" })),
+      toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode }))
     }),
     {
       name: "novel-agent-studio-ui",
@@ -38,7 +42,8 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: state.selectedProjectId,
         sidebarCollapsed: state.sidebarCollapsed,
         rightPanelOpen: state.rightPanelOpen,
-        theme: state.theme
+        theme: state.theme,
+        focusMode: state.focusMode
       })
     }
   )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 EntryMode = Literal["creative", "outline"]
@@ -180,3 +180,226 @@ class StudioRecord(BaseModel):
 
     id: int
     created_at: datetime
+
+
+class ProjectRecord(BaseModel):
+    id: int
+    title: str
+    summary: str
+    language: str
+    target_words: int
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+
+
+class VolumeRecord(BaseModel):
+    id: int
+    project_id: int
+    title: str
+    position: int
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+
+
+class ChapterRecord(BaseModel):
+    id: int
+    project_id: int
+    volume_id: int
+    number: int | None
+    title: str
+    content: str
+    position: int
+    word_count: int
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+
+
+class SceneRecord(BaseModel):
+    id: int
+    chapter_id: int
+    title: str
+    synopsis: str
+    content: str
+    position: int
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+
+
+class StudioStateRead(BaseModel):
+    id: int
+    project_id: int
+    entry_mode: str
+    stage: str
+    review_granularity: str
+    routing_strategy: str
+    generation_mode: str
+    countdown_seconds: int
+    memory_mode: str
+    budget_limit: float | None
+    budget_spent: float
+    budget_currency: str
+    budget_warning_percent: int
+    budget_pause_percent: int
+    budget_paused: bool
+    config_json: str
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+    stage_label: str
+
+
+class ArtifactRead(BaseModel):
+    id: int
+    project_id: int
+    kind: str
+    title: str
+    content: str
+    status: str
+    source: str
+    position: int
+    version_number: int
+    notes: str
+    metadata_json: str
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class GenerationJobRead(BaseModel):
+    """生成任务租约的对外形状，与 `_record(job)` 逐字段一致。"""
+
+    id: int
+    project_id: int
+    kind: str
+    label: str
+    status: str
+    progress: int
+    model_name: str | None
+    model_reason: str
+    error_message: str
+    idempotency_key: str | None
+    active_scope_key: str | None
+    result_artifact_id: int | None
+    created_at: str
+    updated_at: str
+    deleted_at: str | None
+    revision: int
+
+
+class StudioMessageRead(BaseModel):
+    id: int
+    project_id: int
+    role: str
+    content: str
+    context_scope: str
+    proposal_json: str
+    proposal_status: str
+    model_name: str | None
+    model_reason: str
+    created_at: str
+    proposal: dict[str, JsonValue] | None = None
+
+
+class ProjectSnapshotRead(BaseModel):
+    id: int
+    project_id: int
+    kind: str
+    label: str
+    reason: str
+    permanent: bool
+    created_at: str
+
+
+class DashboardProjectRead(BaseModel):
+    id: int
+    title: str
+    summary: str
+    stage: str
+    stage_label: str
+    completed_words: int
+    target_words: int
+    pending_reviews: int
+    updated_at: str
+    entry_mode: str
+
+
+class StudioStageRead(BaseModel):
+    key: str
+    label: str
+
+
+class StudioTreeRead(BaseModel):
+    volumes: list[VolumeRecord] = Field(default_factory=list)
+    chapters: list[ChapterRecord] = Field(default_factory=list)
+    scenes: list[SceneRecord] = Field(default_factory=list)
+
+
+class ChapterTreeSuspectRead(BaseModel):
+    id: int
+    title: str
+    word_count: int
+    revision: int
+
+
+class ChapterTreeRepairPreviewRead(BaseModel):
+    requested_count: int
+    active_count: int
+    suspect_chapters: list[ChapterTreeSuspectRead] = Field(default_factory=list)
+    missing_numbers: list[int] = Field(default_factory=list)
+    out_of_order: bool
+    duplicate_volumes: list[str] = Field(default_factory=list)
+    position_errors: bool
+    can_repair: bool
+
+
+class LibraryCountsRead(BaseModel):
+    entities: int
+    timeline: int
+    foreshadows: int
+    style_guides: int
+
+
+class StudioUsageRead(BaseModel):
+    invocations: int
+    tokens: int
+    spent: float
+    limit: float | None
+    currency: str
+    percent: float
+    warning: bool
+    paused: bool
+
+
+class ProjectOverviewRead(BaseModel):
+    project: ProjectRecord
+    state: StudioStateRead
+    stages: list[StudioStageRead] = Field(default_factory=list)
+    artifacts: list[ArtifactRead] = Field(default_factory=list)
+    tree: StudioTreeRead
+    jobs: list[GenerationJobRead] = Field(default_factory=list)
+    messages: list[StudioMessageRead] = Field(default_factory=list)
+    snapshots: list[ProjectSnapshotRead] = Field(default_factory=list)
+    chapter_tree_repair: ChapterTreeRepairPreviewRead
+    library_counts: LibraryCountsRead
+    usage: StudioUsageRead
+
+
+class GenerateResult(BaseModel):
+    """`studio.generate` 的稳定返回值。"""
+
+    job: GenerationJobRead
+    artifact: ArtifactRead | None = None
+    artifacts: list[ArtifactRead] = Field(default_factory=list)
+    idempotent_replay: bool = False

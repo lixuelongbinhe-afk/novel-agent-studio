@@ -1,39 +1,31 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
   BookOpenText,
   CheckSquare2,
   Clock3,
   ClipboardPaste,
-  FileInput,
   FileUp,
   FolderOpen,
-  Lightbulb,
   MoreHorizontal,
   Plus,
+  Search,
   Trash2,
   X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { studioApi } from "../api/studio";
+import { ProjectDialogForm } from "../components/ProjectDialogForm";
 import { useUiStore } from "../stores/ui";
-
-const emptyForm = {
-  title: "",
-  idea: "",
-  entry_mode: "creative" as "creative" | "outline",
-  target_words: 100000,
-  genre: "",
-  theme: "",
-  era: "",
-  audience: "",
-  chapter_count: 80,
-  chapter_words: 2500,
-  style_description: "",
-  point_of_view: "第三人称限知",
-  prohibited_content: ""
-};
+import {
+  dialogBackdrop,
+  dialogCard,
+  fadeInUp,
+  MAX_STAGGER_ITEMS,
+  staggerContainer
+} from "../utils/motion";
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -46,22 +38,10 @@ export function HomePage() {
   });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [continuationOpen, setContinuationOpen] = useState(false);
-  const [details, setDetails] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-  const [error, setError] = useState("");
   const [deleteError, setDeleteError] = useState("");
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<"recent" | "all">("recent");
 
-  const create = useMutation({
-    mutationFn: () => studioApi.createProject(form),
-    onSuccess: async (overview) => {
-      setProject(overview.project.id);
-      setDialogOpen(false);
-      setForm(emptyForm);
-      await queryClient.invalidateQueries({ queryKey: ["studio-projects"] });
-      navigate(`/studio/${overview.project.id}`);
-    },
-    onError: (reason: Error) => setError(reason.message)
-  });
   const remove = useMutation({
     mutationFn: studioApi.deleteProject,
     onSuccess: async (_, deletedProjectId) => {
@@ -89,11 +69,9 @@ export function HomePage() {
     navigate(`/studio/${id}`);
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    create.mutate();
-  }
+  const visibleProjects = projects
+    .filter((project) => `${project.title}${project.summary}${project.stage_label}`.toLowerCase().includes(query.trim().toLowerCase()))
+    .slice(0, view === "recent" ? 8 : projects.length);
 
   return (
     <section className="projects-page">
@@ -103,6 +81,10 @@ export function HomePage() {
           <span>{projects.length} 本小说</span>
         </div>
         <div className="page-toolbar-actions">
+          <label className="toolbar-search">
+            <Search size={14} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目" aria-label="搜索项目" />
+          </label>
           <button type="button" className="secondary-button" onClick={() => setContinuationOpen(true)}>
             <FileUp size={16} /> 导入半成品续写
           </button>
@@ -112,11 +94,16 @@ export function HomePage() {
         </div>
       </header>
 
+      <nav className="project-view-tabs" aria-label="项目视图">
+        <button type="button" className={view === "recent" ? "active" : ""} onClick={() => setView("recent")}>最近打开</button>
+        <button type="button" className={view === "all" ? "active" : ""} onClick={() => setView("all")}>全部项目</button>
+      </nav>
+
       <div className="project-list-head" aria-hidden="true">
-        <span>书名</span><span>创作阶段</span><span>完成字数</span><span>待审核</span><span>最后编辑</span><span />
+        <span>项目名称</span><span>创作阶段</span><span>章节进度</span><span>完成字数<i className="sr-only">待审核</i></span><span>最后编辑</span><span>操作</span>
       </div>
       {deleteError ? <div className="form-error project-delete-error" role="alert">{deleteError}</div> : null}
-      <div className="project-list">
+      <motion.div className="project-list" variants={staggerContainer} initial="initial" animate="animate">
         {isLoading ? <div className="loading-line">读取项目中...</div> : null}
         {!isLoading && projects.length === 0 ? (
           <button type="button" className="empty-projects" onClick={() => setDialogOpen(true)}>
@@ -124,20 +111,26 @@ export function HomePage() {
             <strong>新建第一本小说</strong>
           </button>
         ) : null}
-        {projects.map((project) => (
-          <article key={project.id} className="project-row" onDoubleClick={() => openProject(project.id)}>
+        {!isLoading && projects.length > 0 && visibleProjects.length === 0 ? <div className="search-empty">没有匹配“{query}”的项目</div> : null}
+        {visibleProjects.map((project, index) => {
+          const progress = project.target_words > 0 ? Math.min(100, Math.round((project.completed_words / project.target_words) * 100)) : 0;
+          return (
+          <motion.article
+            key={project.id}
+            className="project-row"
+            variants={index < MAX_STAGGER_ITEMS ? fadeInUp : undefined}
+            onDoubleClick={() => openProject(project.id)}
+          >
             <button type="button" className="project-name" onClick={() => openProject(project.id)}>
               <span className="book-glyph"><BookOpenText size={17} /></span>
               <span><strong>{project.title}</strong><small>{project.summary}</small></span>
             </button>
             <span className="stage-cell">{project.stage_label}</span>
-            <span className="metric-cell">{project.completed_words.toLocaleString()} <small>/ {project.target_words.toLocaleString()}</small></span>
-            <span className={project.pending_reviews ? "review-count active" : "review-count"}>
-              <CheckSquare2 size={14} /> {project.pending_reviews}
-            </span>
+            <span className="project-progress"><b>{progress}%</b><i><span style={{ width: `${progress}%` }} /></i></span>
+            <span className="metric-cell">{project.completed_words.toLocaleString()} <small>字</small>{project.pending_reviews ? <em><CheckSquare2 size={12} />{project.pending_reviews} 待审核</em> : null}</span>
             <span className="time-cell"><Clock3 size={13} /> {formatTime(project.updated_at)}</span>
             <div className="row-actions">
-              <button type="button" className="icon-button subtle" title="打开" onClick={() => openProject(project.id)}><ArrowRight size={16} /></button>
+              <button type="button" className="text-row-action" title="继续写作" onClick={() => openProject(project.id)}>继续写作<ArrowRight size={14} /></button>
               <button type="button" className="icon-button subtle danger" title="删除" onClick={() => {
                 if (window.confirm(`删除“${project.title}”？`)) {
                   setDeleteError("");
@@ -145,63 +138,41 @@ export function HomePage() {
                 }
               }}><Trash2 size={15} /></button>
             </div>
-          </article>
-        ))}
-      </div>
+          </motion.article>
+        );})}
+      </motion.div>
 
-      {dialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setDialogOpen(false)}>
-          <section className="modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div><h2>新建小说</h2><span>{details ? "详细创建" : "快速创建"}</span></div>
-              <button type="button" className="icon-button subtle" onClick={() => setDialogOpen(false)} title="关闭"><X size={17} /></button>
-            </header>
-            <form onSubmit={submit}>
-              <div className="mode-switch">
-                <button type="button" className={form.entry_mode === "creative" ? "active" : ""} onClick={() => setForm({ ...form, entry_mode: "creative" })}>
-                  <Lightbulb size={15} /> 从创意开始
-                </button>
-                <button type="button" className={form.entry_mode === "outline" ? "active" : ""} onClick={() => setForm({ ...form, entry_mode: "outline" })}>
-                  <FileInput size={15} /> 导入大纲
-                </button>
-              </div>
-              <label><span>书名</span><input autoFocus value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label>
-              <label><span>{form.entry_mode === "creative" ? "题材与创意" : "大纲说明"}</span><textarea rows={5} value={form.idea} onChange={(event) => setForm({ ...form, idea: event.target.value })} /></label>
-              {details ? (
-                <div className="detail-form-grid">
-                  <label><span>题材</span><input value={form.genre} onChange={(event) => setForm({ ...form, genre: event.target.value })} /></label>
-                  <label><span>主题</span><input value={form.theme} onChange={(event) => setForm({ ...form, theme: event.target.value })} /></label>
-                  <label><span>时代</span><input value={form.era} onChange={(event) => setForm({ ...form, era: event.target.value })} /></label>
-                  <label><span>读者</span><input value={form.audience} onChange={(event) => setForm({ ...form, audience: event.target.value })} /></label>
-                  <label><span>目标字数</span><input type="number" value={form.target_words} onChange={(event) => setForm({ ...form, target_words: Number(event.target.value) })} /></label>
-                  <label><span>章节数量</span><input type="number" value={form.chapter_count} onChange={(event) => setForm({ ...form, chapter_count: Number(event.target.value) })} /></label>
-                  <label><span>每章字数</span><input type="number" value={form.chapter_words} onChange={(event) => setForm({ ...form, chapter_words: Number(event.target.value) })} /></label>
-                  <label><span>叙事视角</span><input value={form.point_of_view} onChange={(event) => setForm({ ...form, point_of_view: event.target.value })} /></label>
-                  <label className="span-2"><span>文风</span><textarea rows={3} value={form.style_description} onChange={(event) => setForm({ ...form, style_description: event.target.value })} /></label>
-                  <label className="span-2"><span>禁用内容</span><textarea rows={2} value={form.prohibited_content} onChange={(event) => setForm({ ...form, prohibited_content: event.target.value })} /></label>
-                </div>
-              ) : null}
-              {error ? <div className="form-error">{error}</div> : null}
-              <footer>
-                <button type="button" className="text-button" onClick={() => setDetails(!details)}>{details ? "使用快速创建" : "填写详细设置"}</button>
-                <button type="button" className="secondary-button" onClick={() => setDialogOpen(false)}>取消</button>
-                <button type="submit" className="primary-button" disabled={!form.title.trim() || !form.idea.trim() || create.isPending}>
-                  {create.isPending ? "创建中..." : "创建项目"}
-                </button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      ) : null}
-      {continuationOpen ? (
-        <ContinuationImportDialog
-          projects={projects}
-          pending={createContinuation.isPending}
-          error={createContinuation.error instanceof Error ? createContinuation.error.message : ""}
-          onClose={() => setContinuationOpen(false)}
-          onSubmit={(file, payload) => createContinuation.mutate({ file, payload })}
-        />
-      ) : null}
+      <AnimatePresence>
+        {dialogOpen ? (
+          <motion.div className="modal-backdrop" role="presentation" onMouseDown={() => setDialogOpen(false)} {...dialogBackdrop}>
+            <motion.section className="modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
+              <header>
+                <div><h2>新建小说</h2><span>快速创建或填写详细设置</span></div>
+                <button type="button" className="icon-button subtle" onClick={() => setDialogOpen(false)} title="关闭"><X size={17} /></button>
+              </header>
+              <ProjectDialogForm
+                onCancel={() => setDialogOpen(false)}
+                onSuccess={(overview) => {
+                  setProject(overview.project.id);
+                  setDialogOpen(false);
+                  navigate(`/studio/${overview.project.id}`);
+                }}
+              />
+            </motion.section>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {continuationOpen ? (
+          <ContinuationImportDialog
+            projects={projects}
+            pending={createContinuation.isPending}
+            error={createContinuation.error instanceof Error ? createContinuation.error.message : ""}
+            onClose={() => setContinuationOpen(false)}
+            onSubmit={(file, payload) => createContinuation.mutate({ file, payload })}
+          />
+        ) : null}
+      </AnimatePresence>
     </section>
   );
 }
@@ -250,8 +221,8 @@ function ContinuationImportDialog({
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal continuation-import-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+    <motion.div className="modal-backdrop" role="presentation" onMouseDown={onClose} {...dialogBackdrop}>
+      <motion.section className="modal continuation-import-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
         <header>
           <div><h2>导入半成品续写</h2><span>原文永久保留，解析结果逐项审核</span></div>
           <button type="button" className="icon-button subtle" onClick={onClose} title="关闭"><X size={17} /></button>
@@ -278,8 +249,8 @@ function ContinuationImportDialog({
           {error ? <div className="form-error">{error}</div> : null}
           <footer><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={!title.trim() || !sourceReady || pending}>{pending ? "导入解析中..." : "导入并创建项目"}</button></footer>
         </form>
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }
 

@@ -1,6 +1,58 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function markOnboardingDone(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("onboarding-done", "true"));
+}
+
+async function clearOnboardingRecords(page: Page) {
+  const projectResponse = await page.request.get("/api/studio/projects");
+  if (projectResponse.ok()) {
+    const projects = await projectResponse.json() as Array<{ id: number }>;
+    for (const project of projects) await page.request.delete(`/api/studio/projects/${project.id}`);
+  }
+  const providerResponse = await page.request.get("/api/studio/providers");
+  if (providerResponse.ok()) {
+    const providers = await providerResponse.json() as Array<{ id: number }>;
+    for (const provider of providers) await page.request.delete(`/api/studio/providers/${provider.id}`);
+  }
+}
+
+test("first-run onboarding creates a provider and project, then persists completion", async ({ page }) => {
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "欢迎使用 Novel Agent Studio" })).toBeVisible();
+    await page.getByRole("button", { name: "开始配置" }).click();
+    await page.getByRole("button", { name: "OpenAI 兼容服务" }).click();
+    await page.getByLabel("显示名称").fill("E2E 本地模型");
+    await page.getByLabel("模型名称").fill("e2e-chat");
+    await page.getByLabel("API 地址").fill("http://127.0.0.1:8020/v1");
+    await page.getByRole("button", { name: "读取环境变量" }).click();
+    await page.getByLabel("环境变量名").fill("E2E_CUSTOM_API_KEY");
+    await page.getByRole("button", { name: /保存服务/ }).click();
+
+    await expect(page.getByRole("heading", { name: "创建第一本小说" })).toBeVisible();
+    await expect(page.getByLabel("模型服务")).toContainText("E2E 本地模型 · e2e-chat");
+    await page.getByLabel("书名").fill("首启向导验收小说");
+    await page.getByLabel("题材与创意").fill("一名修复师在机械城市中追踪遗失的记忆。");
+    await page.getByRole("button", { name: "创建项目" }).click();
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
+    await expect(page.getByText("首启向导验收小说", { exact: true }).first()).toBeVisible();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("onboarding-done"))).toBe("true");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "欢迎使用 Novel Agent Studio" })).toHaveCount(0);
+    await expect(page.getByText("首启向导验收小说", { exact: true }).first()).toBeVisible();
+  } finally {
+    await clearOnboardingRecords(page);
+  }
+});
 
 test("all implemented workspaces are reachable from real routes", async ({ page }) => {
+  await markOnboardingDone(page);
   const routes: Array<[string, RegExp]> = [
     ["/approvals", /还没有项目/],
     ["/workspace", /先创建一个小说项目/],
@@ -20,15 +72,19 @@ test("all implemented workspaces are reachable from real routes", async ({ page 
 });
 
 test("collapsed sidebar keeps only in-bounds brand and status expand targets", async ({ page }) => {
+  await markOnboardingDone(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
+  await page.getByTitle("展开侧栏").first().click();
+  await expect(page.locator(".nas-shell")).not.toHaveClass(/is-collapsed/);
   await page.getByTitle("收起侧栏").first().click();
   const shell = page.locator(".nas-shell");
   const sidebar = page.locator(".nas-sidebar");
   const brand = page.locator("button.nas-brand-mark");
   const status = page.locator("button.sidebar-status-expand");
   await expect(shell).toHaveClass(/is-collapsed/);
+  await page.waitForTimeout(300); // wait for the sidebar collapse grid transition to finish
   await expect(page.getByTitle("展开侧栏")).toHaveCount(2);
 
   const [sidebarBox, brandBox, statusBox] = await Promise.all([
@@ -36,7 +92,7 @@ test("collapsed sidebar keeps only in-bounds brand and status expand targets", a
     brand.boundingBox(),
     status.boundingBox()
   ]);
-  expect(sidebarBox?.width).toBe(54);
+  expect(sidebarBox?.width).toBe(64);
   for (const box of [brandBox, statusBox]) {
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(sidebarBox!.x);
@@ -52,15 +108,17 @@ test("collapsed sidebar keeps only in-bounds brand and status expand targets", a
 });
 
 test("V2 creation flow renders and generates a review item", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
+  await page.getByTitle("展开侧栏").first().click(); // sidebar starts collapsed; brand text only renders when expanded
   await expect(page.getByText("Novel Agent Studio", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
-  await expect(page.getByText("创作阶段")).toBeVisible();
-  await expect(page.getByText("完成字数")).toBeVisible();
-  await expect(page.getByRole("main").getByText("待审核", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最近打开" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全部项目" })).toBeVisible();
+  await expect(page.getByLabel("搜索项目")).toBeVisible();
   await expect(page.getByRole("button", { name: /新建第一本小说/ })).toBeVisible();
   await page.screenshot({ path: "test-results/v2-home-desktop.png" });
 
@@ -81,7 +139,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("option", { name: "自动" })).toBeAttached();
   await expect(page.getByRole("option", { name: "倒计时" })).toBeAttached();
   await expect(page.getByText("提取参考文风")).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-studio-desktop.png" });
+  await page.screenshot({ path: "../docs/media/01-创建项目.png" });
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: /开始生成/ }).click();
@@ -90,7 +148,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "定位与主题策划", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "文风与边界编辑", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "通过" }).first()).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-review-desktop.png" });
+  await page.screenshot({ path: "../docs/media/02-内容审核.png" });
 
   await page.locator("label.file-action input").setInputFiles("src/test/e2e/fixtures/author-style.md");
   await expect(page.getByRole("heading", { name: "参考文风分析 · author-style.md" })).toBeVisible({ timeout: 30_000 });
@@ -110,7 +168,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
       await expect(item).toHaveCount(0);
     }
   }
-  await expect(page.locator(".project-heading")).toContainText("人物与关系");
+  await expect(page.getByText("人物与关系").first()).toBeVisible();
 
   const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(desktopOverflow).toBe(false);
@@ -139,6 +197,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
 });
 
 test("approved Agent draft is written into the chapter editor", async ({ page }) => {
+  await markOnboardingDone(page);
   const api = "http://127.0.0.1:8010/api/studio";
   const createdResponse = await page.request.post(`${api}/projects`, {
     data: {
@@ -194,6 +253,7 @@ test("approved Agent draft is written into the chapter editor", async ({ page })
 });
 
 test("imports a half-finished novel into the reviewed continuation workflow", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -227,6 +287,7 @@ test("imports a half-finished novel into the reviewed continuation workflow", as
 });
 
 test("long chat replies scroll inside the right rail without covering the workspace", async ({ page }) => {
+  await markOnboardingDone(page);
   test.setTimeout(120_000);
   const api = "http://127.0.0.1:8010/api/studio";
   const createdResponse = await page.request.post(`${api}/projects`, {
@@ -284,6 +345,7 @@ test("long chat replies scroll inside the right rail without covering the worksp
 });
 
 test("deleting a project removes it from the persisted dashboard", async ({ page }) => {
+  await markOnboardingDone(page);
   const api = "http://127.0.0.1:8010/api/studio";
   const title = `删除功能验证-${Date.now()}`;
   const createdResponse = await page.request.post(`${api}/projects`, {

@@ -4,11 +4,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.services.errors import (
+    ConflictError,
+    InvalidInputError,
+)
 from app.repositories import get_or_404, require_revision, soft_delete
 from app.schemas import (
     BudgetPolicyRead,
@@ -59,7 +62,7 @@ def create_pricing(
         )
     overlapping = db.scalar(overlap_stmt)
     if overlapping is not None:
-        raise HTTPException(status_code=409, detail="价格生效区间不能重叠")
+        raise ConflictError("价格生效区间不能重叠")
     row = models.ModelPricing(model_profile_id=model_profile_id, **payload.model_dump())
     db.add(row)
     db.flush()
@@ -160,7 +163,7 @@ def create_rate_limit(
         )
     )
     if existing is not None and existing.deleted_at is None:
-        raise HTTPException(status_code=409, detail="该限流范围已存在")
+        raise ConflictError("该限流范围已存在")
     if existing is None:
         row = models.RateLimitPolicy(**payload.model_dump())
         db.add(row)
@@ -191,7 +194,7 @@ def update_rate_limit(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该限流范围已存在")
+        raise ConflictError("该限流范围已存在")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(row, key, value)
     row.revision += 1
@@ -226,7 +229,7 @@ def create_budget(db: Session, payload: BudgetPolicyWrite) -> BudgetPolicyRead:
         )
     )
     if existing is not None and existing.deleted_at is None:
-        raise HTTPException(status_code=409, detail="该预算范围已存在")
+        raise ConflictError("该预算范围已存在")
     if existing is None:
         row = models.BudgetPolicy(**payload.model_dump())
         db.add(row)
@@ -255,7 +258,7 @@ def update_budget(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="该预算范围已存在")
+        raise ConflictError("该预算范围已存在")
     for key, value in payload.model_dump(exclude={"expected_revision"}).items():
         setattr(row, key, value)
     row.revision += 1
@@ -365,7 +368,7 @@ def _validate_route_references(
             get_or_404(db, models.ModelProfile, entry.model_profile_id),
         )
         if profile.deleted_at is not None:
-            raise HTTPException(status_code=409, detail="Route 包含已删除模型")
+            raise ConflictError("Route 包含已删除模型")
 
 
 def _replace_route_entries(
@@ -413,7 +416,7 @@ def _validate_limit_scope(db: Session, scope_type: str, scope_key: str) -> None:
     }
     model = model_by_scope.get(scope_type)
     if model is None:
-        raise HTTPException(status_code=422, detail="未知限流范围")
+        raise InvalidInputError("未知限流范围")
     get_or_404(db, model, _scope_id(scope_key))
 
 
@@ -428,9 +431,9 @@ def _scope_id(value: str) -> int:
     try:
         result = int(value)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="范围标识必须是数字 ID") from exc
+        raise InvalidInputError("范围标识必须是数字 ID") from exc
     if result < 1:
-        raise HTTPException(status_code=422, detail="范围标识必须是正整数 ID")
+        raise InvalidInputError("范围标识必须是正整数 ID")
     return result
 
 

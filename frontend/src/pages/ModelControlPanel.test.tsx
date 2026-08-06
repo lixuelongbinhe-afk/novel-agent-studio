@@ -96,12 +96,12 @@ describe("ModelControlPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "限流与预算" }));
     fireEvent.click(screen.getByRole("button", { name: "限流" }));
     fireEvent.change(screen.getByLabelText("最大并发"), { target: { value: "2" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存限流" }));
     await waitFor(() => expect(mocks.createRateLimit).toHaveBeenCalledWith(expect.objectContaining({ scope_type: "global", scope_key: "*", max_concurrency: 2 })));
 
     fireEvent.click(screen.getByRole("button", { name: "预算" }));
     fireEvent.change(screen.getByLabelText("Token 上限"), { target: { value: "4096" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存预算" }));
     await waitFor(() => expect(mocks.createBudget).toHaveBeenCalledWith(expect.objectContaining({ scope_type: "per_request", max_tokens: 4096 })));
 
     fireEvent.click(screen.getByRole("button", { name: "健康与调用" }));

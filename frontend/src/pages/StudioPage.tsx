@@ -1,12 +1,15 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   ArchiveRestore,
+  Bot,
   BookOpenText,
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   Clock3,
   Download,
   FileCheck2,
@@ -17,6 +20,8 @@ import {
   GitCompareArrows,
   LoaderCircle,
   MoreHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
   Pencil,
   Plus,
@@ -26,8 +31,10 @@ import {
   Save,
   Settings2,
   Sparkles,
+  SquareTerminal,
   SplitSquareVertical,
   Trash2,
+  EyeOff,
   Undo2,
   WandSparkles,
   X
@@ -41,11 +48,20 @@ import {
   studioApi
 } from "../api/studio";
 import { api, saveDownloadedFile } from "../api/client";
+import agentNetworkOrb from "../assets/agent-network-orb.png";
 import { useUiStore } from "../stores/ui";
 import {
   StudioRightRail,
   type StudioRightTab
 } from "../features/studio/components/StudioRightRail";
+import {
+  consoleTransition,
+  dialogBackdrop,
+  dialogCard,
+  inspectorTransition,
+  stageTransition,
+  toastTransition
+} from "../utils/motion";
 
 const phaseDescriptions: Record<string, string> = {
   idea: "创意简报",
@@ -88,6 +104,10 @@ export function StudioPage() {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [selectedText, setSelectedText] = useState("");
   const [notice, setNotice] = useState("");
+  const [consoleOpen, setConsoleOpen] = useState(true);
+  const [consoleHidden, setConsoleHidden] = useState(false);
+  const rightPanelOpen = useUiStore((state) => state.rightPanelOpen);
+  const toggleRightPanel = useUiStore((state) => state.toggleRightPanel);
   const generationKeys = useRef(new WeakMap<object, string>());
 
   const { data: overview, isLoading, error } = useQuery({
@@ -357,44 +377,45 @@ export function StudioPage() {
 
   return (
     <section className="studio-page">
-      {notice ? <button className="toast" type="button" onClick={() => setNotice("")}><span>{notice}</span><X size={14} /></button> : null}
-      <header className="studio-toolbar">
-        <div className="project-heading">
-          <h1>{overview.project.title}</h1>
-          <span>{overview.state.stage_label}</span>
+      <AnimatePresence initial={false}>
+        {notice ? <motion.button className="toast" type="button" onClick={() => setNotice("")} {...toastTransition}><span>{notice}</span><X size={14} /></motion.button> : null}
+      </AnimatePresence>
+      <div className="studio-top-chrome">
+        <h1 className="sr-only">{overview.project.title}</h1>
+        <div className="phase-strip" aria-label="创作阶段">
+          <div className="phase-track">
+            {overview.stages.map((item, index) => {
+              const currentIndex = overview.stages.findIndex((entry) => entry.key === overview.state.stage);
+              const complete = index < currentIndex || overview.artifacts.some((artifact) => artifact.kind === item.key && artifact.status === "approved");
+              return (
+                <button key={item.key} type="button" className={`${phase === item.key ? "active" : ""} ${complete ? "complete" : ""}`} onClick={() => setSelectedPhase(item.key)}>
+                  <span>{complete ? <Check size={12} /> : index + 1}</span><b>{item.label}</b>
+                </button>
+              );
+            })}
+          </div>
+          <div className="phase-actions">
+            <label className="compact-select"><span>路由</span><select value={overview.state.routing_strategy} onChange={(event) => updateState.mutate({ routing_strategy: event.target.value })}>
+              <option value="balanced">均衡</option><option value="quality">质量</option><option value="cost">成本</option><option value="speed">速度</option>
+            </select></label>
+            <label className="compact-select"><span>审核</span><select value={overview.state.review_granularity} onChange={(event) => updateState.mutate({ review_granularity: event.target.value })}>
+              <option value="chapter">章级</option><option value="scene">场景级</option>
+            </select></label>
+            <label className="compact-select"><span>续写</span><select value={overview.state.generation_mode} onChange={(event) => updateState.mutate({ generation_mode: event.target.value })}>
+              <option value="manual">手动</option><option value="automatic">自动</option><option value="countdown">倒计时</option>
+            </select></label>
+            {overview.state.generation_mode === "countdown" ? <label className="countdown-setting" title="批准当前章后，等待多少秒开始下一章"><Clock3 size={13} /><input type="number" min="0" max="3600" value={overview.state.countdown_seconds} onChange={(event) => updateState.mutate({ countdown_seconds: Number(event.target.value) })} /><span>秒</span></label> : null}
+            <button className={rightPanelOpen ? "icon-button active" : "icon-button"} type="button" title={rightPanelOpen ? "关闭审阅面板" : "打开审阅面板"} onClick={toggleRightPanel}>{rightPanelOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}</button>
+            <button className="icon-button" type="button" title="快照与导出" onClick={() => setSnapshotsOpen(true)}><History size={16} /></button>
+          </div>
         </div>
-        <div className="toolbar-controls">
-          <label className="compact-select"><span>路由</span><select value={overview.state.routing_strategy} onChange={(event) => updateState.mutate({ routing_strategy: event.target.value })}>
-            <option value="balanced">均衡</option><option value="quality">质量</option><option value="cost">成本</option><option value="speed">速度</option>
-          </select></label>
-          <label className="compact-select"><span>审核</span><select value={overview.state.review_granularity} onChange={(event) => updateState.mutate({ review_granularity: event.target.value })}>
-            <option value="chapter">章级</option><option value="scene">场景级</option>
-          </select></label>
-          <label className="compact-select"><span>续写</span><select value={overview.state.generation_mode} onChange={(event) => updateState.mutate({ generation_mode: event.target.value })}>
-            <option value="manual">手动</option><option value="automatic">自动</option><option value="countdown">倒计时</option>
-          </select></label>
-          {overview.state.generation_mode === "countdown" ? <label className="countdown-setting" title="批准当前章后，等待多少秒开始下一章"><Clock3 size={13} /><input type="number" min="0" max="3600" value={overview.state.countdown_seconds} onChange={(event) => updateState.mutate({ countdown_seconds: Number(event.target.value) })} /><span>秒</span></label> : null}
-          <button className="icon-button" type="button" title="快照与导出" onClick={() => setSnapshotsOpen(true)}><History size={16} /></button>
-        </div>
-      </header>
-
-      {continuation ? <div className="continuation-banner"><Clock3 size={15} /><span><strong>{continuation.seconds} 秒</strong>后开始下一章</span><button type="button" onClick={() => setContinuation(null)}><Pause size={14} />暂停</button><button type="button" onClick={() => { const chapterId = continuation.chapterId; setContinuation(null); generate.mutate({ phase: "drafting", chapterId }); }}><Play size={14} />立即开始</button></div> : null}
-      {isContinuationProject && Boolean(continuationConfig.conflict_paused) ? <div className="continuation-conflict-banner"><AlertTriangle size={16} /><span><strong>续写已暂停</strong>存在重大设定或时间线冲突，请在“待审核项目”中选择处理方案。</span><button type="button" onClick={() => setRightTab("reviews")}>前往审核</button></div> : null}
-
-      <div className="phase-strip" aria-label="创作阶段">
-        {overview.stages.map((item, index) => {
-          const currentIndex = overview.stages.findIndex((entry) => entry.key === overview.state.stage);
-          const complete = index < currentIndex || overview.artifacts.some((artifact) => artifact.kind === item.key && artifact.status === "approved");
-          return (
-            <button key={item.key} type="button" className={`${phase === item.key ? "active" : ""} ${complete ? "complete" : ""}`} onClick={() => setSelectedPhase(item.key)}>
-              <span>{complete ? <Check size={12} /> : index + 1}</span><b>{item.label}</b>
-            </button>
-          );
-        })}
+        {continuation ? <div className="continuation-banner"><Clock3 size={15} /><span><strong>{continuation.seconds} 秒</strong>后开始下一章</span><button type="button" onClick={() => setContinuation(null)}><Pause size={14} />暂停</button><button type="button" onClick={() => { const chapterId = continuation.chapterId; setContinuation(null); generate.mutate({ phase: "drafting", chapterId }); }}><Play size={14} />立即开始</button></div> : null}
+        {isContinuationProject && Boolean(continuationConfig.conflict_paused) ? <div className="continuation-conflict-banner"><AlertTriangle size={16} /><span><strong>续写已暂停</strong>存在重大设定或时间线冲突，请在“待审核项目”中选择处理方案。</span><button type="button" onClick={() => setRightTab("reviews")}>前往审核</button></div> : null}
       </div>
 
-      <div className="studio-workarea">
-        <main className="stage-workspace">
+      <div className={`studio-workarea ${rightPanelOpen ? "rail-open" : "rail-closed"}`}>
+        <AnimatePresence mode="wait" initial={false}>
+        <motion.main className="stage-workspace" key={phase} {...stageTransition}>
           {["drafting", "review"].includes(phase) ? (
             <div className="writing-stage-shell">
               {isContinuationProject && phase === "drafting" && continuationConfig.continuation_start === "choose" ? (
@@ -491,9 +512,17 @@ export function StudioPage() {
               </div>
             </>
           )}
-        </main>
+        </motion.main>
+        </AnimatePresence>
 
-        <aside className="context-rail">
+        <motion.aside
+          className="context-rail"
+          initial={false}
+          animate={rightPanelOpen ? "open" : "closed"}
+          variants={inspectorTransition}
+          aria-hidden={!rightPanelOpen}
+        >
+          <header className="rail-window-head"><span>审阅与协作</span><button type="button" className="icon-button subtle" title="关闭审阅面板" onClick={toggleRightPanel}><PanelRightClose size={14} /></button></header>
           <StudioRightRail
             overview={overview}
             activeTab={rightTab}
@@ -512,32 +541,66 @@ export function StudioPage() {
             onReviewApprove={approveArtifact}
             onBudgetUpdate={(value) => updateState.mutate(value)}
           />
-        </aside>
+        </motion.aside>
+        {consoleHidden ? (
+          <button type="button" className="agent-console-restore" onClick={() => { setConsoleHidden(false); setConsoleOpen(true); }}>
+            <SquareTerminal size={13} /><span>显示 Agent 控制台</span><ChevronUp size={13} />
+          </button>
+        ) : (
+          <StudioAgentConsole overview={overview} open={consoleOpen} onToggle={() => setConsoleOpen((value) => !value)} onHide={() => setConsoleHidden(true)} onOpenProgress={() => { setRightTab("progress"); if (!rightPanelOpen) toggleRightPanel(); }} />
+        )}
       </div>
 
-      {editing ? (
-        <div className="modal-backdrop" onMouseDown={() => setEditing(null)}>
-          <section className="modal artifact-editor" onMouseDown={(event) => event.stopPropagation()}>
-            <header><div><h2>审核、批注与版本比较</h2><span>保存后生成版本 {Math.max(...versions.map((item) => item.version_number), editing.version_number) + 1}</span></div><button className="icon-button subtle" aria-label="关闭审核编辑器" onClick={() => setEditing(null)}><X size={17} /></button></header>
-            <div className="version-toolbar"><GitCompareArrows size={15} /><span>对比版本</span><select value={compareVersionId ?? ""} onChange={(event) => setCompareVersionId(Number(event.target.value))}>{versions.map((item) => <option key={item.id} value={item.id}>版本 {item.version_number} · {statusLabel(item.status)}</option>)}</select>{compareVersionId ? <button type="button" className="secondary-button" onClick={() => { const old = versions.find((item) => item.id === compareVersionId); if (old) { setEditTitle(old.title); setEditText(old.content); setEditNotes(old.notes); } }}><RotateCcw size={14} />恢复到编辑区</button> : null}</div>
-            <div className="version-compare-grid">
-              <section><header><strong>当前编辑</strong><span>{editText.replace(/\s/g, "").length} 字</span></header><label><span>标题</span><input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label><textarea value={editText} onChange={(event) => setEditText(event.target.value)} /></section>
-              <section><header><strong>历史版本</strong><span>只读</span></header><label><span>标题</span><input readOnly value={versions.find((item) => item.id === compareVersionId)?.title ?? ""} /></label><textarea readOnly value={versions.find((item) => item.id === compareVersionId)?.content ?? ""} /></section>
-            </div>
-            <label className="artifact-notes"><span>审核批注</span><textarea rows={3} value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="记录修改理由、待核问题或给下一轮 Agent 的意见" /></label>
-            <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="secondary-button" disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => decide.mutate({ artifact: editing, action: "request_changes" })}>要求修改</button><button className="primary-button" disabled={saveArtifact.isPending || !hasUnsavedArtifactEdits} onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button><button className="approve-button" title={hasUnsavedArtifactEdits ? "请先保存当前编辑" : "通过并写入"} disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => approveArtifact(editing)}><Check size={15} />{["drafting", "revision_proposal", "scene_draft"].includes(editing.kind) ? "通过并写入正文" : "通过审核"}</button></footer>
-          </section>
-        </div>
-      ) : null}
+      <AnimatePresence>
+        {editing ? (
+          <motion.div key="artifact-editor" className="modal-backdrop" onMouseDown={() => setEditing(null)} {...dialogBackdrop}>
+            <motion.section className="modal artifact-editor" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}>
+              <header><div><h2>审核、批注与版本比较</h2><span>保存后生成版本 {Math.max(...versions.map((item) => item.version_number), editing.version_number) + 1}</span></div><button className="icon-button subtle" aria-label="关闭审核编辑器" onClick={() => setEditing(null)}><X size={17} /></button></header>
+              <div className="version-toolbar"><GitCompareArrows size={15} /><span>对比版本</span><select value={compareVersionId ?? ""} onChange={(event) => setCompareVersionId(Number(event.target.value))}>{versions.map((item) => <option key={item.id} value={item.id}>版本 {item.version_number} · {statusLabel(item.status)}</option>)}</select>{compareVersionId ? <button type="button" className="secondary-button" onClick={() => { const old = versions.find((item) => item.id === compareVersionId); if (old) { setEditTitle(old.title); setEditText(old.content); setEditNotes(old.notes); } }}><RotateCcw size={14} />恢复到编辑区</button> : null}</div>
+              <div className="version-compare-grid">
+                <section><header><strong>当前编辑</strong><span>{editText.replace(/\s/g, "").length} 字</span></header><label><span>标题</span><input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label><textarea value={editText} onChange={(event) => setEditText(event.target.value)} /></section>
+                <section><header><strong>历史版本</strong><span>只读</span></header><label><span>标题</span><input readOnly value={versions.find((item) => item.id === compareVersionId)?.title ?? ""} /></label><textarea readOnly value={versions.find((item) => item.id === compareVersionId)?.content ?? ""} /></section>
+              </div>
+              <label className="artifact-notes"><span>审核批注</span><textarea rows={3} value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="记录修改理由、待核问题或给下一轮 Agent 的意见" /></label>
+              <footer><button className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="secondary-button" disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => decide.mutate({ artifact: editing, action: "request_changes" })}>要求修改</button><button className="primary-button" disabled={saveArtifact.isPending || !hasUnsavedArtifactEdits} onClick={() => saveArtifact.mutate()}><Save size={15} />保存新版本</button><button className="approve-button" title={hasUnsavedArtifactEdits ? "请先保存当前编辑" : "通过并写入"} disabled={decide.isPending || hasUnsavedArtifactEdits} onClick={() => approveArtifact(editing)}><Check size={15} />{["drafting", "revision_proposal", "scene_draft"].includes(editing.kind) ? "通过并写入正文" : "通过审核"}</button></footer>
+            </motion.section>
+          </motion.div>
+        ) : null}
 
-      {conflictArtifact ? <div className="modal-backdrop" onMouseDown={() => setConflictArtifact(null)}><section className="modal conflict-dialog" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>发现重大设定冲突</h2><span>{conflictArtifact.title}</span></div><button className="icon-button subtle" onClick={() => setConflictArtifact(null)}><X size={17} /></button></header><div><AlertTriangle size={22} /><p>系统不会替你决定。请选择本次写回采用哪一边，或先进入编辑器手工合并。</p></div><footer><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_canon" }); }}>保留既有设定</button><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); openEdit(artifact); }}>手工合并</button><button className="primary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_prose" }); }}>保留当前正文</button></footer></section></div> : null}
+        {conflictArtifact ? <motion.div key="conflict-dialog" className="modal-backdrop" onMouseDown={() => setConflictArtifact(null)} {...dialogBackdrop}><motion.section className="modal conflict-dialog" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>发现重大设定冲突</h2><span>{conflictArtifact.title}</span></div><button className="icon-button subtle" onClick={() => setConflictArtifact(null)}><X size={17} /></button></header><div><AlertTriangle size={22} /><p>系统不会替你决定。请选择本次写回采用哪一边，或先进入编辑器手工合并。</p></div><footer><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_canon" }); }}>保留既有设定</button><button className="secondary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); openEdit(artifact); }}>手工合并</button><button className="primary-button" onClick={() => { const artifact = conflictArtifact; setConflictArtifact(null); decide.mutate({ artifact, action: "approve", resolution: "preserve_prose" }); }}>保留当前正文</button></footer></motion.section></motion.div> : null}
 
-      {outlinePreview ? (
-        <OutlinePreviewDialog preview={outlinePreview} onClose={() => setOutlinePreview(null)} onImport={() => importOutline.mutate()} importing={importOutline.isPending} />
-      ) : null}
-      {snapshotsOpen ? <SnapshotDialog overview={overview} onClose={() => setSnapshotsOpen(false)} onRefresh={refresh} onNotice={setNotice} /> : null}
+        {outlinePreview ? (
+          <OutlinePreviewDialog key="outline-preview" preview={outlinePreview} onClose={() => setOutlinePreview(null)} onImport={() => importOutline.mutate()} importing={importOutline.isPending} />
+        ) : null}
+        {snapshotsOpen ? <SnapshotDialog key="snapshots" overview={overview} onClose={() => setSnapshotsOpen(false)} onRefresh={refresh} onNotice={setNotice} /> : null}
+      </AnimatePresence>
     </section>
   );
+}
+
+function StudioAgentConsole({ overview, open, onToggle, onHide, onOpenProgress }: { overview: StudioOverview; open: boolean; onToggle: () => void; onHide: () => void; onOpenProgress: () => void }) {
+  const running = overview.jobs.filter((job) => ["queued", "running"].includes(job.status));
+  const recent = overview.jobs.slice(0, 4);
+  return <section className={open ? "agent-console is-open" : "agent-console"}>
+    <header>
+      <button type="button" className="agent-console-title" onClick={onToggle} aria-expanded={open}>
+        <SquareTerminal size={15} /><strong>Agent 控制台</strong><span>{running.length ? `${running.length} 个任务运行中` : "等待任务"}</span><ChevronDown size={14} />
+      </button>
+      <div><span>{overview.usage.tokens.toLocaleString()} tokens</span><span>{overview.usage.currency} {overview.usage.spent.toFixed(4)}</span><button type="button" onClick={onOpenProgress}>查看全部</button><button type="button" className="agent-console-hide" onClick={onHide} title="隐藏控制台" aria-label="隐藏控制台"><EyeOff size={13} /></button></div>
+    </header>
+    <AnimatePresence initial={false}>
+    {open ? <motion.div key="agent-console-body" className="agent-console-body" {...consoleTransition}>
+      <div className="agent-pipeline">
+        {recent.length ? recent.map((job) => <button type="button" key={job.id} onClick={onOpenProgress} className={`agent-step ${job.status}`}>
+          {job.status === "completed" ? <CheckCircle2 size={15} /> : job.status === "failed" ? <AlertTriangle size={15} /> : <LoaderCircle className={job.status === "running" ? "spin" : ""} size={15} />}
+          <div className="agent-step-copy"><strong>{job.label}</strong><small>{job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : `${job.progress}% · ${job.model_name}`}</small></div>
+          <span className="agent-step-progress" aria-hidden="true"><motion.i initial={{ scaleX: 0 }} animate={{ scaleX: Math.max(0.04, job.progress / 100) }} transition={{ duration: 0.45, ease: "easeOut" }} /></span>
+        </button>) : <div className="agent-console-idle"><img className="agent-network-orb" src={agentNetworkOrb} alt="" /><span><strong>Agent 编排已就绪</strong><small>创作任务将在这里形成可观察的节点链路；进度、耗时与费用会实时更新。</small><button type="button" onClick={onOpenProgress}>查看任务与运行记录</button></span></div>}
+      </div>
+      {recent.length ? <div className="agent-console-log">{recent.slice(0, 3).map((job) => <span key={job.id}><time>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><b>{job.label}</b>{job.status === "failed" ? "执行失败，业务产出未写入" : job.status === "completed" ? "节点完成" : `正在执行 · ${job.progress}%`}</span>)}</div> : null}
+    </motion.div> : null}
+    </AnimatePresence>
+  </section>;
 }
 
 function ChapterPlanValidationBadge({ artifact }: { artifact: Artifact }) {
@@ -643,7 +706,7 @@ function ContinuationSettingsPanel({ overview, onSave, saving }: { overview: Stu
 }
 
 function OutlinePreviewDialog({ preview, onClose, onImport, importing }: { preview: OutlinePreview; onClose: () => void; onImport: () => void; importing: boolean }) {
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal outline-preview-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>大纲结构预览</h2><span>{preview.volume_count} 卷 · {preview.chapter_count} 章 · {preview.scene_count} 场景</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="outline-tree-preview">{preview.volumes.map((volume, index) => <section key={`${volume.title}-${index}`}><strong>{volume.title}</strong>{volume.chapters.map((chapter, chapterIndex) => <div key={`${chapter.title}-${chapterIndex}`}><span>{chapter.title}</span><small>{chapter.scenes.length} 场景</small></div>)}</section>)}</div>{preview.warnings.map((warning) => <div className="preview-warning" key={warning}>{warning}</div>)}<footer><button className="secondary-button" onClick={onClose}>返回修改</button><button className="primary-button" disabled={importing} onClick={onImport}>{importing ? "导入中..." : "确认导入"}</button></footer></section></div>;
+  return <motion.div className="modal-backdrop" onMouseDown={onClose} {...dialogBackdrop}><motion.section className="modal outline-preview-modal" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>大纲结构预览</h2><span>{preview.volume_count} 卷 · {preview.chapter_count} 章 · {preview.scene_count} 场景</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="outline-tree-preview">{preview.volumes.map((volume, index) => <section key={`${volume.title}-${index}`}><strong>{volume.title}</strong>{volume.chapters.map((chapter, chapterIndex) => <div key={`${chapter.title}-${chapterIndex}`}><span>{chapter.title}</span><small>{chapter.scenes.length} 场景</small></div>)}</section>)}</div>{preview.warnings.map((warning) => <div className="preview-warning" key={warning}>{warning}</div>)}<footer><button className="secondary-button" onClick={onClose}>返回修改</button><button className="primary-button" disabled={importing} onClick={onImport}>{importing ? "导入中..." : "确认导入"}</button></footer></motion.section></motion.div>;
 }
 
 function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: StudioOverview; onClose: () => void; onRefresh: () => Promise<unknown>; onNotice: (value: string) => void }) {
@@ -651,7 +714,7 @@ function SnapshotDialog({ overview, onClose, onRefresh, onNotice }: { overview: 
   const create = useMutation({ mutationFn: () => studioApi.createSnapshot(overview.project.id, label || "手动快照", "作者手动创建", true), onSuccess: async () => { setLabel(""); await onRefresh(); }, onError: (reason: Error) => onNotice(reason.message) });
   const restore = useMutation({ mutationFn: (id: number) => studioApi.restoreSnapshot(overview.project.id, id), onSuccess: onRefresh, onError: (reason: Error) => onNotice(reason.message) });
   const exportFile = useMutation({ mutationFn: (kind: "book_text" | "book_markdown" | "book_pdf") => api.downloadReleaseExport(kind, overview.project.id), onSuccess: saveDownloadedFile, onError: (reason: Error) => onNotice(reason.message) });
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_text")}><FileText size={16} />TXT</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_markdown")}><Download size={16} />Markdown</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_pdf")}><FileCheck2 size={16} />PDF</button></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></section></div>;
+  return <motion.div className="modal-backdrop" onMouseDown={onClose} {...dialogBackdrop}><motion.section className="modal snapshot-modal" onMouseDown={(event) => event.stopPropagation()} {...dialogCard}><header><div><h2>快照与导出</h2><span>普通快照 {overview.snapshots.filter((item) => !item.permanent).length}/3</span></div><button className="icon-button subtle" onClick={onClose}><X size={17} /></button></header><div className="export-strip"><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_text")}><FileText size={16} />TXT</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_markdown")}><Download size={16} />Markdown</button><button type="button" disabled={exportFile.isPending} onClick={() => exportFile.mutate("book_pdf")}><FileCheck2 size={16} />PDF</button></div><div className="snapshot-create"><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="特殊快照名称" /><button className="primary-button" onClick={() => create.mutate()}><Save size={15} />保存特殊快照</button></div><div className="snapshot-list">{overview.snapshots.map((item) => <article key={item.id}><span className={item.permanent ? "special" : "automatic"}>{item.permanent ? "特殊" : "自动"}</span><div><strong>{item.label}</strong><small>{item.reason || new Date(item.created_at).toLocaleString("zh-CN")}</small></div><button className="icon-button subtle" title="恢复" onClick={() => { if (window.confirm(`恢复到“${item.label}”？`)) restore.mutate(item.id); }}><Undo2 size={15} /></button></article>)}</div></motion.section></motion.div>;
 }
 
 function statusLabel(status: Artifact["status"]) { return ({ pending: "待审核", approved: "已通过", changes_requested: "需修改", rejected: "已拒绝", superseded: "旧版本" })[status]; }

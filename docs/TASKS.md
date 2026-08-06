@@ -1,5 +1,13 @@
 # Tasks
 
+## V2.2.11 Editor-First Product Redesign
+
+- [x] Match the selected editor-first visual direction with a narrow activity rail, manuscript surface, review inspector, and Agent console.
+- [x] Redesign project and model registries as dense desktop tables while preserving the production data flows.
+- [x] Add a keyboard command palette, focus mode, persistent light/dark themes, reduced-motion behavior, and accessible control names.
+- [x] Verify real interactions and reference comparisons at 1440px and 1024px, including the responsive inspector fix.
+- [x] Pass all 63 frontend tests, TypeScript strict checking, production build, and packaged Windows smoke gates.
+
 ## V2.2.9 Long-Running Reliability Remediation
 
 - [x] Close built-in Provider SSRF gaps and fail closed when production local API authentication is missing.

@@ -339,6 +339,22 @@ def test_backup_rejects_traversal_schema_tampering_and_secret_material(db: Sessi
     assert preview.secret_findings
 
 
+def test_rejects_midsize_high_ratio_member() -> None:
+    """10 MB 以下的高压缩比 member 同样必须被拒绝。"""
+    payload = b"\0" * (2 * 1024 * 1024)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.writestr("data.json", payload)
+        archive.writestr("manifest.json", b"{}")
+
+    info = zipfile.ZipFile(io.BytesIO(buffer.getvalue())).getinfo("data.json")
+    assert info.file_size < 10 * 1024 * 1024
+    assert info.file_size / max(1, info.compress_size) > release_backup.MAX_COMPRESSION_RATIO
+
+    with pytest.raises(ValueError, match="压缩比异常"):
+        release_backup._validate_zip_member(info)
+
+
 def test_all_release_exports_are_real_and_redacted(db: Session) -> None:
     seeded = seed_release_data(db)
     project_id = seeded["project_id"]
