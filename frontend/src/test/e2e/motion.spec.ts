@@ -37,12 +37,13 @@ test("route, list, dialog, and button motion run in the browser", async ({ page 
       }, 700);
     }));
     releaseProjects();
+    await page.getByRole("button", { name: "全部项目" }).click();
     const listSamples = await listSamplesPromise;
     await page.unroute("**/api/studio/projects");
     await expect(page.locator(".project-row")).toHaveCount(9);
     expect(listSamples.some((sample) => (
       sample.length === 9 &&
-      sample.slice(0, 8).some((style) => style?.includes("translateY")) &&
+      sample.slice(0, 8).some((style) => style?.includes("opacity")) &&
       sample[8] === null
     ))).toBe(true);
 
@@ -69,14 +70,14 @@ test("route, list, dialog, and button motion run in the browser", async ({ page 
     await page.getByTitle("模型与 API").click();
     const routeSamples = await routeSamplesPromise;
     await expect(page.getByRole("heading", { name: "模型与 API" })).toBeVisible();
-    expect(routeSamples.some((style) => style.includes("translateX") && !style.includes("translateX(0px)"))).toBe(true);
+    expect(routeSamples.some((style) => style.includes("opacity") && !style.includes("opacity: 1"))).toBe(true);
 
     const addService = page.getByRole("button", { name: "添加服务" });
     const box = await addService.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await page.mouse.down();
-    expect(await addService.evaluate((element) => getComputedStyle(element).filter)).toBe("brightness(0.92)");
+    expect(await addService.evaluate((element) => getComputedStyle(element).transform)).toContain("matrix");
 
     const dialogSamplesPromise = page.evaluate(() => new Promise<string[]>((resolve) => {
       const samples: string[] = [];

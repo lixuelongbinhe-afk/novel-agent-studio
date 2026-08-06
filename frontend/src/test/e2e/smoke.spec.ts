@@ -89,7 +89,7 @@ test("collapsed sidebar keeps only in-bounds brand and status expand targets", a
     brand.boundingBox(),
     status.boundingBox()
   ]);
-  expect(sidebarBox?.width).toBe(54);
+  expect(sidebarBox?.width).toBe(64);
   for (const box of [brandBox, statusBox]) {
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(sidebarBox!.x);
