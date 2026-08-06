@@ -76,12 +76,15 @@ test("collapsed sidebar keeps only in-bounds brand and status expand targets", a
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
+  await page.getByTitle("展开侧栏").first().click();
+  await expect(page.locator(".nas-shell")).not.toHaveClass(/is-collapsed/);
   await page.getByTitle("收起侧栏").first().click();
   const shell = page.locator(".nas-shell");
   const sidebar = page.locator(".nas-sidebar");
   const brand = page.locator("button.nas-brand-mark");
   const status = page.locator("button.sidebar-status-expand");
   await expect(shell).toHaveClass(/is-collapsed/);
+  await page.waitForTimeout(300); // wait for the sidebar collapse grid transition to finish
   await expect(page.getByTitle("展开侧栏")).toHaveCount(2);
 
   const [sidebarBox, brandBox, statusBox] = await Promise.all([
@@ -110,11 +113,12 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
 
+  await page.getByTitle("展开侧栏").first().click(); // sidebar starts collapsed; brand text only renders when expanded
   await expect(page.getByText("Novel Agent Studio", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
-  await expect(page.getByText("创作阶段")).toBeVisible();
-  await expect(page.getByText("完成字数")).toBeVisible();
-  await expect(page.getByRole("main").getByText("待审核", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最近打开" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全部项目" })).toBeVisible();
+  await expect(page.getByLabel("搜索项目")).toBeVisible();
   await expect(page.getByRole("button", { name: /新建第一本小说/ })).toBeVisible();
   await page.screenshot({ path: "test-results/v2-home-desktop.png" });
 

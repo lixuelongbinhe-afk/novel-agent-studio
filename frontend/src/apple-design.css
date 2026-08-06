@@ -217,6 +217,8 @@ a {
   height: 100%;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
   background: var(--bg-primary);
   transition: grid-template-columns var(--transition-normal);
 }
