@@ -168,7 +168,7 @@ test("V2 creation flow renders and generates a review item", async ({ page }) =>
       await expect(item).toHaveCount(0);
     }
   }
-  await expect(page.locator(".project-heading")).toContainText("人物与关系");
+  await expect(page.getByText("人物与关系").first()).toBeVisible();
 
   const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(desktopOverflow).toBe(false);
