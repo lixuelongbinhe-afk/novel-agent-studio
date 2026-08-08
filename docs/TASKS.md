@@ -1,5 +1,12 @@
 # Tasks
 
+## V2.2.12 Provider Restore Fix
+
+- [x] Reproduce the onboarding conflict caused by a soft-deleted Provider name.
+- [x] Restore the existing Provider, protocol configuration, and model profile instead of creating conflicting rows.
+- [x] Preserve active-name conflict protection and Provider identity for existing references.
+- [x] Add regression coverage and pass the full backend suite.
+
 ## V2.2.11 Editor-First Product Redesign
 
 - [x] Match the selected editor-first visual direction with a narrow activity rail, manuscript surface, review inspector, and Agent console.

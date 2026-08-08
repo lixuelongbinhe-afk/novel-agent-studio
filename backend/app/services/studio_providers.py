@@ -26,32 +26,67 @@ def setup_provider(db: Session, payload: ProviderSetup) -> dict[str, Any]:
         "openrouter": "openai_chat",
         "openai_compatible": "openai_chat",
     }
-    if db.scalar(select(models.ProviderAccount).where(models.ProviderAccount.name == payload.name)):
-        raise ConflictError("Provider 名称已存在")
-    provider = models.ProviderAccount(
-        name=payload.name,
-        provider_type=protocol_map[payload.preset],
-        credential_env_var=payload.env_var_name,
-        base_url=payload.base_url.rstrip("/"),
-        enabled=True,
-    )
-    db.add(provider)
-    db.flush()
-    db.add(
-        models.ProtocolConfiguration(
-            provider_account_id=provider.id,
-            protocol=protocol_map[payload.preset],
-            options_json="{}",
+    protocol = protocol_map[payload.preset]
+    provider = db.scalar(
+        select(models.ProviderAccount).where(
+            models.ProviderAccount.name == payload.name
         )
     )
-    profile = models.ModelProfile(
-        provider_account_id=provider.id,
-        name=payload.model,
-        display_name=payload.model,
-        context_window=1_000_000 if payload.preset == "deepseek" else 128_000,
-        enabled=True,
+    if provider is not None and provider.deleted_at is None:
+        raise ConflictError("Provider 名称已存在")
+    if provider is None:
+        provider = models.ProviderAccount(name=payload.name)
+        db.add(provider)
+        db.flush()
+    else:
+        provider.deleted_at = None
+        provider.revision += 1
+    provider.provider_type = protocol
+    provider.credential_env_var = payload.env_var_name
+    provider.base_url = payload.base_url.rstrip("/")
+    provider.enabled = True
+
+    configuration = db.scalar(
+        select(models.ProtocolConfiguration).where(
+            models.ProtocolConfiguration.provider_account_id == provider.id
+        )
     )
-    db.add(profile)
+    if configuration is None:
+        configuration = models.ProtocolConfiguration(
+            provider_account_id=provider.id,
+            protocol=protocol,
+            options_json="{}",
+        )
+        db.add(configuration)
+    else:
+        configuration.protocol = protocol
+        configuration.options_json = "{}"
+        configuration.deleted_at = None
+        configuration.revision += 1
+
+    profile = db.scalar(
+        select(models.ModelProfile).where(
+            models.ModelProfile.provider_account_id == provider.id,
+            models.ModelProfile.name == payload.model,
+        )
+    )
+    if profile is None:
+        profile = models.ModelProfile(
+            provider_account_id=provider.id,
+            name=payload.model,
+            display_name=payload.model,
+            context_window=1_000_000 if payload.preset == "deepseek" else 128_000,
+            enabled=True,
+        )
+        db.add(profile)
+    else:
+        profile.display_name = payload.model
+        profile.context_window = (
+            1_000_000 if payload.preset == "deepseek" else 128_000
+        )
+        profile.enabled = True
+        profile.deleted_at = None
+        profile.revision += 1
     db.flush()
     if payload.api_key:
         try:
