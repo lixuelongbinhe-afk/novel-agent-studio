@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements-dev.lock
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -30,13 +30,12 @@ jobs:
         working-directory: backend
       - name: Prepare audit artifacts
         run: New-Item -ItemType Directory -Force artifacts | Out-Null
-      - name: Generate backend SBOM
-        run: >-
-          python -m pip_audit
-          --disable-pip
-          --requirement requirements.lock
-          --format cyclonedx-json
-          --output ../artifacts/backend-sbom.cdx.json
+      - name: Generate backend SBOM independently of vulnerability verdict
+        shell: pwsh
+        run: |
+          python -m pip_audit --disable-pip --requirement requirements.lock --format cyclonedx-json --output ../artifacts/backend-sbom.cdx.json
+          if (!(Test-Path ../artifacts/backend-sbom.cdx.json)) { throw "SBOM was not generated" }
+          exit 0
         working-directory: backend
       - name: Audit backend dependencies
         run: python -m pip_audit --strict --disable-pip --requirement requirements.lock
