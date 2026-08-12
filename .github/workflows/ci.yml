@@ -30,13 +30,12 @@ jobs:
         working-directory: backend
       - name: Prepare audit artifacts
         run: New-Item -ItemType Directory -Force artifacts | Out-Null
-      - name: Generate backend SBOM
-        run: >-
-          python -m pip_audit
-          --disable-pip
-          --requirement requirements.lock
-          --format cyclonedx-json
-          --output ../artifacts/backend-sbom.cdx.json
+      - name: Generate backend SBOM independently of vulnerability verdict
+        shell: pwsh
+        run: |
+          python -m pip_audit --disable-pip --requirement requirements.lock --format cyclonedx-json --output ../artifacts/backend-sbom.cdx.json
+          if (!(Test-Path ../artifacts/backend-sbom.cdx.json)) { throw "SBOM was not generated" }
+          exit 0
         working-directory: backend
       - name: Audit backend dependencies
         run: python -m pip_audit --strict --disable-pip --requirement requirements.lock
