@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83.0.0"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,21 +8,21 @@ version = "2.2.12"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.140.13",
-  "uvicorn[standard]>=0.51.0",
+  "fastapi>=0.141.1",
+  "uvicorn[standard]>=0.52.4",
   "pydantic>=2.13.4",
-  "pydantic-settings>=2.14.2",
-  "sqlalchemy>=2.0.51",
-  "alembic>=1.18.5",
+  "pydantic-settings>=2.15.0",
+  "sqlalchemy>=2.0.52",
+  "alembic>=1.19.1",
   "httpx>=0.28.1",
   "jsonschema>=4.26.0",
-  "tiktoken>=0.13.0",
+  "tiktoken>=0.14.0",
   "pywebview>=6.2.1",
   "pystray>=0.19.5",
   "python-multipart>=0.0.32",
   "python-docx>=1.2.0",
-  "pypdf>=6.14.2",
-  "reportlab>=5.0.0",
+  "pypdf>=6.16.1",
+  "reportlab>=5.0.1",
   "cryptography>=50.0.0",
 ]
 
@@ -30,14 +30,14 @@ dependencies = [
 dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
-  "ruff==0.15.21",
-  "mypy>=2.3.0",
+  "ruff==0.16.4",
+  "mypy>=2.3.1",
   "types-jsonschema>=4.26.0.20260518",
-  "types-reportlab>=4.5.1.20260728",
+  "types-reportlab>=4.5.1.20260807",
   "pip-audit==2.10.1",
 ]
 packaging = [
-  "pyinstaller==6.21.0",
+  "pyinstaller==6.22.2",
   "pip-audit==2.10.1",
 ]
 
