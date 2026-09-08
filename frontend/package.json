@@ -17,31 +17,31 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@tanstack/react-query": "5.101.4",
-    "@tiptap/react": "3.29.2",
-    "@tiptap/starter-kit": "3.29.2",
-    "@xyflow/react": "12.11.2",
-    "framer-motion": "^12.43.0",
-    "lucide-react": "1.28.0",
+    "@tanstack/react-query": "5.102.8",
+    "@tiptap/react": "3.31.3",
+    "@tiptap/starter-kit": "3.31.3",
+    "@xyflow/react": "12.11.6",
+    "framer-motion": "^13.2.0",
+    "lucide-react": "1.41.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-router-dom": "7.18.2",
-    "zustand": "5.0.14"
+    "react-router-dom": "7.18.3",
+    "zustand": "5.0.15"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
-    "@testing-library/jest-dom": "7.0.0",
-    "@testing-library/react": "16.3.2",
+    "@playwright/test": "1.63.0",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "6.0.5",
-    "autoprefixer": "10.5.4",
-    "esbuild": "0.28.1",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "autoprefixer": "10.5.5",
+    "esbuild": "0.28.2",
     "jsdom": "30.0.1",
-    "postcss": "8.5.25",
-    "tailwindcss": "3.4.19",
-    "typescript": "5.9.3",
-    "vite": "8.2.0",
-    "vitest": "4.1.10"
+    "postcss": "8.5.28",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
   }
 }
